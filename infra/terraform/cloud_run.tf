@@ -6,7 +6,9 @@ locals {
       max_instances = 2
     }
     telemetry_processor = {
-      name          = "telemetry-processor"
+      name = "telemetry-processor"
+      # Same-project Pub/Sub push subscriptions are accepted by Cloud Run's
+      # internal ingress setting; IAM and the OIDC token still gate invocation.
       ingress       = "INGRESS_TRAFFIC_INTERNAL_ONLY"
       max_instances = 3
     }

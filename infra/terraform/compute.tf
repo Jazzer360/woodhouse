@@ -40,7 +40,11 @@ resource "google_compute_instance" "telemetry_edge" {
   }
 
   service_account {
-    email  = google_service_account.platform["telemetry_edge"].email
+    email = google_service_account.platform["telemetry_edge"].email
+    # Google recommends cloud-platform scope with authorization constrained by
+    # IAM. Legacy granular scopes do not grant permissions and do not cover
+    # every authentication protocol, so the narrow roles in iam.tf are the
+    # effective least-privilege boundary.
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
 

@@ -18,7 +18,7 @@ Python remains the smallest practical common stack for the planned MCP, GCP, and
 |---|---|---|
 | Artifact Registry | `tesla-personal-platform` | New immutable-tag Docker repository |
 | MCP gateway | Cloud Run `mcp-gateway` | Private, health-only public placeholder image; no unauthenticated invoker |
-| Telemetry processor | Cloud Run `telemetry-processor` | Internal ingress, authenticated Pub/Sub invoker only |
+| Telemetry processor | Cloud Run `telemetry-processor` | Internal ingress, authenticated same-project Pub/Sub invoker only |
 | Telemetry edge | Compute Engine `tpp-telemetry-edge` | Idle shielded COS `e2-micro`; no receiver or container deployed yet |
 | Telemetry address | Regional static external IPv4 | Reserved for the future public receiver |
 | Raw transport | `tpp-raw-telemetry` topic and processor subscription | 31-day retention; authenticated push path |
@@ -40,6 +40,8 @@ The telemetry VM has exactly two ingress rules:
 Tesla's current Fleet Telemetry overview requires a publicly reachable server but does not prescribe a port on that page. Port `443` is the documented platform default and is configurable through `fleet_telemetry_port`; Phase 7 must make the vehicle configuration, receiver listener, certificate, and firewall agree. No process listens on that port in Phase 2.
 
 Project SSH keys are blocked, OS Login is required, and no direct public SSH rule exists. The VM service account can publish to the raw topic and write logs/metrics. It has no Tesla OAuth, command-key, Secret Manager, Firestore, or BigQuery access.
+
+[Cloud Run recognizes same-project Pub/Sub subscriptions as an allowed source for internal ingress](https://cloud.google.com/run/docs/securing/ingress#available_network_ingress_settings), so the telemetry processor does not need public ingress for push delivery. [Compute Engine recommends the `cloud-platform` OAuth scope with access controlled through IAM roles](https://cloud.google.com/compute/docs/access/service-accounts#authorization); that scope is used on the VM, with effective authorization restricted by the service account's narrow IAM roles. Legacy granular OAuth scopes do not grant permissions and do not cover every authentication protocol.
 
 ## Service accounts and IAM intent
 
