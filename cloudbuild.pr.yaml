@@ -1,0 +1,86 @@
+steps:
+  - id: python-sync
+    name: ghcr.io/astral-sh/uv:0.9.26-python3.12-bookworm-slim
+    entrypoint: bash
+    args:
+      - -ceu
+      - uv sync --frozen --all-packages --group dev
+
+  - id: python-quality
+    name: ghcr.io/astral-sh/uv:0.9.26-python3.12-bookworm-slim
+    entrypoint: bash
+    waitFor: [python-sync]
+    args:
+      - -ceu
+      - |
+        uv run ruff check .
+        uv run ruff format --check .
+        uv run mypy services packages tests
+
+  - id: unit-tests
+    name: ghcr.io/astral-sh/uv:0.9.26-python3.12-bookworm-slim
+    entrypoint: bash
+    waitFor: [python-sync]
+    args:
+      - -ceu
+      - uv run pytest
+
+  - id: dependency-audit
+    name: ghcr.io/astral-sh/uv:0.9.26-python3.12-bookworm-slim
+    entrypoint: bash
+    waitFor: [python-sync]
+    args:
+      - -ceu
+      - |
+        uv export --frozen --all-packages --no-emit-workspace --output-file /tmp/requirements.txt --quiet
+        uv run pip-audit --strict --requirement /tmp/requirements.txt
+
+  - id: terraform
+    name: hashicorp/terraform:1.12.2
+    entrypoint: sh
+    waitFor: ['-']
+    args:
+      - -ceu
+      - |
+        terraform -chdir=infra/terraform fmt -check
+        terraform -chdir=infra/terraform init -backend=false
+        terraform -chdir=infra/terraform validate
+        terraform -chdir=infra/terraform plan -input=false -lock=false
+
+  - id: build-mcp-gateway
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args:
+      - build
+      - --file
+      - services/mcp-gateway/Dockerfile
+      - --tag
+      - tpp/mcp-gateway:pr-$BUILD_ID
+      - .
+
+  - id: build-telemetry-processor
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args:
+      - build
+      - --file
+      - services/telemetry-processor/Dockerfile
+      - --tag
+      - tpp/telemetry-processor:pr-$BUILD_ID
+      - .
+
+  - id: build-telemetry-edge
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args:
+      - build
+      - --file
+      - services/telemetry-edge/Dockerfile
+      - --tag
+      - tpp/telemetry-edge:pr-$BUILD_ID
+      - .
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1200s
