@@ -39,9 +39,13 @@ The telemetry VM has exactly two ingress rules:
 
 Tesla's current Fleet Telemetry overview requires a publicly reachable server but does not prescribe a port on that page or publish stable source CIDRs that can safely replace `0.0.0.0/0`. Port `443` is the documented platform default and is configurable through `fleet_telemetry_port`; Phase 7 must make the vehicle configuration, receiver listener, certificate, and firewall agree. The rule targets only the telemetry-edge service account and that single TCP port. No process listens on that port in Phase 2. If Tesla later publishes an authoritative sender range, restrict the rule in the same reviewed change that verifies receiver delivery.
 
+Firewall logging remains enabled for IAP administration but is disabled on the public Fleet Telemetry allow rule. Unauthenticated internet scanning would otherwise create unbounded log volume and cost; Phase 7 receiver health, application logs, and metrics provide useful operational visibility once a listener exists.
+
 Project SSH keys are blocked, OS Login is required, and no direct public SSH rule exists. The VM service account can publish to the raw topic and write logs/metrics. It has no Tesla OAuth, command-key, Secret Manager, Firestore, or BigQuery access.
 
 [Cloud Run recognizes same-project Pub/Sub subscriptions as an allowed source for internal ingress](https://cloud.google.com/run/docs/securing/ingress#available_network_ingress_settings), so the telemetry processor does not need public ingress for push delivery. [Compute Engine recommends the `cloud-platform` OAuth scope with access controlled through IAM roles](https://cloud.google.com/compute/docs/access/service-accounts#authorization); that scope is used on the VM, with effective authorization restricted by the service account's narrow IAM roles. Legacy granular OAuth scopes do not grant permissions and do not cover every authentication protocol.
+
+The Pub/Sub push subscription uses the complete processor handler URL, including `/pubsub/push`, as both its delivery endpoint and OIDC audience. Phase 7 token validation must require that exact audience rather than accepting the broader service-root URI.
 
 ## Service accounts and IAM intent
 

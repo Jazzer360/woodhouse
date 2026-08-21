@@ -36,9 +36,35 @@ def test_per_user_bigquery_datasets_remain_outside_shared_terraform() -> None:
 
 
 def variable_block(source: str, name: str) -> str:
-    """Return a simple top-level variable block from the repository HCL."""
+    """Return a top-level variable block while preserving nested HCL blocks."""
     marker = f'variable "{name}" {{'
-    return source.split(marker, maxsplit=1)[1].split("\n}", maxsplit=1)[0]
+    start = source.index(marker)
+    depth = 0
+
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+
+    raise ValueError(f'Unclosed variable block: "{name}"')
+
+
+def test_variable_block_preserves_nested_blocks() -> None:
+    source = """variable "first" {
+  validation {
+    condition = true
+  }
+}
+
+variable "second" {
+  default = "must-not-leak"
+}
+"""
+
+    assert "must-not-leak" not in variable_block(source, "first")
 
 
 def test_target_project_and_state_bucket_require_explicit_input() -> None:
@@ -64,3 +90,10 @@ def test_cloud_build_speculative_plan_copies_the_complete_root() -> None:
     assert "cp -R infra/terraform /tmp/tpp-terraform-plan" in cloud_build
     assert "rm /tmp/tpp-terraform-plan/backend.tf" in cloud_build
     assert "sed -i" not in cloud_build
+
+
+def test_pubsub_oidc_audience_matches_the_exact_push_endpoint() -> None:
+    pubsub = (TERRAFORM_ROOT / "pubsub.tf").read_text(encoding="utf-8")
+
+    assert "push_endpoint = local.telemetry_processor_push_endpoint" in pubsub
+    assert "audience              = local.telemetry_processor_push_endpoint" in pubsub

@@ -1,3 +1,7 @@
+locals {
+  telemetry_processor_push_endpoint = "${google_cloud_run_v2_service.platform["telemetry_processor"].uri}/pubsub/push"
+}
+
 resource "google_pubsub_topic" "raw_telemetry" {
   project                    = var.project_id
   name                       = "tpp-raw-telemetry"
@@ -43,11 +47,11 @@ resource "google_pubsub_subscription" "telemetry_processor" {
   }
 
   push_config {
-    push_endpoint = "${google_cloud_run_v2_service.platform["telemetry_processor"].uri}/pubsub/push"
+    push_endpoint = local.telemetry_processor_push_endpoint
 
     oidc_token {
       service_account_email = google_service_account.platform["pubsub_push"].email
-      audience              = google_cloud_run_v2_service.platform["telemetry_processor"].uri
+      audience              = local.telemetry_processor_push_endpoint
     }
   }
 

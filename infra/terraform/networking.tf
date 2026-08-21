@@ -45,9 +45,8 @@ resource "google_compute_firewall" "fleet_telemetry" {
     ports    = [tostring(var.fleet_telemetry_port)]
   }
 
-  log_config {
-    metadata = "INCLUDE_ALL_METADATA"
-  }
+  # Do not log this internet-facing allow rule: routine scanning would create
+  # unbounded noise and cost. Phase 7 receiver logs/metrics own observability.
 }
 
 resource "google_compute_firewall" "iap_ssh" {
