@@ -10,6 +10,7 @@ from tesla_personal_platform.auth import (
     CrossUserAccessError,
     EmailNotVerifiedError,
     IdentityMismatchError,
+    InvalidTokenError,
     UserDisabledError,
     UserNotAllowedError,
     UserStatus,
@@ -57,6 +58,19 @@ def test_non_allowlisted_login_is_rejected() -> None:
     boundary = boundary_for(InMemoryIdentityStore(), {"token": identity})
 
     with pytest.raises(UserNotAllowedError):
+        boundary.authorize("Bearer token", {})
+
+
+def test_malformed_first_login_email_is_rejected_as_invalid_token() -> None:
+    identity = VerifiedIdentity(
+        "https://accounts.google.com",
+        "malformed-email",
+        "not-an-email",
+        email_verified=True,
+    )
+    boundary = boundary_for(InMemoryIdentityStore(), {"token": identity})
+
+    with pytest.raises(InvalidTokenError, match="invalid email claim"):
         boundary.authorize("Bearer token", {})
 
 

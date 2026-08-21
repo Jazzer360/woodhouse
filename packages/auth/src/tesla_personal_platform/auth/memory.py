@@ -2,10 +2,9 @@
 
 from threading import RLock
 
-from tesla_personal_platform.auth.core import normalize_email
+from tesla_personal_platform.auth.core import first_login_invitation_email, normalize_email
 from tesla_personal_platform.auth.errors import (
     ConfigurationError,
-    EmailNotVerifiedError,
     IdentityMismatchError,
     UserDisabledError,
     UserNotAllowedError,
@@ -37,12 +36,7 @@ class InMemoryIdentityStore:
             if bound_email is not None:
                 return self._context(self._users[bound_email], identity)
 
-            if not identity.email_verified:
-                raise EmailNotVerifiedError("Verified email is required for first login")
-            if identity.email is None:
-                raise UserNotAllowedError("No invitation email claim")
-
-            email = normalize_email(identity.email)
+            email = first_login_invitation_email(identity)
             user = self._users.get(email)
             if user is None:
                 raise UserNotAllowedError("No active invitation")

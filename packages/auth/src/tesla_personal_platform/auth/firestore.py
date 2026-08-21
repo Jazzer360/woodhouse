@@ -10,10 +10,9 @@ from google.cloud import firestore
 from google.cloud.firestore_v1 import Client
 from google.cloud.firestore_v1.document import DocumentReference
 from google.cloud.firestore_v1.transaction import Transaction
-from tesla_personal_platform.auth.core import normalize_email
+from tesla_personal_platform.auth.core import first_login_invitation_email, normalize_email
 from tesla_personal_platform.auth.errors import (
     ConfigurationError,
-    EmailNotVerifiedError,
     IdentityMismatchError,
     UserDisabledError,
     UserNotAllowedError,
@@ -139,12 +138,7 @@ def _resolve_or_bind_transaction(
             raise ConfigurationError("OIDC binding user does not match its allowlist record")
         return _context(user, identity)
 
-    if not identity.email_verified:
-        raise EmailNotVerifiedError("Verified email is required for first login")
-    if identity.email is None:
-        raise UserNotAllowedError("No invitation email claim")
-
-    email = normalize_email(identity.email)
+    email = first_login_invitation_email(identity)
     user_reference = store.allowed_user(email)
     user_snapshot = user_reference.get(transaction=transaction)
     if not user_snapshot.exists:

@@ -6,7 +6,9 @@ from typing import Protocol
 from tesla_personal_platform.auth.errors import (
     CallerIdentityClaimError,
     CrossUserAccessError,
+    EmailNotVerifiedError,
     InvalidTokenError,
+    UserNotAllowedError,
 )
 from tesla_personal_platform.auth.models import UserContext, VerifiedIdentity
 
@@ -65,6 +67,18 @@ def normalize_email(email: str) -> str:
     if not separator or not local or not domain or "@" in domain:
         raise ValueError("A valid email address is required")
     return normalized
+
+
+def first_login_invitation_email(identity: VerifiedIdentity) -> str:
+    """Return a safe invitation key from verified first-login claims."""
+    if not identity.email_verified:
+        raise EmailNotVerifiedError("Verified email is required for first login")
+    if identity.email is None:
+        raise UserNotAllowedError("No invitation email claim")
+    try:
+        return normalize_email(identity.email)
+    except ValueError as error:
+        raise InvalidTokenError("OIDC token has an invalid email claim") from error
 
 
 def assert_no_caller_identity_claims(payload: object) -> None:
