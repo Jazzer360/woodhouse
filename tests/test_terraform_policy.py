@@ -1,0 +1,99 @@
+"""Static guardrails for the Phase 2 Terraform baseline."""
+
+from pathlib import Path
+
+ROOT = Path(__file__).parents[1]
+TERRAFORM_ROOT = ROOT / "infra" / "terraform"
+
+
+def terraform_source() -> str:
+    """Return tracked-style Terraform configuration without generated provider files."""
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(TERRAFORM_ROOT.rglob("*.tf"))
+        if ".terraform" not in path.parts
+    )
+
+
+def test_terraform_does_not_grant_basic_owner_or_editor_roles() -> None:
+    source = terraform_source()
+
+    assert "roles/owner" not in source
+    assert "roles/editor" not in source
+
+
+def test_terraform_creates_secret_containers_without_values() -> None:
+    source = terraform_source()
+
+    assert 'resource "google_secret_manager_secret"' in source
+    assert "google_secret_manager_secret_version" not in source
+
+
+def test_per_user_bigquery_datasets_remain_outside_shared_terraform() -> None:
+    source = terraform_source()
+
+    assert "tesla_u_" not in source
+
+
+def variable_block(source: str, name: str) -> str:
+    """Return a top-level variable block while preserving nested HCL blocks."""
+    marker = f'variable "{name}" {{'
+    start = source.index(marker)
+    depth = 0
+
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+
+    raise ValueError(f'Unclosed variable block: "{name}"')
+
+
+def test_variable_block_preserves_nested_blocks() -> None:
+    source = """variable "first" {
+  validation {
+    condition = true
+  }
+}
+
+variable "second" {
+  default = "must-not-leak"
+}
+"""
+
+    assert "must-not-leak" not in variable_block(source, "first")
+
+
+def test_target_project_and_state_bucket_require_explicit_input() -> None:
+    shared_variables = (TERRAFORM_ROOT / "variables.tf").read_text(encoding="utf-8")
+    bootstrap = (TERRAFORM_ROOT / "bootstrap" / "main.tf").read_text(encoding="utf-8")
+
+    assert "default" not in variable_block(shared_variables, "project_id")
+    assert "default" not in variable_block(bootstrap, "project_id")
+    assert "default" not in variable_block(bootstrap, "state_bucket_name")
+
+
+def test_backend_declaration_is_isolated_for_speculative_plans() -> None:
+    backend = (TERRAFORM_ROOT / "backend.tf").read_text(encoding="utf-8")
+    versions = (TERRAFORM_ROOT / "versions.tf").read_text(encoding="utf-8")
+
+    assert 'backend "gcs" {}' in backend
+    assert "backend" not in versions
+
+
+def test_cloud_build_speculative_plan_copies_the_complete_root() -> None:
+    cloud_build = (ROOT / "cloudbuild.pr.yaml").read_text(encoding="utf-8")
+
+    assert "cp -R infra/terraform /tmp/tpp-terraform-plan" in cloud_build
+    assert "rm /tmp/tpp-terraform-plan/backend.tf" in cloud_build
+    assert "sed -i" not in cloud_build
+
+
+def test_pubsub_oidc_audience_matches_the_exact_push_endpoint() -> None:
+    pubsub = (TERRAFORM_ROOT / "pubsub.tf").read_text(encoding="utf-8")
+
+    assert "push_endpoint = local.telemetry_processor_push_endpoint" in pubsub
+    assert "audience              = local.telemetry_processor_push_endpoint" in pubsub

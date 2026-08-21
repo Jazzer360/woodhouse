@@ -1,12 +1,61 @@
 # Terraform
 
-This is an intentionally empty, valid Terraform root for Phase 1. It proves formatting, initialization, validation, and no-op planning without creating providers or production infrastructure.
+This root defines the Phase 2 shared GCP baseline for project `woodhouse-506215` in `us-central1`. It creates no per-user BigQuery datasets and no secret values.
 
-Phase 2 will add the shared GCP baseline described in `docs/architecture.md`. Per-user BigQuery datasets remain outside shared Terraform and are created by the idempotent Phase 3 admin workflow.
+## State bootstrap
+
+The `bootstrap/` root creates the versioned, private GCS bucket used by the shared root. Its one-resource local state is intentionally separate because Terraform cannot create its own backend bucket while using that backend.
 
 ```bash
-terraform fmt -check
-terraform init -backend=false
-terraform validate
-terraform plan -input=false -lock=false
+cp infra/terraform/bootstrap/terraform.tfvars.example \
+  infra/terraform/bootstrap/terraform.tfvars
+cp infra/terraform/terraform.tfvars.example \
+  infra/terraform/terraform.tfvars
+
+terraform -chdir=infra/terraform/bootstrap init
+terraform -chdir=infra/terraform/bootstrap plan \
+  -var-file=terraform.tfvars -out=bootstrap.tfplan
+terraform -chdir=infra/terraform/bootstrap apply bootstrap.tfplan
+
+terraform -chdir=infra/terraform init \
+  -backend-config=backend.gcs.tfbackend.example
 ```
+
+Keep the bootstrap state secure until the bucket is established. It is ignored by Git and can be reconstructed by importing the bucket if necessary.
+
+## Validate without GCP resource access
+
+PR validation disables refresh and produces a create-only speculative plan from a temporary copy with the backend declaration removed. The Google provider still requires an identity, but the Cloud Build validator has no GCP resource read or mutation roles. The checked-in Cloud Build configuration performs the temporary-copy step.
+
+```bash
+terraform -chdir=infra/terraform/bootstrap fmt -check
+terraform -chdir=infra/terraform/bootstrap init -backend=false
+terraform -chdir=infra/terraform/bootstrap validate
+terraform -chdir=infra/terraform/bootstrap plan \
+  -refresh=false -input=false -lock=false \
+  -var=project_id=woodhouse-506215 \
+  -var=state_bucket_name=woodhouse-506215-tpp-tfstate
+
+terraform -chdir=infra/terraform fmt -check
+terraform -chdir=infra/terraform init -backend=false
+terraform -chdir=infra/terraform validate
+```
+
+A normal plan from the shared root requires the bootstrapped GCS backend and operator Application Default Credentials; use the live-plan commands below for that authoritative review.
+
+## Live plan and apply
+
+After authenticating with the documented bootstrap permissions and initializing the GCS backend:
+
+```bash
+terraform -chdir=infra/terraform plan \
+  -var-file=terraform.tfvars -out=shared.tfplan
+terraform -chdir=infra/terraform apply shared.tfplan
+```
+
+Both roots require an explicit project ID, and bootstrap additionally requires
+an explicit globally unique state-bucket name. The checked-in examples document
+the intended deployment without making a bare `terraform apply` target the real
+project automatically.
+
+Review saved plans before applying. Never commit plan or state files. See [deployment.md](../../docs/deployment.md) for resources, IAM, bootstrap permissions, imports, and operating boundaries.
