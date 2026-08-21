@@ -1,0 +1,51 @@
+[project]
+name = "tesla-personal-platform"
+version = "0.0.0"
+description = "Phase 1 monorepo scaffold for the Tesla Personal Platform"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "hatchling>=1.27,<2",
+  "mypy>=1.15,<2",
+  "pip-audit>=2.8,<3",
+  "pytest>=9.0.3,<10",
+  "ruff>=0.11,<1",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*", "services/*"]
+
+[tool.pytest.ini_options]
+addopts = ["--strict-config", "--strict-markers"]
+testpaths = ["tests"]
+
+[tool.mypy]
+explicit_package_bases = true
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+mypy_path = [
+  "packages/analytics/src",
+  "packages/auth/src",
+  "packages/event-schema/src",
+  "packages/shared-models/src",
+  "packages/tesla-client/src",
+  "services/mcp-gateway/src",
+  "services/telemetry-edge/src",
+  "services/telemetry-processor/src",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "S", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]

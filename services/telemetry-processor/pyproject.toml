@@ -1,0 +1,16 @@
+[project]
+name = "tpp-telemetry-processor"
+version = "0.0.0"
+description = "Telemetry processor service scaffold"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[project.scripts]
+telemetry-processor = "tesla_personal_platform.telemetry_processor.main:main"
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tesla_personal_platform"]
