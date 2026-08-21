@@ -17,6 +17,8 @@ resource "google_artifact_registry_repository" "platform" {
   depends_on = [google_project_service.required]
 }
 
+# Cloud Run's service agent pulls same-project images. The runtime service
+# accounts execute application code and intentionally receive no repository IAM.
 resource "google_artifact_registry_repository_iam_member" "deployer_writer" {
   project    = var.project_id
   location   = google_artifact_registry_repository.platform.location

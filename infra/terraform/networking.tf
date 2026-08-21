@@ -35,6 +35,8 @@ resource "google_compute_firewall" "fleet_telemetry" {
   direction   = "INGRESS"
   priority    = 1000
 
+  # Fleet Telemetry requires a public receiver, and Tesla does not publish a
+  # stable sender CIDR list. Restrict by one port and the edge service account.
   source_ranges           = ["0.0.0.0/0"]
   target_service_accounts = [google_service_account.platform["telemetry_edge"].email]
 

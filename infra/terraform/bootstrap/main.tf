@@ -1,7 +1,6 @@
 variable "project_id" {
   description = "GCP project that owns the Terraform state bucket."
   type        = string
-  default     = "woodhouse-506215"
 }
 
 variable "region" {
@@ -13,7 +12,6 @@ variable "region" {
 variable "state_bucket_name" {
   description = "Globally unique GCS bucket name for shared Terraform state."
   type        = string
-  default     = "woodhouse-506215-tpp-tfstate"
 }
 
 provider "google" {

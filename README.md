@@ -49,7 +49,9 @@ uv run pip-audit --strict --requirement .uv-cache/audit-requirements.txt
 terraform -chdir=infra/terraform fmt -check
 terraform -chdir=infra/terraform/bootstrap init -backend=false
 terraform -chdir=infra/terraform/bootstrap validate
-terraform -chdir=infra/terraform/bootstrap plan -refresh=false -input=false -lock=false
+terraform -chdir=infra/terraform/bootstrap plan -refresh=false -input=false -lock=false \
+  -var=project_id=woodhouse-506215 \
+  -var=state_bucket_name=woodhouse-506215-tpp-tfstate
 terraform -chdir=infra/terraform init -backend=false
 terraform -chdir=infra/terraform validate
 docker build -f services/mcp-gateway/Dockerfile .

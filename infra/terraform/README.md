@@ -7,8 +7,14 @@ This root defines the Phase 2 shared GCP baseline for project `woodhouse-506215`
 The `bootstrap/` root creates the versioned, private GCS bucket used by the shared root. Its one-resource local state is intentionally separate because Terraform cannot create its own backend bucket while using that backend.
 
 ```bash
+cp infra/terraform/bootstrap/terraform.tfvars.example \
+  infra/terraform/bootstrap/terraform.tfvars
+cp infra/terraform/terraform.tfvars.example \
+  infra/terraform/terraform.tfvars
+
 terraform -chdir=infra/terraform/bootstrap init
-terraform -chdir=infra/terraform/bootstrap plan -out=bootstrap.tfplan
+terraform -chdir=infra/terraform/bootstrap plan \
+  -var-file=terraform.tfvars -out=bootstrap.tfplan
 terraform -chdir=infra/terraform/bootstrap apply bootstrap.tfplan
 
 terraform -chdir=infra/terraform init \
@@ -25,7 +31,10 @@ PR validation disables refresh and produces a create-only speculative plan from 
 terraform -chdir=infra/terraform/bootstrap fmt -check
 terraform -chdir=infra/terraform/bootstrap init -backend=false
 terraform -chdir=infra/terraform/bootstrap validate
-terraform -chdir=infra/terraform/bootstrap plan -refresh=false -input=false -lock=false
+terraform -chdir=infra/terraform/bootstrap plan \
+  -refresh=false -input=false -lock=false \
+  -var=project_id=woodhouse-506215 \
+  -var=state_bucket_name=woodhouse-506215-tpp-tfstate
 
 terraform -chdir=infra/terraform fmt -check
 terraform -chdir=infra/terraform init -backend=false
@@ -39,8 +48,14 @@ A normal plan from the shared root requires the bootstrapped GCS backend and ope
 After authenticating with the documented bootstrap permissions and initializing the GCS backend:
 
 ```bash
-terraform -chdir=infra/terraform plan -out=shared.tfplan
+terraform -chdir=infra/terraform plan \
+  -var-file=terraform.tfvars -out=shared.tfplan
 terraform -chdir=infra/terraform apply shared.tfplan
 ```
+
+Both roots require an explicit project ID, and bootstrap additionally requires
+an explicit globally unique state-bucket name. The checked-in examples document
+the intended deployment without making a bare `terraform apply` target the real
+project automatically.
 
 Review saved plans before applying. Never commit plan or state files. See [deployment.md](../../docs/deployment.md) for resources, IAM, bootstrap permissions, imports, and operating boundaries.

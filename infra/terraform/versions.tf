@@ -12,5 +12,4 @@ terraform {
     }
   }
 
-  backend "gcs" {}
 }

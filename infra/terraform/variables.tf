@@ -1,7 +1,6 @@
 variable "project_id" {
   description = "GCP project that hosts the Tesla Personal Platform."
   type        = string
-  default     = "woodhouse-506215"
 }
 
 variable "region" {

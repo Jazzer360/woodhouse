@@ -37,7 +37,7 @@ The telemetry VM has exactly two ingress rules:
 - TCP `443` from the public internet to the telemetry-edge service account;
 - TCP `22` only from Google's IAP TCP-forwarding range `35.235.240.0/20`.
 
-Tesla's current Fleet Telemetry overview requires a publicly reachable server but does not prescribe a port on that page. Port `443` is the documented platform default and is configurable through `fleet_telemetry_port`; Phase 7 must make the vehicle configuration, receiver listener, certificate, and firewall agree. No process listens on that port in Phase 2.
+Tesla's current Fleet Telemetry overview requires a publicly reachable server but does not prescribe a port on that page or publish stable source CIDRs that can safely replace `0.0.0.0/0`. Port `443` is the documented platform default and is configurable through `fleet_telemetry_port`; Phase 7 must make the vehicle configuration, receiver listener, certificate, and firewall agree. The rule targets only the telemetry-edge service account and that single TCP port. No process listens on that port in Phase 2. If Tesla later publishes an authoritative sender range, restrict the rule in the same reviewed change that verifies receiver delivery.
 
 Project SSH keys are blocked, OS Login is required, and no direct public SSH rule exists. The VM service account can publish to the raw topic and write logs/metrics. It has no Tesla OAuth, command-key, Secret Manager, Firestore, or BigQuery access.
 
@@ -55,6 +55,8 @@ Project SSH keys are blocked, OS Login is required, and no direct public SSH rul
 | `tpp-build-deployer` | Artifact Registry writer on this repository, Cloud Run developer, and `actAs` only on the two Cloud Run runtime accounts |
 
 The Cloud Build service agent may mint tokens only for the two custom build identities. Neither build identity receives Owner, Editor, Secret Manager access, BigQuery data access, or vehicle-VM administration.
+
+[Cloud Run uses its service agent to access deployed container images](https://cloud.google.com/run/docs/securing/service-identity#service-agent), and same-project Artifact Registry access needs no additional runtime-account grant. The `tpp-mcp-gateway` and `tpp-telemetry-processor` runtime identities therefore do not receive `roles/artifactregistry.reader`; adding it would expose repository contents to application code without helping Cloud Run pull an image. Cross-project repositories would instead require an explicit reader grant to the Cloud Run service agent.
 
 ### Phase 3 per-user dataset contract
 
@@ -106,15 +108,24 @@ admin_principals = ["user:operator@example.com"]
 The small `infra/terraform/bootstrap` root uses local state once to create `woodhouse-506215-tpp-tfstate`. The bucket has uniform access, enforced public-access prevention, object versioning, and cleanup of old noncurrent versions after 90 days while retaining at least 20 newer versions. It deliberately has no bucket retention policy because that can prevent Terraform from deleting its own state-lock object.
 
 ```bash
+cp infra/terraform/bootstrap/terraform.tfvars.example \
+  infra/terraform/bootstrap/terraform.tfvars
+cp infra/terraform/terraform.tfvars.example \
+  infra/terraform/terraform.tfvars
+
 terraform -chdir=infra/terraform/bootstrap init
-terraform -chdir=infra/terraform/bootstrap plan -out=bootstrap.tfplan
+terraform -chdir=infra/terraform/bootstrap plan \
+  -var-file=terraform.tfvars -out=bootstrap.tfplan
 terraform -chdir=infra/terraform/bootstrap apply bootstrap.tfplan
 
 terraform -chdir=infra/terraform init \
   -backend-config=backend.gcs.tfbackend.example
-terraform -chdir=infra/terraform plan -out=shared.tfplan
+terraform -chdir=infra/terraform plan \
+  -var-file=terraform.tfvars -out=shared.tfplan
 terraform -chdir=infra/terraform apply shared.tfplan
 ```
+
+Review the copied, ignored `.tfvars` files before planning. Both Terraform roots require `project_id`; bootstrap also requires `state_bucket_name`. This keeps `woodhouse-506215` as the documented deployment choice while preventing an unparameterized clone or bare apply from silently targeting it.
 
 State operators need `roles/storage.objectAdmin` on the state bucket. Keep the bootstrap state protected until the bucket exists; it contains no secret values, is ignored by Git, and can be reconstructed by importing the bucket. Do not place runtime secrets in Terraform input because ordinary resource attributes may appear in state.
 
@@ -122,7 +133,7 @@ If Firestore or the state bucket already exists, import it rather than attemptin
 
 ## Cloud Build flow
 
-PR validation uses `cloudbuild.pr.yaml` with the validator identity. It runs Python quality/tests/audit, container builds, Terraform formatting/validation, and `-refresh=false` speculative plans for both Terraform roots. For the shared root it plans a temporary copy without the GCS backend declaration, so the result checks the complete create graph rather than live drift. The validator has only log-writing permission and cannot read or mutate GCP resources.
+PR validation uses `cloudbuild.pr.yaml` with the validator identity. It runs Python quality/tests/audit, container builds, Terraform formatting/validation, and `-refresh=false` speculative plans for both Terraform roots. For the shared root it copies the complete Terraform directory, excluding only the nested bootstrap root, generated `.terraform` data, and the dedicated `backend.tf`, so future modules, templates, and other Terraform inputs participate automatically. The result checks the complete create graph rather than live drift. The validator has only log-writing permission and cannot read or mutate GCP resources.
 
 The GitHub repository connection and trigger are external bootstrap concerns, so Terraform does not guess their connection IDs. Configure the PR trigger to use `tpp-build-validator`. A later main-branch delivery trigger uses `tpp-build-deployer` to push images tagged by the full commit SHA and deploy only the affected Cloud Run services. Terraform ignores the deployed container-image field so a later infrastructure plan cannot roll an application back to the Phase 2 placeholder.
 
