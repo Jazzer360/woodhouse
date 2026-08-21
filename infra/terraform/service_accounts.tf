@@ -24,6 +24,10 @@ locals {
       account_id   = "tpp-build-deployer"
       display_name = "Tesla Personal Platform application deployer"
     }
+    user_admin = {
+      account_id   = "tpp-user-admin"
+      display_name = "Tesla Personal Platform manual user administrator"
+    }
   }
 }
 

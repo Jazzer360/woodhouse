@@ -1,9 +1,9 @@
 [project]
 name = "tesla-personal-platform"
 version = "0.0.0"
-description = "Phase 1 monorepo scaffold for the Tesla Personal Platform"
+description = "Personal Tesla platform monorepo"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = ["tpp-auth[admin]"]
 
 [dependency-groups]
 dev = [
@@ -16,6 +16,9 @@ dev = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+tpp-auth = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/*", "services/*"]

@@ -1,6 +1,12 @@
 # Terraform
 
-This root defines the Phase 2 shared GCP baseline for project `woodhouse-506215` in `us-central1`. It creates no per-user BigQuery datasets and no secret values.
+This root defines the shared GCP baseline for project `woodhouse-506215` in `us-central1`. Phase 3 adds the keyless manual user-admin identity and fail-closed OIDC configuration for mcp-gateway. Terraform still creates no per-user BigQuery datasets and no secret values.
+
+Set `user_admin_principals` for operators who may impersonate
+`tpp-user-admin`. Set `oidc_audience` to the Google OAuth client ID, then set
+`enable_mcp_external_access = true` only after the authenticated gateway image
+is deployed. See [deployment.md](../../docs/deployment.md) for the complete IAM
+and manual add-user workflow.
 
 ## State bootstrap
 

@@ -51,7 +51,20 @@ resource "google_cloud_run_v2_service" "platform" {
 
       env {
         name  = "APP_ENV"
-        value = "phase-2-placeholder"
+        value = each.key == "mcp_gateway" ? "phase-3-platform-auth" : "phase-2-placeholder"
+      }
+
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = var.project_id
+      }
+
+      dynamic "env" {
+        for_each = each.key == "mcp_gateway" && var.oidc_audience != null ? [var.oidc_audience] : []
+        content {
+          name  = "OIDC_AUDIENCE"
+          value = env.value
+        }
       }
     }
   }
@@ -67,6 +80,23 @@ resource "google_cloud_run_v2_service" "platform" {
   }
 
   depends_on = [google_project_service.required]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "mcp_external_invoker" {
+  count = var.enable_mcp_external_access ? 1 : 0
+
+  project  = var.project_id
+  location = google_cloud_run_v2_service.platform["mcp_gateway"].location
+  name     = google_cloud_run_v2_service.platform["mcp_gateway"].name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+
+  lifecycle {
+    precondition {
+      condition     = var.oidc_audience == null ? false : length(trimspace(var.oidc_audience)) > 0
+      error_message = "enable_mcp_external_access requires a configured oidc_audience."
+    }
+  }
 }
 
 resource "google_cloud_run_v2_service_iam_member" "pubsub_processor_invoker" {

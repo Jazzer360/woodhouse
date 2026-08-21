@@ -55,6 +55,11 @@ output "cloud_build_service_accounts" {
   }
 }
 
+output "user_admin_service_account" {
+  description = "Keyless identity used by the manual add-user and disable-user workflows."
+  value       = google_service_account.platform["user_admin"].email
+}
+
 output "secret_containers" {
   description = "Secret Manager container IDs; Terraform creates no secret versions."
   value       = { for key, secret in google_secret_manager_secret.platform : key => secret.secret_id }

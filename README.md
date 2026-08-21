@@ -1,6 +1,6 @@
 # Tesla Personal Platform
 
-Personal-first Tesla platform monorepo for authenticated live vehicle access, permanent telemetry history, generic analytics, and optional semantic events. The repository Markdown is the implementation source of truth. Phase 2 defines the shared GCP baseline in Terraform but still implements no Tesla, OAuth, command, or telemetry behavior.
+Personal-first Tesla platform monorepo for authenticated live vehicle access, permanent telemetry history, generic analytics, and optional semantic events. The repository Markdown is the implementation source of truth. Phase 3 implements the Google OIDC-compatible platform identity boundary, manual allowlist, and isolated user-dataset provisioning; Tesla OAuth, vehicle behavior, commands, and telemetry remain unimplemented.
 
 ## Source of truth
 
@@ -17,7 +17,7 @@ Personal-first Tesla platform monorepo for authenticated live vehicle access, pe
 
 ## Stack choice
 
-The scaffold uses Python 3.12 in a `uv` workspace, with Ruff, mypy, pytest, and pip-audit. Python is a small practical fit for MCP, GCP clients, analytics, and shared models, while the Phase 1 service processes require only the standard library. No web framework or cloud SDK is included before a concrete phase needs one.
+The platform uses Python 3.12 in a `uv` workspace, with Ruff, mypy, pytest, and pip-audit. Phase 3 adds only the official Google authentication, Firestore, and BigQuery clients needed for its concrete boundaries; the gateway still uses the standard-library HTTP server and adds no web framework.
 
 `telemetry-edge` is only a health-checkable container placeholder. Phase 7 must re-evaluate its implementation against Tesla's current official Fleet Telemetry receiver; adopting the official receiver or a small Go adapter then is preferable to introducing a second language now.
 

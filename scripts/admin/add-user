@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Idempotently add or repair a manually approved platform user."""
+
+from tesla_personal_platform.auth.cli import add_user_main
+
+raise SystemExit(add_user_main())

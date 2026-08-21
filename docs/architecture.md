@@ -102,11 +102,17 @@ Recommended record:
 allowed_users/{normalized_email}
   status: active | disabled
   user_id: opaque internal ID
+  dataset_id: opaque server-controlled BigQuery dataset ID
   oidc_issuer: null until first successful login
   oidc_subject: null until first successful login
   created_at
   notes
 ```
+
+An `oidc_identities/{sha256(issuer + NUL + subject)}` lookup record may mirror the
+binding so authorization can resolve by immutable identity without querying or
+trusting the token's current email. The allowlist record remains authoritative;
+the lookup record is created in the same Firestore transaction as the first bind.
 
 Initial flow:
 

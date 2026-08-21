@@ -1,9 +1,12 @@
 [project]
 name = "tpp-mcp-gateway"
 version = "0.0.0"
-description = "MCP gateway service scaffold"
+description = "Authenticated MCP gateway boundary"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = ["tpp-auth"]
+
+[tool.uv.sources]
+tpp-auth = { workspace = true }
 
 [project.scripts]
 mcp-gateway = "tesla_personal_platform.mcp_gateway.main:main"

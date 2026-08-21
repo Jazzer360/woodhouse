@@ -3,7 +3,13 @@ name = "tpp-auth"
 version = "0.0.0"
 description = "Authentication and authorization boundary for the Tesla Personal Platform"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+  "google-auth>=2.38,<3",
+  "google-cloud-firestore>=2.20,<3",
+]
+
+[project.optional-dependencies]
+admin = ["google-cloud-bigquery>=3.30,<4"]
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]
