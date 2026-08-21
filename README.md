@@ -1,6 +1,6 @@
 # Tesla Personal Platform
 
-Personal-first Tesla platform monorepo for authenticated live vehicle access, permanent telemetry history, generic analytics, and optional semantic events. The repository Markdown is the implementation source of truth; Phase 1 contains scaffolding only and makes no Tesla or GCP calls.
+Personal-first Tesla platform monorepo for authenticated live vehicle access, permanent telemetry history, generic analytics, and optional semantic events. The repository Markdown is the implementation source of truth. Phase 2 defines the shared GCP baseline in Terraform but still implements no Tesla, OAuth, command, or telemetry behavior.
 
 ## Source of truth
 
@@ -26,7 +26,7 @@ The scaffold uses Python 3.12 in a `uv` workspace, with Ruff, mypy, pytest, and 
 ```text
 services/                 mcp-gateway, telemetry-processor, telemetry-edge
 packages/                 tesla-client, auth, shared-models, analytics, event-schema
-infra/terraform/          empty validated Terraform root for Phase 2
+infra/terraform/          shared GCP baseline and one-time state bootstrap
 scripts/admin/            manual administration entry points added in later phases
 scripts/dev/              local development notes
 docs/runbooks/            operational placeholders completed by relevant phases
@@ -47,12 +47,16 @@ uv run pytest
 uv export --frozen --all-packages --no-emit-workspace --output-file .uv-cache/audit-requirements.txt --quiet
 uv run pip-audit --strict --requirement .uv-cache/audit-requirements.txt
 terraform -chdir=infra/terraform fmt -check
+terraform -chdir=infra/terraform/bootstrap init -backend=false
+terraform -chdir=infra/terraform/bootstrap validate
+terraform -chdir=infra/terraform/bootstrap plan -refresh=false -input=false -lock=false
 terraform -chdir=infra/terraform init -backend=false
 terraform -chdir=infra/terraform validate
-terraform -chdir=infra/terraform plan -input=false -lock=false
 docker build -f services/mcp-gateway/Dockerfile .
 docker build -f services/telemetry-processor/Dockerfile .
 docker build -f services/telemetry-edge/Dockerfile .
 ```
+
+The shared-root speculative plan is generated from a backend-free temporary copy in `cloudbuild.pr.yaml`. Authoritative local plans use the bootstrapped GCS backend described in [deployment notes](docs/deployment.md).
 
 The Cloud Build PR configuration runs the same categories without deploying or contacting real vehicles.

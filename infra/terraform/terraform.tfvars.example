@@ -1,0 +1,11 @@
+project_id = "woodhouse-506215"
+region     = "us-central1"
+zone       = "us-central1-a"
+
+# Use IAM member syntax. Keep empty until the operator identity is known.
+# admin_principals = ["user:operator@example.com"]
+
+# Add existing Monitoring notification-channel resource names when available.
+# monitoring_notification_channels = [
+#   "projects/woodhouse-506215/notificationChannels/1234567890",
+# ]

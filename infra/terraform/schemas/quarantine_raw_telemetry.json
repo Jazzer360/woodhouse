@@ -1,0 +1,62 @@
+[
+  {
+    "name": "source_timestamp",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "Timestamp supplied by the vehicle telemetry record."
+  },
+  {
+    "name": "ingested_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "Timestamp at which the platform received the record."
+  },
+  {
+    "name": "vin",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Vehicle VIN when present; never used to guess ownership."
+  },
+  {
+    "name": "tesla_vehicle_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Tesla vehicle identifier when present."
+  },
+  {
+    "name": "record_type",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Decoded telemetry record or message type."
+  },
+  {
+    "name": "payload",
+    "type": "JSON",
+    "mode": "REQUIRED",
+    "description": "Complete decoded telemetry payload."
+  },
+  {
+    "name": "telemetry_config_version",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Telemetry configuration version or hash when available."
+  },
+  {
+    "name": "transport_message_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Transport identifier retained for delivery diagnostics."
+  },
+  {
+    "name": "telemetry_client_version",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Vehicle telemetry client version when available."
+  },
+  {
+    "name": "quarantine_reason",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Reason trusted ownership routing could not complete."
+  }
+]

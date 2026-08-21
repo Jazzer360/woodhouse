@@ -42,10 +42,19 @@ steps:
     args:
       - -ceu
       - |
+        terraform -chdir=infra/terraform/bootstrap fmt -check
+        terraform -chdir=infra/terraform/bootstrap init -backend=false
+        terraform -chdir=infra/terraform/bootstrap validate
+        terraform -chdir=infra/terraform/bootstrap plan -refresh=false -input=false -lock=false -no-color
         terraform -chdir=infra/terraform fmt -check
         terraform -chdir=infra/terraform init -backend=false
         terraform -chdir=infra/terraform validate
-        terraform -chdir=infra/terraform plan -input=false -lock=false
+        mkdir -p /tmp/tpp-terraform-plan
+        cp infra/terraform/*.tf infra/terraform/.terraform.lock.hcl /tmp/tpp-terraform-plan/
+        cp -R infra/terraform/schemas /tmp/tpp-terraform-plan/schemas
+        sed -i '/backend "gcs" {}/d' /tmp/tpp-terraform-plan/versions.tf
+        terraform -chdir=/tmp/tpp-terraform-plan init -backend=false
+        terraform -chdir=/tmp/tpp-terraform-plan plan -refresh=false -input=false -lock=false -no-color
 
   - id: build-mcp-gateway
     name: gcr.io/cloud-builders/docker
