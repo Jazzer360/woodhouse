@@ -1,0 +1,233 @@
+# Data and Analytics Architecture
+
+## 1. Core rule
+
+**Throttle at the source; preserve at the destination.**
+
+Tesla Fleet Telemetry config determines transmission frequency. Once a valid event reaches our telemetry endpoint, store it indefinitely.
+
+No downstream time sampling, value thinning, or retention expiration by default.
+
+---
+
+## 2. Ingestion path
+
+```text
+Vehicle
+  -> Fleet Telemetry
+  -> Telemetry VM
+  -> Pub/Sub raw topic
+  -> Telemetry Processor
+  -> authenticated owner's BigQuery dataset
+```
+
+Pub/Sub is a durability buffer, not a filter.
+
+The processor must acknowledge Pub/Sub only after the raw event has been durably accepted for persistence according to the chosen implementation.
+
+---
+
+## 3. Per-user BigQuery dataset
+
+Each manually approved platform user has one dataset:
+
+```text
+tesla_u_<opaque_user_id>
+```
+
+No default dataset/table expiration.
+
+All of that user's vehicles are in the same dataset and identified by `vehicle_id`.
+
+This allows questions such as:
+
+- compare my two cars;
+- show all trips regardless of vehicle;
+- show only Woodhouse history.
+
+---
+
+## 4. Raw telemetry table
+
+Recommended baseline:
+
+```text
+raw_telemetry_events
+  source_timestamp TIMESTAMP
+  ingested_at TIMESTAMP
+  vehicle_id STRING
+  vin STRING
+  tesla_vehicle_id STRING
+  record_type STRING
+  payload JSON / typed nested structure
+  telemetry_config_version STRING
+  transport_message_id STRING
+  telemetry_client_version STRING
+```
+
+Partition by:
+
+```text
+DATE(source_timestamp)
+```
+
+Cluster by:
+
+```text
+vehicle_id, record_type
+```
+
+Preserve the complete decoded event payload.
+
+Do not throw away fields after promoting commonly queried values to typed columns/views.
+
+---
+
+## 5. Every valid event means every observation
+
+If Tesla emits a record to our server, we keep it.
+
+Do not discard an event because:
+
+- the same field was stored seconds ago;
+- the value changed only slightly;
+- a downstream derived table does not currently use it;
+- storage is expected to grow.
+
+Exact transport redeliveries may appear more than once in the raw table. Preserve message IDs so analytical views may de-duplicate retry deliveries without losing original provenance.
+
+---
+
+## 6. Source vs ingestion timestamp
+
+Tesla can buffer messages during connectivity loss and later deliver them.
+
+Always preserve both:
+
+- `source_timestamp` -> when the vehicle observation occurred;
+- `ingested_at` -> when our infrastructure received it.
+
+Historical chronology uses source time. Transport health diagnostics use both.
+
+---
+
+## 7. Derived analytical layer
+
+Raw truth remains permanent. Build derived views/materialized tables on top.
+
+Initial useful concepts:
+
+```text
+drives
+charge_sessions
+media_history
+semantic_events
+vehicle_state_changes
+daily_vehicle_summary
+```
+
+Possible later concepts:
+
+```text
+trips
+geofence_visits
+parked_energy_intervals
+efficiency_by_temperature
+self_driving_summary
+charging_cost_summary
+```
+
+If derivation logic changes, rebuild from raw history rather than attempting to repair old derived rows manually.
+
+---
+
+## 8. Media history is first-class
+
+Configure and retain available Tesla media telemetry such as:
+
+- title;
+- artist;
+- album;
+- station;
+- playback source;
+- playback status;
+- duration;
+- elapsed position.
+
+Derived `media_history` should reconstruct track/playback intervals from emitted changes.
+
+This enables questions such as:
+
+> What did I listen to on the Colorado trip?
+
+The model can locate the trip by drive/location data, then join the time window against `media_history`.
+
+No dedicated playlist endpoint is required.
+
+---
+
+## 9. Generic analytics MCP tools
+
+### `get_analytics_schema`
+
+Return only the authenticated user's analytical namespace.
+
+Include:
+
+- tables/views;
+- fields/types/descriptions;
+- likely join keys;
+- partition fields;
+- example queries where helpful.
+
+### `run_analytics_query`
+
+The model authors SQL specific to the question.
+
+Security requirements:
+
+- Standard SQL only;
+- one read-only statement;
+- `SELECT` / `WITH` only;
+- current user's dataset as server-set default;
+- reject explicit project/dataset references;
+- reject DML/DDL/EXPORT/external/remote operations;
+- validate with a parser/AST;
+- dry-run first;
+- timeout and result-size bounds;
+- maximum-bytes safety cap.
+
+The safety cap prevents accidental giant queries. It is not a per-user commercial quota.
+
+---
+
+## 10. Current state does not belong in the history path
+
+Ordinary questions about current vehicle state should use Tesla Fleet API via MCP.
+
+BigQuery may have a very recent event but is not the authoritative realtime command/read path.
+
+Use BigQuery for history, trends, correlations, reconstructed sessions, and open-ended analysis.
+
+---
+
+## 11. Unknown vehicle routing
+
+The processor resolves raw telemetry VIN against the Firestore vehicle registry.
+
+If no owner mapping exists:
+
+- never guess;
+- do not write to a user's dataset;
+- preserve the record in a restricted system/quarantine path;
+- log/alert for repair.
+
+---
+
+## 12. Future broader personal analytics MCP
+
+Design BigQuery schemas cleanly because Tesla data may later be queried beside other personal datasets (music APIs, finance, health/wellness, home energy, etc.).
+
+The Tesla-specific MCP should still keep its own analytics tools now; a future general personal analytics MCP can point at the same warehouse or authorized views later.
+
+Do not make the Tesla platform dependent on that future project.
