@@ -35,11 +35,15 @@ class _Handler(BaseHTTPRequestHandler):
         super().log_message(format, *args)
 
 
+class _Server(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 def main() -> None:
     """Run the scaffold health server."""
     host = os.environ.get("HOST", DEFAULT_HOST)
     port = int(os.environ.get("PORT", str(DEFAULT_PORT)))
-    ThreadingHTTPServer((host, port), _Handler).serve_forever()
+    _Server((host, port), _Handler).serve_forever()
 
 
 if __name__ == "__main__":

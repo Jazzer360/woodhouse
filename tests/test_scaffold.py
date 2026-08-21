@@ -27,7 +27,9 @@ def test_documented_boundaries_exist() -> None:
         "services/telemetry-processor",
     }
 
-    assert all((ROOT / path).is_dir() for path in expected)
+    missing = sorted(path for path in expected if not (ROOT / path).is_dir())
+
+    assert not missing, f"Missing documented directories: {', '.join(missing)}"
 
 
 def test_seed_documents_remain_present() -> None:
