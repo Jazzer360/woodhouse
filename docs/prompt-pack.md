@@ -29,6 +29,26 @@ The Word field guide is background material for the human operator. Coding agent
 6. Automated tests must never issue commands to a real vehicle or automatically alter a real vehicle's telemetry configuration.
 7. If a phase reaches a step that requires a real Tesla login, real key pairing, production secret value, or real command, implement the code/runbook and stop at a clearly documented manual validation step unless explicitly instructed otherwise.
 8. Keep changes reviewable. A phase may use multiple commits, but it should not silently expand into unrelated platform work.
+9. Treat real external setup as part of the phase, not as an implicit afterthought. When the implementation reaches an external prerequisite or live-validation boundary, stop and walk the operator through it.
+10. A phase that has a required live/operator checkpoint must not be described as fully complete merely because mocks, unit tests, Terraform validation, or CI pass. Record the checkpoint as **passed**, **manually deferred**, or **blocked**.
+
+### Operator checkpoint protocol
+
+Whenever a phase requires an action outside the repository—such as configuring a provider console, entering a secret, authenticating an account, approving OAuth consent, changing DNS, pairing a Tesla Virtual Key, applying a real telemetry configuration, or approving a real vehicle command—the agent must pause and present an **OPERATOR CHECKPOINT**.
+
+Use this format:
+
+1. **Why this is needed** — explain what external trust/configuration boundary is being crossed.
+2. **What is already complete** — summarize the code/infrastructure that is ready.
+3. **What you need to do** — give exact numbered steps, including the current official console/page names, fields, redirect/origin URLs, DNS records, commands, or buttons as applicable.
+4. **Values/secrets involved** — identify which values are needed and where the operator should enter them. Never ask the operator to paste secrets, OAuth tokens, private keys, PINs, or service-account keys into chat. Prefer Secret Manager/provider consoles/secure CLI prompts.
+5. **What I will verify afterward** — list the exact safe checks the agent will perform after the operator confirms completion.
+6. **Expected success state** — state what the operator and agent should see when it worked.
+7. **If it fails** — provide the first diagnostic commands/log locations to inspect without making destructive changes.
+
+After presenting a required checkpoint, wait for the operator to confirm the manual step is complete before performing dependent live actions.
+
+Prefer automation for safe, deterministic setup that the authenticated development environment can perform. Do not force the operator through console clicks when an existing script/Terraform/CLI flow is already the documented path. Conversely, do not automate consent, private-key pairing, production secret entry, destructive operations, or real vehicle commands that require explicit human intent.
 
 Core implementation phases are 1-9 and 11. Phase 10 (semantic events/webhooks) is planned but optional; it can be deferred without compromising live vehicle access, permanent telemetry history, or generic analytics.
 
@@ -66,6 +86,8 @@ Implement the shared GCP baseline in Terraform, targeting us-central1 unless a d
 Provision the shared BigQuery/project-level prerequisites and a restricted system/quarantine destination for telemetry whose vehicle ownership cannot be resolved. Do not statically create per-user BigQuery datasets in Terraform; those are created idempotently by the manual add-user workflow so adding a friend does not require a Terraform rollout. Ensure the architecture supports granting the telemetry processor write access and the MCP gateway read/query access to each newly created user dataset.
 
 Do not implement Tesla behavior yet. Do not put real secret values in Terraform, tfvars, build substitutions, state examples, or documentation. Add/update docs/deployment.md with the resource map, IAM intent, environment/bootstrap steps, and deployment flow. Run terraform fmt, validate, and a non-destructive plan where possible, and summarize the plan and any IAM tradeoffs.
+
+If the real GCP environment is not yet ready for deployment, finish with an OPERATOR CHECKPOINT that walks the operator through only the external prerequisites that cannot be performed safely from the repository workflow—for example selecting/creating the GCP project, attaching billing, authenticating the local gcloud/Terraform session, or granting the bootstrap identity the minimum temporary permissions needed to apply the baseline. Give exact current commands/console fields and then, after confirmation, verify the active project/account and run a non-destructive Terraform plan. If the operator chooses to apply the baseline during this phase, verify the resulting resources and IAM rather than assuming `terraform apply` success is sufficient.
 ```
 
 ### Phase 2 completion check
@@ -87,6 +109,8 @@ Implement the simple platform authentication and manual allowlist model. Reuse t
 Implement idempotent admin commands such as scripts/admin/add-user and scripts/admin/disable-user. add-user must create/update the Firestore allowlist record, create the user's opaque BigQuery dataset with no default expiration, and configure the dataset access needed by mcp-gateway for read/query and telemetry-processor for append/write. The MCP server must resolve user context server-side and reject caller-supplied user IDs, dataset IDs, and ownership claims.
 
 Do not add public signup, organizations, memberships, plans, billing, usage quotas, or SaaS-style rate-limit product logic. Add tests for non-allowlisted login, unverified email, first-login immutable binding, later email changes, issuer/subject mismatch, disabled users, and attempts to cross user boundaries. Document the manual 'add Homer' workflow.
+
+Finish with an OPERATOR CHECKPOINT for the first real approved user. If the selected OIDC provider requires external console configuration, give the operator the exact current steps for creating/configuring the OAuth/OIDC client, consent settings, authorized origins/redirect URIs, and where the resulting client secret belongs in Secret Manager/runtime configuration. Then walk the operator through: (1) adding their email with `scripts/admin/add-user`; (2) performing one real login; and (3) confirming the immutable issuer+subject binding. After the operator completes the login, run safe verification that the user record exists, the opaque BigQuery dataset was created with no expiration, expected dataset IAM is present, and a non-allowlisted or disabled identity is rejected. Do not mark Phase 3 live validation passed until those checks succeed or the operator explicitly defers them.
 ```
 
 ### Phase 3 completion check
@@ -108,6 +132,10 @@ Implement Tesla onboarding in mcp-gateway: the required public .well-known appli
 Support multiple vehicles per Tesla account from the first implementation. Each discovered vehicle gets an internal vehicle_id owned by the authenticated platform user. Implement vehicle-specific Virtual Key pairing links/status and fleet-status verification. Pairing remains a user-in-the-loop Tesla action; do not pretend OAuth automatically pairs every vehicle. Do not configure broad Fleet Telemetry yet and do not expose broad vehicle commands yet.
 
 Tesla client secret and the application EC private signing key must come only from Secret Manager/runtime secret injection and must never be logged or returned to MCP clients. Add comprehensive mocks/tests for callback user binding, token rotation, multiple vehicles, partial pairing, revoked/expired auth, and cross-user vehicle isolation. CI must not contact a real Tesla account or vehicle.
+
+Finish with a required OPERATOR CHECKPOINT for first real Tesla onboarding. Walk the operator through the external steps in the correct current order, based on Tesla's live official documentation, including as applicable: Tesla developer-application settings; exact origin and OAuth redirect URI values; generation/storage of the application EC key pair with the private key placed only in Secret Manager; verification that the `.well-known` public-key URL is publicly reachable with the expected PEM; partner registration/verification; any billing/account prerequisites Tesla currently requires; starting the real authorization-code flow; approving the documented scopes; returning through the callback; verifying refresh-token persistence/rotation; enumerating all vehicles on the Tesla account; and pairing the Virtual Key separately for each selected vehicle.
+
+Do not ask the operator to paste the Tesla client secret, OAuth tokens, refresh tokens, or EC private key into chat. Give exact commands/console fields and tell the operator where to enter them securely. After each external step, perform the safest available verification before moving on. The final live checkpoint should prove: partner registration is valid, OAuth succeeds for the approved platform user, the expected vehicle list is discovered, every discovered vehicle is owned by the correct internal user, and Virtual Key status is known per vehicle. If pairing is incomplete for a vehicle, report that vehicle as pending rather than treating the whole account as paired.
 ```
 
 ### Phase 4 completion check
@@ -152,6 +180,8 @@ Expose every coverage-matrix operation marked Exposure=MCP through typed MCP too
 For every tool document and enforce required Tesla scope, wake behavior, read/write status, risk class, retry/idempotency behavior, and audit behavior. Record a redacted command audit for every attempted write, success or failure. Security-sensitive operations require unambiguous current-turn user intent. Keep operations marked Excluded out of MCP even if the typed client supports them internally.
 
 Create/refine docs/mcp-tool-catalog.md and add tests proving MCP coverage of every matrix row marked MCP, cross-user vehicle rejection, multi-vehicle ambiguity handling, risk classification, command auditing, and no secret leakage. Automated tests must not issue real vehicle commands.
+
+Finish with an OPERATOR CHECKPOINT for the first live MCP smoke test. First walk the operator through connecting the deployed MCP endpoint/client if any external connector configuration is required. Then verify one real read-only current-state request against an owned vehicle. Only after that succeeds, ask the operator for explicit current-turn approval to execute one low-risk, reversible command of their choosing from the documented safe tool set. Do not choose or execute unlock, remote-start/keyless-driving, trunk/frunk opening, HomeLink, PIN/valet/parental/security changes, or another security-sensitive command merely for smoke testing. Verify the command result from Tesla and the redacted command-audit record. If the user has multiple vehicles, deliberately test that an ambiguous vehicle request is rejected rather than guessed.
 ```
 
 ### Phase 6 completion check
@@ -177,6 +207,8 @@ The retention invariant is: throttle at the Tesla source; preserve at the destin
 Acknowledge Pub/Sub only after the raw record has been durably accepted according to the chosen BigQuery write path. If a VIN cannot be mapped to an approved user's vehicle, never guess ownership and never write it into a user dataset; route it to the restricted quarantine/system path and surface diagnostics.
 
 Implement TLS/certificate handling, structured health metrics, immutable image deployment to the VM by exact digest, health-checked restart, and rollback. Add tests for multiple users, multiple vehicles, buffered source timestamps, intentional preservation of duplicate deliveries, unknown VIN quarantine, transient Pub/Sub/BigQuery failures, and no downstream filtering.
+
+Finish with an OPERATOR CHECKPOINT for the deployed telemetry path before changing any real vehicle telemetry configuration. If DNS or certificate ownership requires external action, give the exact hostname, DNS record type/value, propagation check, and certificate validation steps. After confirmation, verify the receiver's public TLS endpoint/health and service identity. Then run a safe synthetic end-to-end ingestion test through the real Pub/Sub/telemetry-processor/BigQuery path using a clearly marked non-vehicle fixture: prove the record lands in the intended test/system destination, prove an unknown VIN is quarantined rather than attributed to a user, and prove failure/retry behavior does not silently lose the record. Do not fabricate a real user's vehicle identity for this test and do not apply a Tesla Fleet Telemetry configuration yet.
 ```
 
 ### Phase 7 completion check
@@ -199,7 +231,9 @@ Use rational per-field interval_seconds/change behavior at the Tesla source; do 
 
 Implement per-vehicle inspect, desired-vs-current diff, apply, verify, remove, repair/reapply, telemetry-error inspection, and config hash/version persistence through Tesla's currently recommended signed configuration path. Multiple vehicles on the same Tesla account must be configurable independently, and failure on one vehicle must not block the others. Do not implement plan-based telemetry profiles or downstream sampling.
 
-Add tests using current schema fixtures/mocks. CI must never automatically apply or remove a real vehicle telemetry configuration. Provide a manual validation/runbook step for the first real vehicle.
+Add tests using current schema fixtures/mocks. CI must never automatically apply or remove a real vehicle telemetry configuration.
+
+Finish with a required OPERATOR CHECKPOINT for the first real vehicle. Show the operator the exact desired-vs-current telemetry configuration diff and explain any fields/intervals that materially affect volume or behavior. Ask the operator to select the vehicle and explicitly approve applying the configuration. Walk through any Tesla-side prerequisite or pairing repair that remains. After the operator approves, apply the configuration using the documented admin path, verify Tesla reports the expected config/hash with no relevant telemetry errors, then verify real telemetry from that vehicle reaches the VM, Pub/Sub, and the correct user's BigQuery `raw_telemetry_events` table. Confirm source and ingestion timestamps are present and that no expiration is configured. Do not declare the live checkpoint passed until at least one genuine vehicle observation is visible in the correct dataset.
 ```
 
 ### Phase 8 completion check
@@ -225,6 +259,8 @@ get_analytics_schema must return the authenticated user's available tables/views
 run_analytics_query must derive the authenticated user's dataset server-side and never accept a caller-selected dataset/project. Allow one read-only Standard SQL SELECT/WITH statement only. Use a real parser/AST or equivalently robust validation to reject explicit cross-project/dataset references, DML, DDL, EXPORT DATA, external queries/connections, remote functions, scripting, and other escape paths. Set the user's dataset as BigQuery defaultDataset, dry-run first, enforce bounded timeout/result size and a reasonable maximumBytesBilled safety ceiling, then execute and return bounded results. The byte ceiling is protection against accidental runaway SQL, not a per-user quota system.
 
 Log query job metadata such as user_id, bytes processed, duration, and referenced in-scope objects without logging sensitive result rows into general logs. Add tests proving cross-user/cross-dataset access is impossible, invalid SQL is rejected, multiple vehicles in one user's dataset can be compared, and the model can reconstruct a road-trip playlist from drive/location plus media_history without a dedicated playlist endpoint.
+
+Finish with an OPERATOR CHECKPOINT using the real accumulated dataset. Walk the operator through connecting/reloading the MCP client if required, then perform several read-only live analytical checks: inspect the schema, answer at least one simple historical question, one multi-table/derived question, and—when sufficient media/location history exists—the road-trip playlist-style question. Show the generated SQL or a concise query summary, BigQuery bytes processed, and the returned bounded result. If the available history is not yet rich enough for one example, state exactly what data is missing rather than manufacturing a result. Also run one deliberate cross-dataset/cross-user escape attempt against the live guardrails and confirm it is rejected without exposing another namespace.
 ```
 
 ### Phase 9 completion check
@@ -248,6 +284,8 @@ Use source timestamps for event chronology and an explicit actionability window 
 Implement authenticated per-user webhook subscriptions for semantic events, HMAC-SHA256 signing, event IDs/timestamps, bounded retry with dead-lettering, replay/test by event ID where appropriate, and SSRF defenses covering DNS/IP resolution, redirects, loopback/private/link-local/metadata targets, and re-resolution. A user may subscribe only to events from vehicles they own. Do not add per-user webhook quotas or a generalized SaaS plan system.
 
 Expose semantic_events to the analytical schema once real event data exists. Add tests for duplicate delivery, stale buffered events, cross-user isolation, signatures, retry/dead-letter behavior, replay safety, and SSRF blocks.
+
+If Phase 10 is implemented, finish with an OPERATOR CHECKPOINT using a controlled webhook destination owned by the operator. Walk the operator through creating/configuring that destination if an external service is needed, without asking for secrets in chat. Send a deliberate test event, verify the HMAC signature and event metadata at the destination, demonstrate a safe retry/dead-letter case, and confirm a representative blocked SSRF target is rejected. Do not use a third-party production endpoint as the first test target.
 ```
 
 ### Phase 10 completion check
@@ -269,7 +307,9 @@ Review and test least-privilege IAM, Secret Manager use, OIDC allowlist binding,
 
 If Phase 10 is implemented, also review event idempotency, stale-event actionability, webhook signing/replay, retries/dead-lettering, and SSRF protections. If Phase 10 was intentionally deferred, record that as a planned optional feature rather than a core acceptance failure.
 
-Complete all runbooks referenced by docs/architecture.md, including OAuth recovery, telemetry repair, certificate renewal, command-key rotation, rollback, emergency revocation, and safe first-live validation. Provide explicit manual smoke-test steps for a real approved Tesla account/vehicle; automated CI must remain safe by default and must not send real commands or alter real telemetry configuration.
+Complete all runbooks referenced by docs/architecture.md, including OAuth recovery, telemetry repair, certificate renewal, command-key rotation, rollback, emergency revocation, and safe first-live validation. Automated CI must remain safe by default and must not send real commands or alter real telemetry configuration.
+
+Finish with a final OPERATOR CHECKPOINT that walks the operator through the complete end-to-end acceptance sequence for one approved Tesla account and vehicle. Reuse already-proven checkpoints rather than repeating risky operations unnecessarily. Verify platform login/allowlist, Tesla OAuth and token refresh, vehicle discovery, Virtual Key status, one live read, one explicitly approved low-risk command, telemetry configuration health, a fresh telemetry row in the correct BigQuery dataset, one generic historical analytics query, disabled-user behavior using a safe test identity if available, and recovery/runbook readiness. For each item, record pass/fail/deferred and the evidence used. If any required live checkpoint from an earlier phase was deferred, surface it here as unresolved rather than silently declaring production readiness.
 
 Finish with a final acceptance checklist, exact validation/test commands and results, current Fleet API coverage status, deployment/readiness summary, and a short list of known residual risks or deferred items.
 ```
