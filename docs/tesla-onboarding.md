@@ -16,6 +16,10 @@ Official references:
 
 ## 1. Developer app configuration
 
+Canonical production application origin: `https://woodhouse.derekjass.com`.
+
+Canonical production Tesla OAuth redirect URI: `https://woodhouse.derekjass.com/oauth/callback`.
+
 Create one Tesla Fleet API application.
 
 Planned values:
@@ -25,16 +29,16 @@ OAuth grant type:
 Authorization Code and Machine-to-Machine
 
 Allowed origin:
-https://tesla.<personal-domain>
+https://woodhouse.derekjass.com
 
 Optional local origin:
 http://localhost:8080
 
 Allowed redirect URI:
-https://tesla.<personal-domain>/oauth/tesla/callback
+https://woodhouse.derekjass.com/oauth/callback
 
 Optional local redirect:
-http://localhost:8080/oauth/tesla/callback
+http://localhost:8080/oauth/callback
 
 Returned URL:
 leave blank unless current Tesla configuration requires one
@@ -83,7 +87,7 @@ Public key -> public endpoint.
 Required endpoint:
 
 ```text
-https://tesla.<personal-domain>/.well-known/appspecific/com.tesla.3p.public-key.pem
+https://woodhouse.derekjass.com/.well-known/appspecific/com.tesla.3p.public-key.pem
 ```
 
 The private key is never hosted.
@@ -126,8 +130,8 @@ The user then signs into the platform. On first verified login, bind immutable O
 MCP gateway exposes:
 
 ```text
-GET /oauth/tesla/start
-GET /oauth/tesla/callback
+GET /oauth/start
+GET /oauth/callback
 ```
 
 Start endpoint:
@@ -182,13 +186,13 @@ For non-B2B personal vehicles, the owner/user must add the application's public 
 Deep link:
 
 ```text
-https://tesla.com/_ak/tesla.<personal-domain>
+https://tesla.com/_ak/woodhouse.derekjass.com
 ```
 
 Vehicle-specific form:
 
 ```text
-https://tesla.com/_ak/tesla.<personal-domain>?vin=<VIN>
+https://tesla.com/_ak/woodhouse.derekjass.com?vin=<VIN>
 ```
 
 Tesla explicitly supports selecting among multiple vehicles or passing a VIN.
