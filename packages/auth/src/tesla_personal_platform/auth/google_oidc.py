@@ -6,7 +6,8 @@ from google.oauth2 import id_token
 from tesla_personal_platform.auth.errors import InvalidTokenError
 from tesla_personal_platform.auth.models import VerifiedIdentity
 
-GOOGLE_ISSUERS = frozenset({"accounts.google.com", "https://accounts.google.com"})
+GOOGLE_CANONICAL_ISSUER = "https://accounts.google.com"
+GOOGLE_ISSUERS = frozenset({"accounts.google.com", GOOGLE_CANONICAL_ISSUER})
 
 
 class GoogleOIDCVerifier:
@@ -39,7 +40,7 @@ class GoogleOIDCVerifier:
         email_claim = claims.get("email")
         email = email_claim if isinstance(email_claim, str) else None
         return VerifiedIdentity(
-            issuer=issuer,
+            issuer=GOOGLE_CANONICAL_ISSUER,
             subject=subject,
             email=email,
             email_verified=claims.get("email_verified") is True,

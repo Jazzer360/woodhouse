@@ -40,6 +40,7 @@ class InMemoryIdentityStore:
             user = self._users.get(email)
             if user is None:
                 raise UserNotAllowedError("No active invitation")
+            self._require_complete_binding(user)
             self._require_active(user)
 
             if user.oidc_issuer is not None or user.oidc_subject is not None:
@@ -80,8 +81,14 @@ class InMemoryIdentityStore:
         if user.status is not UserStatus.ACTIVE:
             raise UserDisabledError("User is disabled")
 
+    @staticmethod
+    def _require_complete_binding(user: AllowedUser) -> None:
+        if (user.oidc_issuer is None) is not (user.oidc_subject is None):
+            raise ConfigurationError("Allowlist immutable identity is partially bound")
+
     @classmethod
     def _context(cls, user: AllowedUser, identity: VerifiedIdentity) -> UserContext:
+        cls._require_complete_binding(user)
         cls._require_active(user)
         if not user.user_id or not user.dataset_id:
             raise ConfigurationError("Allowlist record is missing tenant configuration")

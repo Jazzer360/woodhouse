@@ -2,9 +2,11 @@
 
 import json
 import os
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Final, cast
+from time import monotonic
+from typing import Final, Protocol, cast
 
 from google.cloud import firestore
 from tesla_personal_platform.auth import (
@@ -21,6 +23,19 @@ from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundar
 DEFAULT_HOST: Final = "127.0.0.1"
 DEFAULT_PORT: Final = 8080
 MAX_REQUEST_BYTES: Final = 1_048_576
+REQUEST_IDLE_TIMEOUT_SECONDS: Final = 15.0
+REQUEST_BODY_TIMEOUT_SECONDS: Final = 15.0
+_REQUEST_READ_CHUNK_BYTES: Final = 64 * 1024
+
+
+class _RequestBodyReader(Protocol):
+    def read1(self, size: int = -1, /) -> bytes:
+        """Read at most one buffered/raw chunk."""
+
+
+class _TimeoutConnection(Protocol):
+    def settimeout(self, value: float | None) -> None:
+        """Set the timeout for the next socket operation."""
 
 
 def health_document() -> dict[str, str]:
@@ -34,6 +49,33 @@ def _decode_json_request(body: bytes) -> object:
         return json.loads(body.decode("utf-8"))
     except RecursionError as error:
         raise ValueError("JSON request exceeds safe nesting depth") from error
+
+
+def _read_request_body(
+    reader: _RequestBodyReader,
+    connection: _TimeoutConnection,
+    length: int,
+    *,
+    timeout_seconds: float = REQUEST_BODY_TIMEOUT_SECONDS,
+    clock: Callable[[], float] = monotonic,
+) -> bytes:
+    """Read exactly ``length`` bytes within one absolute body deadline."""
+    deadline = clock() + timeout_seconds
+    chunks: list[bytes] = []
+    remaining = length
+
+    while remaining:
+        time_left = deadline - clock()
+        if time_left <= 0:
+            raise TimeoutError("Request body read deadline exceeded")
+        connection.settimeout(time_left)
+        chunk = reader.read1(min(remaining, _REQUEST_READ_CHUNK_BYTES))
+        if not chunk:
+            raise ValueError("Request body ended before Content-Length")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+
+    return b"".join(chunks)
 
 
 def build_auth_boundary() -> GatewayAuthBoundary:
@@ -53,6 +95,11 @@ def build_auth_boundary() -> GatewayAuthBoundary:
 class _Handler(BaseHTTPRequestHandler):
     server: "_Server"
 
+    def setup(self) -> None:
+        """Bound idle socket operations, including request-header parsing."""
+        super().setup()
+        self.connection.settimeout(REQUEST_IDLE_TIMEOUT_SECONDS)
+
     def do_GET(self) -> None:  # noqa: N802 - inherited HTTP handler API
         if self.path != "/healthz":
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -67,6 +114,10 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             self.server.auth_boundary.authorize(self.headers.get("Authorization"), payload)
+        except TimeoutError:
+            self.connection.settimeout(REQUEST_IDLE_TIMEOUT_SECONDS)
+            self._send_json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request_timeout"})
+            return
         except CallerIdentityClaimError:
             self._send_json(
                 HTTPStatus.BAD_REQUEST,
@@ -99,7 +150,12 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(content_length)
         if length < 0 or length > MAX_REQUEST_BYTES:
             raise ValueError("Request body size is invalid")
-        return _decode_json_request(self.rfile.read(length))
+        body = _read_request_body(
+            cast(_RequestBodyReader, self.rfile),
+            cast(_TimeoutConnection, self.connection),
+            length,
+        )
+        return _decode_json_request(body)
 
     def _send_json(
         self,

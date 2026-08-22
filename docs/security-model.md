@@ -80,6 +80,8 @@ No public enrollment UI is required.
 
 Phase 3 uses Google OIDC ID tokens as the practical default. The gateway verifies
 the Google signature, expiry, configured audience, issuer, and immutable subject.
+Both Google issuer spellings accepted by its token verifier are normalized to
+`https://accounts.google.com` before creating or resolving immutable bindings.
 Provider verification is behind an interface so the allowlist and tenant model
 do not depend on Google-specific claims.
 
@@ -89,6 +91,11 @@ that attempt to select a user, dataset, or ownership claim are rejected even
 when nested. Resource ownership checks compare the derived context with an owner
 ID read from trusted server storage; a caller's ownership statement is never an
 authorization input.
+
+The HTTP boundary limits request size and JSON nesting, applies an idle socket
+timeout, and enforces one absolute deadline for reading each request body. A
+caller cannot keep a worker occupied indefinitely by stalling or trickling a
+declared request body.
 
 The provider login/token-acquisition UX remains the OIDC client's concern in
 this phase. The gateway implements no public signup and stores no Google access

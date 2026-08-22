@@ -7,6 +7,7 @@ from tesla_personal_platform.auth import (
     AllowedUser,
     Authenticator,
     CallerIdentityClaimError,
+    ConfigurationError,
     CrossUserAccessError,
     EmailNotVerifiedError,
     IdentityMismatchError,
@@ -20,7 +21,10 @@ from tesla_personal_platform.auth import (
 from tesla_personal_platform.auth.admin import UserAdminService
 from tesla_personal_platform.auth.memory import InMemoryIdentityStore
 from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundary
-from tesla_personal_platform.mcp_gateway.main import _decode_json_request
+from tesla_personal_platform.mcp_gateway.main import (
+    _decode_json_request,
+    _read_request_body,
+)
 
 
 class TokenMapVerifier:
@@ -181,6 +185,28 @@ def test_disabled_user_is_blocked_after_binding() -> None:
 
 
 @pytest.mark.parametrize(
+    "partially_bound",
+    [
+        replace(active_user(), oidc_issuer="https://accounts.google.com"),
+        replace(active_user(), oidc_subject="google-homer"),
+    ],
+)
+def test_partially_bound_invitation_is_a_configuration_error(
+    partially_bound: AllowedUser,
+) -> None:
+    identity = VerifiedIdentity(
+        "https://accounts.google.com",
+        "google-homer",
+        "homer@example.com",
+        email_verified=True,
+    )
+    boundary = boundary_for(InMemoryIdentityStore([partially_bound]), {"token": identity})
+
+    with pytest.raises(ConfigurationError, match="partially bound"):
+        boundary.authorize("Bearer token", {})
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {"user_id": "usr_other"},
@@ -233,6 +259,34 @@ def test_json_decoder_rejects_parser_recursion_error(
 
     with pytest.raises(ValueError, match="safe nesting depth"):
         _decode_json_request(b"{}")
+
+
+def test_request_body_read_enforces_one_absolute_deadline() -> None:
+    class DripReader:
+        def read1(self, size: int = -1, /) -> bytes:
+            del size
+            return b"x"
+
+    class RecordingConnection:
+        def __init__(self) -> None:
+            self.timeouts: list[float | None] = []
+
+        def settimeout(self, value: float | None) -> None:
+            self.timeouts.append(value)
+
+    moments = iter([0.0, 0.25, 1.01])
+    connection = RecordingConnection()
+
+    with pytest.raises(TimeoutError, match="deadline"):
+        _read_request_body(
+            DripReader(),
+            connection,
+            2,
+            timeout_seconds=1.0,
+            clock=lambda: next(moments),
+        )
+
+    assert connection.timeouts == [0.75]
 
 
 def test_trusted_cross_user_resource_is_rejected() -> None:
