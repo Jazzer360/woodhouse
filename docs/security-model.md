@@ -264,7 +264,10 @@ error category; if completion fails, the initial `attempted` record remains.
 Audit parameters structurally redact PIN/password, token, VIN, calendar, and
 exact-location fields. Tesla response bodies are not copied into the audit.
 
-The official Vehicle Command Proxy is a loopback-only Cloud Run sidecar. Only
+The official Vehicle Command Proxy is an instance-local, non-ingress Cloud Run
+sidecar. It listens on the shared container network only so Cloud Run can run
+the sidecar startup probe; public service ingress remains assigned solely to
+the gateway application container. Only
 that container mounts the application EC private key and its separate TLS
 private key. The Python container mounts the TLS certificate only. Cloud Run
 uses one service account for all containers in a revision, so this is a mount

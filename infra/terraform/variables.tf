@@ -57,7 +57,7 @@ variable "enable_tesla_onboarding" {
 }
 
 variable "enable_tesla_command_proxy" {
-  description = "Run the official Tesla Vehicle Command Proxy as a loopback-only mcp-gateway sidecar."
+  description = "Run the official Tesla Vehicle Command Proxy as a non-ingress mcp-gateway sidecar."
   type        = bool
   default     = false
 }

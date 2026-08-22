@@ -59,7 +59,7 @@ tools:
 
 - are vehicle-scoped and require the selected vehicle to be awake;
 - are never retried, because a missing response does not prove non-execution;
-- route through the loopback-only official Vehicle Command Proxy;
+- route through the instance-local, non-ingress official Vehicle Command Proxy;
 - create an `attempted` Firestore audit record before contacting Tesla, then
   finalize it as `success`, `rejected`, or `failure`;
 - record timestamp, server-derived user ID, internal vehicle ID, tool name,
