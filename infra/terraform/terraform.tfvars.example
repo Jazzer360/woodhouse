@@ -2,6 +2,10 @@ project_id = "woodhouse-506215"
 region     = "us-central1"
 zone       = "us-central1-a"
 
+# The interactive GitHub App connection is bootstrapped once outside Terraform;
+# Terraform owns the PR and main-branch triggers that reference this repository.
+cloud_build_repository = "projects/woodhouse-506215/locations/us-central1/connections/tpp-github/repositories/Jazzer360-woodhouse"
+
 # Phase 6.1: Auth0 is the documented OAuth 2.1 broker with Google upstream.
 # Add the browser application secret only to platform-oidc-client-secret.
 # enable_platform_oidc         = true

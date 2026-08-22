@@ -451,10 +451,13 @@ If Firestore or the state bucket already exists, import it rather than attemptin
 
 PR validation uses `cloudbuild.pr.yaml` with the validator identity. It runs Python quality/tests/audit, container builds, Terraform formatting/validation, and `-refresh=false` speculative plans for both Terraform roots. For the shared root it copies the complete Terraform directory, excluding only the nested bootstrap root, generated `.terraform` data, and the dedicated `backend.tf`, so future modules, templates, and other Terraform inputs participate automatically. The result checks the complete create graph rather than live drift. The validator has only log-writing permission and cannot read or mutate GCP resources.
 
-The GitHub repository connection and triggers are external bootstrap concerns,
-so Terraform does not guess their connection IDs. The regional
-`tpp-pr-validation` trigger uses `tpp-build-validator` and
-`cloudbuild.pr.yaml` for pull requests targeting `main`.
+The interactive GitHub App authorization and regional Cloud Build v2 repository
+connection are one-time external bootstrap concerns. Set the resulting full
+repository resource name in the ignored `terraform.tfvars` as
+`cloud_build_repository`. Terraform then owns all three triggers so their event
+filters, build identities, and configuration paths cannot drift. The regional
+`tpp-pr-validation` trigger uses `tpp-build-validator` and `cloudbuild.pr.yaml`
+for pull requests targeting `main`.
 
 Two push triggers use `tpp-build-deployer` and the shared
 `cloudbuild.main.yaml` delivery contract:
@@ -465,36 +468,27 @@ Two push triggers use `tpp-build-deployer` and the shared
   and delivery configuration changes and substitutes
   `_SERVICE=telemetry-processor`.
 
-Create the regional GitHub v2 triggers against the same repository connection
-as the PR trigger:
+The initial adoption of an existing environment is an import, not a recreate.
+After this configuration is merged, import the three existing regional triggers
+before the first authoritative plan:
 
 ```bash
-gcloud builds triggers create github \
-  --project=woodhouse-506215 \
-  --region=us-central1 \
-  --name=tpp-main-mcp-gateway \
-  --description="Deploy the affected MCP gateway revision after a main merge" \
-  --repository=projects/woodhouse-506215/locations/us-central1/connections/tpp-github/repositories/Jazzer360-woodhouse \
-  --branch-pattern='^main$' \
-  --build-config=cloudbuild.main.yaml \
-  --included-files='cloudbuild.main.yaml,services/mcp-gateway/**,packages/**,pyproject.toml,uv.lock' \
-  --substitutions=_SERVICE=mcp-gateway \
-  --service-account=projects/woodhouse-506215/serviceAccounts/tpp-build-deployer@woodhouse-506215.iam.gserviceaccount.com \
-  --include-logs-with-status
+terraform -chdir=infra/terraform import -var-file=terraform.tfvars \
+  'google_cloudbuild_trigger.pr_validation[0]' \
+  "$(gcloud builds triggers describe tpp-pr-validation --project=woodhouse-506215 --region=us-central1 --format='value(resourceName)')"
 
-gcloud builds triggers create github \
-  --project=woodhouse-506215 \
-  --region=us-central1 \
-  --name=tpp-main-telemetry-processor \
-  --description="Deploy the affected telemetry processor revision after a main merge" \
-  --repository=projects/woodhouse-506215/locations/us-central1/connections/tpp-github/repositories/Jazzer360-woodhouse \
-  --branch-pattern='^main$' \
-  --build-config=cloudbuild.main.yaml \
-  --included-files='cloudbuild.main.yaml,services/telemetry-processor/**,packages/**,pyproject.toml,uv.lock' \
-  --substitutions=_SERVICE=telemetry-processor \
-  --service-account=projects/woodhouse-506215/serviceAccounts/tpp-build-deployer@woodhouse-506215.iam.gserviceaccount.com \
-  --include-logs-with-status
+terraform -chdir=infra/terraform import -var-file=terraform.tfvars \
+  'google_cloudbuild_trigger.main_mcp_gateway[0]' \
+  "$(gcloud builds triggers describe tpp-main-mcp-gateway --project=woodhouse-506215 --region=us-central1 --format='value(resourceName)')"
+
+terraform -chdir=infra/terraform import -var-file=terraform.tfvars \
+  'google_cloudbuild_trigger.main_telemetry_processor[0]' \
+  "$(gcloud builds triggers describe tpp-main-telemetry-processor --project=woodhouse-506215 --region=us-central1 --format='value(resourceName)')"
 ```
+
+Review the following saved plan and require zero trigger replacements. The
+GitHub connection itself remains external because creating it requires an
+interactive authorization grant; its trigger consumers do not.
 
 The delivery build uses the repository root as Docker context, tags and pushes
 the affected service image with the full merge commit SHA, resolves the
