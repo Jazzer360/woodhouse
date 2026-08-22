@@ -17,6 +17,7 @@ Python remains the smallest practical common stack for the planned MCP, GCP, and
 | Resource | Terraform identity | Current behavior |
 |---|---|---|
 | Artifact Registry | `tesla-personal-platform` | New immutable-tag Docker repository |
+| Build source staging | GCS `${project_id}-tpp-cloudbuild-source` | Private source objects expire after seven days; deployer receives bucket-scoped read access only |
 | MCP gateway | Cloud Run `mcp-gateway` | Health, authenticated `/mcp`, Tesla onboarding routes, and the public Tesla application-key path; Tesla behavior is separately opt-in |
 | Telemetry processor | Cloud Run `telemetry-processor` | Internal ingress, authenticated same-project Pub/Sub invoker only |
 | Telemetry edge | Compute Engine `tpp-telemetry-edge` | Idle shielded COS `e2-micro`; no receiver or container deployed yet |
@@ -76,7 +77,7 @@ The Pub/Sub push subscription uses the complete processor handler URL, including
 | `tpp-telemetry-edge` | Publisher on the raw topic; log and metric writer |
 | `tpp-pubsub-push` | Invoker on telemetry-processor only |
 | `tpp-build-validator` | Log writer only; no deploy, secret, or data permission |
-| `tpp-build-deployer` | Artifact Registry writer on this repository, Cloud Run developer, and `actAs` only on the two Cloud Run runtime accounts |
+| `tpp-build-deployer` | Artifact Registry writer on this repository, Cloud Run developer, `actAs` only on the two Cloud Run runtime accounts, and object viewer only on the dedicated short-lived build-source bucket |
 | `tpp-user-admin` | Firestore user; BigQuery dataset creator; update metadata/ACLs on datasets; no table-data access |
 | `tpp-partner-admin` | Secret accessor only for Tesla client-secret and public-key containers; no project role or runtime impersonation |
 | `tpp-dataset-owner` | Required direct owner on per-user datasets; no project roles, keys, or impersonation binding |
@@ -311,6 +312,13 @@ If Firestore or the state bucket already exists, import it rather than attemptin
 PR validation uses `cloudbuild.pr.yaml` with the validator identity. It runs Python quality/tests/audit, container builds, Terraform formatting/validation, and `-refresh=false` speculative plans for both Terraform roots. For the shared root it copies the complete Terraform directory, excluding only the nested bootstrap root, generated `.terraform` data, and the dedicated `backend.tf`, so future modules, templates, and other Terraform inputs participate automatically. The result checks the complete create graph rather than live drift. The validator has only log-writing permission and cannot read or mutate GCP resources.
 
 The GitHub repository connection and trigger are external bootstrap concerns, so Terraform does not guess their connection IDs. Configure the PR trigger to use `tpp-build-validator`. A later main-branch delivery trigger uses `tpp-build-deployer` to push images tagged by the full commit SHA and deploy only the affected Cloud Run services. Terraform ignores the deployed container-image field so a later infrastructure plan cannot roll an application back to the Phase 2 placeholder.
+
+For an operator-initiated deployment, submit source through the dedicated
+`${project_id}-tpp-cloudbuild-source` bucket by passing
+`--gcs-source-staging-dir=gs://${project_id}-tpp-cloudbuild-source/source` to
+`gcloud builds submit`. The deployer has read access only to this short-lived
+bucket, avoiding project-wide Storage Object Viewer access and, critically,
+access to the Terraform state bucket. Source objects expire after seven days.
 
 Terraform apply remains an explicit reviewed operation from merged `main`. Automating it requires a separately reviewed apply identity/approval gate; the application deployer intentionally cannot change IAM, networks, secrets, Firestore, BigQuery, Pub/Sub, or Compute Engine.
 

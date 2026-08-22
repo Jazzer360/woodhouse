@@ -70,3 +70,9 @@ the intended deployment without making a bare `terraform apply` target the real
 project automatically.
 
 Review saved plans before applying. Never commit plan or state files. See [deployment.md](../../docs/deployment.md) for resources, IAM, bootstrap permissions, imports, and operating boundaries.
+
+Manual Cloud Build submissions must stage source in the dedicated private
+`${project_id}-tpp-cloudbuild-source` bucket. Pass its `source` prefix through
+`gcloud builds submit --gcs-source-staging-dir`; do not grant the deployer
+project-wide Storage Object Viewer, which would expose the Terraform state
+bucket.
