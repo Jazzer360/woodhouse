@@ -28,6 +28,14 @@ def health_document() -> dict[str, str]:
     return {"phase": "platform-auth", "service": SERVICE_NAME, "status": "ok"}
 
 
+def _decode_json_request(body: bytes) -> object:
+    """Decode caller JSON while treating excessive nesting as a bad request."""
+    try:
+        return json.loads(body.decode("utf-8"))
+    except RecursionError as error:
+        raise ValueError("JSON request exceeds safe nesting depth") from error
+
+
 def build_auth_boundary() -> GatewayAuthBoundary:
     """Build the production Google OIDC and Firestore adapters from safe config."""
     audience = os.environ.get("OIDC_AUDIENCE", "").strip()
@@ -91,7 +99,7 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(content_length)
         if length < 0 or length > MAX_REQUEST_BYTES:
             raise ValueError("Request body size is invalid")
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        return _decode_json_request(self.rfile.read(length))
 
     def _send_json(
         self,

@@ -20,6 +20,7 @@ from tesla_personal_platform.auth import (
 from tesla_personal_platform.auth.admin import UserAdminService
 from tesla_personal_platform.auth.memory import InMemoryIdentityStore
 from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundary
+from tesla_personal_platform.mcp_gateway.main import _decode_json_request
 
 
 class TokenMapVerifier:
@@ -201,6 +202,37 @@ def test_gateway_rejects_caller_supplied_tenant_and_ownership_claims(
 
     with pytest.raises(CallerIdentityClaimError):
         boundary.authorize("Bearer token", payload)
+
+
+def test_gateway_rejects_excessively_nested_caller_payload() -> None:
+    identity = VerifiedIdentity(
+        "https://accounts.google.com",
+        "google-homer",
+        "homer@example.com",
+        email_verified=True,
+    )
+    boundary = boundary_for(InMemoryIdentityStore([active_user()]), {"token": identity})
+    payload: object = {}
+    for _ in range(65):
+        payload = {"arguments": payload}
+
+    with pytest.raises(CallerIdentityClaimError, match="maximum nesting depth"):
+        boundary.authorize("Bearer token", payload)
+
+
+def test_json_decoder_rejects_parser_recursion_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_recursion_error(_: str) -> object:
+        raise RecursionError("simulated parser nesting failure")
+
+    monkeypatch.setattr(
+        "tesla_personal_platform.mcp_gateway.main.json.loads",
+        raise_recursion_error,
+    )
+
+    with pytest.raises(ValueError, match="safe nesting depth"):
+        _decode_json_request(b"{}")
 
 
 def test_trusted_cross_user_resource_is_rejected() -> None:

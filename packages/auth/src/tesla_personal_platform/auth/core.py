@@ -1,7 +1,7 @@
 """Provider-neutral authentication and tenant authorization rules."""
 
 from collections.abc import Mapping, Sequence
-from typing import Protocol
+from typing import Final, Protocol
 
 from tesla_personal_platform.auth.errors import (
     CallerIdentityClaimError,
@@ -23,6 +23,7 @@ _FORBIDDEN_CALLER_KEYS = frozenset(
         "user_id",
     }
 )
+_MAX_CALLER_PAYLOAD_DEPTH: Final = 64
 
 
 class TokenVerifier(Protocol):
@@ -83,18 +84,24 @@ def first_login_invitation_email(identity: VerifiedIdentity) -> str:
 
 def assert_no_caller_identity_claims(payload: object) -> None:
     """Reject tenant, dataset, and ownership selection anywhere in caller JSON."""
-    if isinstance(payload, Mapping):
-        for key, value in payload.items():
-            if isinstance(key, str) and key.casefold() in _FORBIDDEN_CALLER_KEYS:
-                raise CallerIdentityClaimError(
-                    f"Caller-controlled identity field is forbidden: {key}"
-                )
-            assert_no_caller_identity_claims(value)
-        return
+    pending: list[tuple[object, int]] = [(payload, 0)]
 
-    if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
-        for value in payload:
-            assert_no_caller_identity_claims(value)
+    while pending:
+        current, depth = pending.pop()
+        if depth > _MAX_CALLER_PAYLOAD_DEPTH:
+            raise CallerIdentityClaimError("Caller payload exceeds maximum nesting depth")
+
+        if isinstance(current, Mapping):
+            for key, value in current.items():
+                if isinstance(key, str) and key.casefold() in _FORBIDDEN_CALLER_KEYS:
+                    raise CallerIdentityClaimError(
+                        f"Caller-controlled identity field is forbidden: {key}"
+                    )
+                pending.append((value, depth + 1))
+            continue
+
+        if isinstance(current, Sequence) and not isinstance(current, (str, bytes, bytearray)):
+            pending.extend((value, depth + 1) for value in current)
 
 
 def authorize_trusted_owner(context: UserContext, trusted_owner_user_id: str) -> None:
