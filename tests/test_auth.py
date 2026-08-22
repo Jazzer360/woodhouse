@@ -3,6 +3,8 @@
 import json
 from dataclasses import replace
 from threading import Thread
+from typing import cast
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import pytest
@@ -27,9 +29,12 @@ from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundar
 from tesla_personal_platform.mcp_gateway.main import (
     REQUEST_IDLE_TIMEOUT_SECONDS,
     _decode_json_request,
+    _Handler,
     _read_request_body,
     _Server,
 )
+from tesla_personal_platform.mcp_gateway.tesla_onboarding import TeslaOnboardingService
+from tesla_personal_platform.mcp_gateway.tesla_runtime import TeslaRuntime
 
 
 class TokenMapVerifier:
@@ -70,10 +75,85 @@ def test_gateway_health_routes_are_unauthenticated(path: str) -> None:
         ) as response:
             assert response.status == 200
             assert json.load(response) == {
-                "phase": "platform-auth",
+                "phase": "tesla-onboarding",
                 "service": "mcp-gateway",
                 "status": "ok",
             }
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_tesla_public_key_route_is_public_and_exact() -> None:
+    public_key = b"-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n"
+    runtime = TeslaRuntime(cast(TeslaOnboardingService, object()), public_key)
+    server = _Server(
+        ("127.0.0.1", 0),
+        boundary_for(InMemoryIdentityStore(), {}),
+        runtime,
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        with urlopen(  # noqa: S310 - fixed loopback test server
+            "http://127.0.0.1:"
+            f"{server.server_port}/.well-known/appspecific/com.tesla.3p.public-key.pem",
+            timeout=2,
+        ) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "application/x-pem-file"
+            assert response.read() == public_key
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_tesla_public_key_route_fails_closed_before_configuration() -> None:
+    server = _Server(("127.0.0.1", 0), boundary_for(InMemoryIdentityStore(), {}))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        with pytest.raises(HTTPError) as error:
+            urlopen(  # noqa: S310 - fixed loopback test server
+                "http://127.0.0.1:"
+                f"{server.server_port}/.well-known/appspecific/com.tesla.3p.public-key.pem",
+                timeout=2,
+            )
+        assert error.value.code == 503
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_gateway_access_log_omits_oauth_callback_query_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages: list[str] = []
+
+    def capture_log(_handler: _Handler, format: str, *args: object) -> None:
+        messages.append(format % args)
+
+    monkeypatch.setattr(_Handler, "log_message", capture_log)
+    server = _Server(("127.0.0.1", 0), boundary_for(InMemoryIdentityStore(), {}))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        with pytest.raises(HTTPError):
+            urlopen(  # noqa: S310 - fixed loopback test server
+                "http://127.0.0.1:"
+                f"{server.server_port}/oauth/callback?code=sensitive-code&state=sensitive-state",
+                timeout=2,
+            )
+        captured = "\n".join(messages)
+        assert "/oauth/callback" in captured
+        assert "sensitive-code" not in captured
+        assert "sensitive-state" not in captured
     finally:
         server.shutdown()
         server.server_close()

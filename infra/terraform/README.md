@@ -1,12 +1,17 @@
 # Terraform
 
-This root defines the shared GCP baseline for project `woodhouse-506215` in `us-central1`. Phase 3 adds the keyless manual user-admin identity and fail-closed OIDC configuration for mcp-gateway. Terraform still creates no per-user BigQuery datasets and no secret values.
+This root defines the shared GCP baseline for project `woodhouse-506215` in `us-central1`. Phase 4 adds fail-closed Tesla onboarding configuration, two additional secret containers, and a keyless partner-registration identity. Terraform still creates no per-user BigQuery datasets and no secret values.
 
 Set `user_admin_principals` for operators who may impersonate
 `tpp-user-admin`. Set `oidc_audience` to the Google OAuth client ID, then set
 `enable_mcp_external_access = true` only after the authenticated gateway image
 is deployed. See [deployment.md](../../docs/deployment.md) for the complete IAM
 and manual add-user workflow.
+
+Leave `enable_tesla_onboarding = false` until the documented Secret Manager
+versions exist. Then configure the non-secret Tesla client ID, application
+domain, and exact callback URI in the uncommitted tfvars file and enable it. See
+the [Phase 4 operator checkpoint](../../docs/tesla-onboarding.md#12-required-operator-checkpoint--first-real-tesla-onboarding).
 
 ## State bootstrap
 
