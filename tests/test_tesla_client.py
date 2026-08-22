@@ -268,7 +268,7 @@ def test_fleet_http_error_retains_only_safe_diagnostic_metadata() -> None:
     with pytest.raises(TeslaAPIError) as caught:
         client.fleet_status("access", base_url=NA_BASE, vins=["VIN1"])
 
-    assert caught.value.category == "http_error"
+    assert caught.value.category == "forbidden"
     assert caught.value.status_code == 403
     assert "forbidden" not in str(caught.value)
 

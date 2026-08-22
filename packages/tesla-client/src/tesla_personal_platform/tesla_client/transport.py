@@ -1,9 +1,9 @@
 """Small injectable HTTPS transport for the Tesla onboarding API surface."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -26,11 +26,12 @@ class _RejectRedirects(HTTPRedirectHandler):
 
 @dataclass(frozen=True, slots=True)
 class HttpResponse:
-    """Transport response with helpers that avoid credential-bearing exceptions."""
+    """Transport response whose body is deliberately absent from repr/log output."""
 
     status: int
-    body: bytes
+    body: bytes = field(repr=False)
     content_type: str | None = None
+    headers: dict[str, str] = field(default_factory=dict, repr=False)
 
     def json(self) -> object:
         return json.loads(self.body.decode("utf-8"))
@@ -89,10 +90,17 @@ class UrllibTransport:
                     status=response.status,
                     body=response.read(),
                     content_type=response.headers.get("Content-Type"),
+                    headers={key.casefold(): value for key, value in response.headers.items()},
                 )
         except HTTPError as error:
             return HttpResponse(
                 status=error.code,
                 body=error.read(),
                 content_type=error.headers.get("Content-Type"),
+                headers={key.casefold(): value for key, value in error.headers.items()},
             )
+        except (TimeoutError, URLError):
+            # Never include urllib's exception text: it may contain a credential-bearing URL.
+            from tesla_personal_platform.tesla_client.errors import TeslaTransportError
+
+            raise TeslaTransportError("Tesla Fleet API transport failed") from None

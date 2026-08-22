@@ -2,7 +2,7 @@
 
 **Status:** Placeholder for Phase 6.
 
-No Tesla MCP tools are implemented through Phase 4. Tesla onboarding uses narrow
+No Tesla MCP tools are implemented through Phase 5. Tesla onboarding uses narrow
 HTTP routes protected by the platform identity boundary; partner registration
 is operator-only. Phase 6 will map every `MCP` row in [the Fleet API coverage
 contract](fleet-api-coverage.md) to an intentional typed tool or grouped tool and
