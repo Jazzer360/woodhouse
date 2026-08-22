@@ -12,6 +12,7 @@ from tesla_personal_platform.tesla_client.errors import (
     TeslaConfigurationError,
 )
 from tesla_personal_platform.tesla_client.fleet import normalize_base_url
+from tesla_personal_platform.tesla_client.models import JsonValue, ValueResponse, json_object
 from tesla_personal_platform.tesla_client.oauth import TESLA_TOKEN_URL
 from tesla_personal_platform.tesla_client.transport import HttpResponse, HttpTransport
 
@@ -24,11 +25,79 @@ class PartnerRegistration:
     status: str
 
 
+class TeslaPartnerClient:
+    """Typed application-level partner endpoints; never exposed to MCP callers."""
+
+    def __init__(self, transport: HttpTransport) -> None:
+        self._transport = transport
+
+    def register(
+        self,
+        partner_token: str,
+        *,
+        base_url: str,
+        domain: str,
+        allow_existing: bool = False,
+    ) -> PartnerRegistration:
+        normalized_base_url = normalize_base_url(base_url)
+        response = self._transport.request(
+            "POST",
+            f"{normalized_base_url}/api/1/partner_accounts",
+            headers={"Authorization": f"Bearer {partner_token}"},
+            json_body={"domain": _normalize_domain(domain)},
+        )
+        if allow_existing and response.status == 409:
+            return PartnerRegistration(normalized_base_url, "already_registered")
+        _json_mapping(response, "Tesla partner registration")
+        return PartnerRegistration(normalized_base_url, "registered")
+
+    def public_key(self, partner_token: str, *, base_url: str, domain: str) -> ValueResponse:
+        normalized_base_url = normalize_base_url(base_url)
+        query = urlencode({"domain": _normalize_domain(domain)})
+        document = _json_mapping(
+            self._transport.request(
+                "GET",
+                f"{normalized_base_url}/api/1/partner_accounts/public_key?{query}",
+                headers={"Authorization": f"Bearer {partner_token}"},
+            ),
+            "Tesla public-key verification",
+        )
+        value = document.get("response", document)
+        return ValueResponse(
+            json_object({str(key): item for key, item in value.items()})
+            if isinstance(value, Mapping)
+            else _safe_value(value)
+        )
+
+    def fleet_telemetry_errors(self, partner_token: str, *, base_url: str) -> ValueResponse:
+        return self._get_value(partner_token, base_url, "fleet_telemetry_errors")
+
+    def fleet_telemetry_error_vins(self, partner_token: str, *, base_url: str) -> ValueResponse:
+        return self._get_value(partner_token, base_url, "fleet_telemetry_error_vins")
+
+    def _get_value(self, token: str, base_url: str, endpoint: str) -> ValueResponse:
+        document = _json_mapping(
+            self._transport.request(
+                "GET",
+                f"{normalize_base_url(base_url)}/api/1/partner_accounts/{endpoint}",
+                headers={"Authorization": f"Bearer {token}"},
+            ),
+            "Tesla partner diagnostic",
+        )
+        value = document.get("response")
+        return ValueResponse(
+            json_object({str(key): item for key, item in value.items()})
+            if isinstance(value, Mapping)
+            else _safe_value(value)
+        )
+
+
 class PartnerRegistrar:
     """Create or confirm a registration, then verify its hosted public key."""
 
     def __init__(self, transport: HttpTransport) -> None:
         self._transport = transport
+        self._partner = TeslaPartnerClient(transport)
 
     def ensure_registered(
         self,
@@ -47,23 +116,18 @@ class PartnerRegistrar:
         for value in base_urls:
             base_url = normalize_base_url(value)
             token = self._partner_token(client_id, client_secret, base_url)
-            response = self._transport.request(
-                "POST",
-                f"{base_url}/api/1/partner_accounts",
-                headers={"Authorization": f"Bearer {token}"},
-                json_body={"domain": normalized_domain},
+            registration = self._partner.register(
+                token,
+                base_url=base_url,
+                domain=normalized_domain,
+                allow_existing=True,
             )
-            if (response.status < 200 or response.status >= 300) and response.status != 409:
-                raise TeslaAPIError(
-                    f"Tesla partner registration failed with status {response.status}"
-                )
-            status = "already_registered" if response.status == 409 else "registered"
             verified = self._registered_key(token, base_url, normalized_domain)
             if verified is None or _public_key_point(verified) != expected_key:
                 raise TeslaConfigurationError(
                     f"Tesla did not verify the expected public key for {base_url}"
                 )
-            results.append(PartnerRegistration(base_url, status))
+            results.append(registration)
         return results
 
     def _partner_token(self, client_id: str, client_secret: str, audience: str) -> str:
@@ -109,11 +173,24 @@ def _json_mapping(response: HttpResponse, operation: str) -> Mapping[str, object
         raise TeslaAPIError(f"{operation} failed with status {response.status}")
     try:
         document = response.json()
-    except (UnicodeDecodeError, ValueError) as error:
-        raise TeslaAPIError(f"{operation} returned invalid JSON") from error
+    except (UnicodeDecodeError, ValueError):
+        raise TeslaAPIError(f"{operation} returned invalid JSON") from None
     if not isinstance(document, Mapping):
         raise TeslaAPIError(f"{operation} returned an invalid document")
     return document
+
+
+def _safe_value(value: object) -> JsonValue:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [
+            json_object({str(key): nested for key, nested in item.items()})
+            if isinstance(item, Mapping)
+            else _safe_value(item)
+            for item in value
+        ]
+    raise TeslaAPIError("Tesla partner response payload is invalid", category="invalid_payload")
 
 
 def _normalize_domain(value: str) -> str:

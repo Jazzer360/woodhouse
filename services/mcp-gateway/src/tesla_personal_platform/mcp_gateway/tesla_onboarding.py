@@ -10,6 +10,8 @@ from urllib.parse import quote
 from tesla_personal_platform.auth import CrossUserAccessError, UserContext
 from tesla_personal_platform.tesla_client import (
     FleetStatus,
+    PerUserTeslaClient,
+    TeslaAccessContext,
     TeslaReauthorizationRequired,
     TeslaRegion,
     TeslaVehicle,
@@ -192,6 +194,7 @@ class TeslaOnboardingService:
         self._oauth = oauth
         self._fleet = fleet
         self._store = store
+        self._per_user_fleet: PerUserTeslaClient[FleetClient] = PerUserTeslaClient(fleet, self)
         self._app_domain = app_domain.strip().lower()
         if not self._app_domain or "://" in self._app_domain or "/" in self._app_domain:
             raise ValueError("Tesla application domain must be a bare hostname")
@@ -268,12 +271,15 @@ class TeslaOnboardingService:
         now: datetime | None = None,
     ) -> dict[str, object]:
         vehicle = self._store.get_vehicle(context.user_id, vehicle_id)
-        token, connection = self._access_token(context.user_id, now=now)
         try:
-            statuses = self._fleet.fleet_status(
-                token,
-                base_url=connection.base_url,
-                vins=[vehicle.vin],
+            statuses = self._per_user_fleet.execute(
+                context.user_id,
+                lambda fleet, token, base_url: fleet.fleet_status(
+                    token,
+                    base_url=base_url,
+                    vins=[vehicle.vin],
+                ),
+                now=now,
             )
         except TeslaReauthorizationRequired:
             self._store.mark_reauthorization_required(context.user_id)
@@ -320,12 +326,13 @@ class TeslaOnboardingService:
         owner_user_id: str,
         *,
         now: datetime | None = None,
+        force_refresh: bool = False,
     ) -> tuple[str, TeslaConnection]:
         current = now or datetime.now(UTC)
         connection = self._store.get_connection(owner_user_id)
         if connection.status == "reauthorization_required":
             raise TeslaReauthorizationRequired("Tesla authorization must be renewed")
-        if connection.tokens.expires_at > current + ACCESS_TOKEN_REFRESH_SKEW:
+        if not force_refresh and connection.tokens.expires_at > current + ACCESS_TOKEN_REFRESH_SKEW:
             return connection.tokens.access_token, connection
         try:
             rotated = self._oauth.refresh(
@@ -344,6 +351,22 @@ class TeslaOnboardingService:
         except ConcurrentTokenRotationError:
             connection = self._store.get_connection(owner_user_id)
         return connection.tokens.access_token, connection
+
+    def access_for_user(
+        self,
+        owner_user_id: str,
+        *,
+        force_refresh: bool = False,
+        now: datetime | None = None,
+    ) -> TeslaAccessContext:
+        """Select one user's token and rotate it atomically when needed."""
+
+        access_token, connection = self._access_token(
+            owner_user_id,
+            now=now,
+            force_refresh=force_refresh,
+        )
+        return TeslaAccessContext(access_token, connection.base_url)
 
 
 def virtual_key_pairing_url(app_domain: str, vin: str) -> str:

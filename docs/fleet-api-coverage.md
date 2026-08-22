@@ -1,14 +1,25 @@
 # Tesla Fleet API Coverage Contract
 
-**Audit date:** 2026-08-21  
+**Audit date:** 2026-08-22
 **Vehicle command count on Tesla's current page:** 72
 
-**Phase 4 onboarding subset re-verified:** 2026-08-22. Tesla still documents
-`GET /api/1/vehicles` as paginated with a default page size of 100 and
-`POST /api/1/vehicles/fleet_status` as the per-application vehicle capability
-and key-state check. The complete command-page count remains the Phase 5 audit.
+**Phase 5 full audit:** 2026-08-22. The current official Vehicle Endpoints,
+Vehicle Commands, User Endpoints, Partner Endpoints, and Charging Endpoints
+pages and their published endpoint schema were compared with every row below.
+The documented surface remains 22 vehicle endpoint operations, 4 user
+operations, 4 partner operations, 3 charging operations, and 72 vehicle
+commands. No row additions, removals, method changes, or path changes were
+required. `charging_sessions` remains business-fleet-only, and
+`set_scheduled_charging`, `set_scheduled_departure`, and direct
+`fleet_telemetry_config_jws` remain compatibility-only/not recommended.
 
 This document is a completeness contract for the typed Tesla client and MCP surface.
+
+**Implementation status:** Phase 5 implements and mocks every `Required` typed-client
+row, plus the three `Compatibility` rows directed by this matrix. Phase 6 remains
+responsible for Vehicle Command Proxy integration and intentional typed MCP exposure;
+Phase 8 remains responsible for applying broad Fleet Telemetry configuration. Typed
+support in this package does not make `Internal` or `Excluded` operations MCP-callable.
 
 Before implementing or declaring Fleet API work complete, re-audit the current official pages:
 
@@ -163,15 +174,19 @@ Tesla Energy-product APIs are intentionally outside this vehicle-focused project
 
 ---
 
-## Coverage completion rule
+## Coverage completion rules
 
-The Fleet client phase is not complete until:
+Phase 5 (typed client) is not complete until:
 
 1. the matrix is re-audited against Tesla's current docs;
 2. every **Required** endpoint has a typed client method and tests;
-3. every **MCP** endpoint/command has a typed MCP tool or an intentional grouped tool mapping documented in `docs/mcp-tool-catalog.md`;
-4. every **Internal** endpoint has a concrete internal call path or documented reason it is only staged for future use;
-5. every **Excluded** endpoint remains unavailable through the ChatGPT-facing MCP unless the architecture is deliberately revised;
-6. a test or generated report detects when a Required matrix row lacks implementation.
+3. compatibility behavior follows the matrix;
+4. every **Excluded** endpoint remains unavailable through the ChatGPT-facing MCP unless the architecture is deliberately revised;
+5. a test or generated report detects when a Required matrix row lacks implementation.
+
+Phase 6 (live MCP surface) is not complete until every **MCP** endpoint/command has a
+typed MCP tool or an intentional grouped tool mapping documented in
+`docs/mcp-tool-catalog.md`. Each **Internal** row must have a concrete internal call
+path in its owning phase or a documented reason it remains staged.
 
 Do not use this matrix to freeze Tesla's API forever. Update it whenever Tesla changes the official surface.

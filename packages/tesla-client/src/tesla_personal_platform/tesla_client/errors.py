@@ -1,4 +1,4 @@
-"""Safe Tesla onboarding failure categories."""
+"""Safe, normalized Tesla API failure categories."""
 
 
 class TeslaAPIError(Exception):
@@ -26,3 +26,10 @@ class TeslaReauthorizationRequired(TeslaAuthenticationError):
 
 class TeslaConfigurationError(TeslaAPIError):
     """Local Tesla application configuration is missing or unsafe."""
+
+
+class TeslaTransportError(TeslaAPIError):
+    """The Tesla request failed before a valid HTTP response was received."""
+
+    def __init__(self, message: str = "Tesla Fleet API transport failed") -> None:
+        super().__init__(message, category="transport_error")

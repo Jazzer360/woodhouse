@@ -1,47 +1,67 @@
-"""Narrow Tesla onboarding client boundary.
-
-Phase 4 deliberately implements only authentication, partner registration,
-region discovery, vehicle enumeration, and fleet-status inspection. The broad
-typed Fleet API surface remains Phase 5 work.
-"""
+"""Typed Tesla OAuth, partner, and complete personal-vehicle Fleet API boundary."""
 
 from tesla_personal_platform.tesla_client.errors import (
     TeslaAPIError,
     TeslaAuthenticationError,
     TeslaConfigurationError,
     TeslaReauthorizationRequired,
+    TeslaTransportError,
 )
 from tesla_personal_platform.tesla_client.fleet import TeslaFleetClient
 from tesla_personal_platform.tesla_client.models import (
+    BinaryDocument,
+    CommandResult,
     FleetStatus,
+    ListResponse,
+    ObjectResponse,
+    Pagination,
     TeslaRegion,
     TeslaVehicle,
     TokenSet,
+    ValueResponse,
+    VehicleData,
 )
 from tesla_personal_platform.tesla_client.oauth import (
     TeslaIDTokenVerifier,
     TeslaOAuthClient,
     TeslaOAuthConfig,
 )
-from tesla_personal_platform.tesla_client.partner import PartnerRegistrar
+from tesla_personal_platform.tesla_client.partner import PartnerRegistrar, TeslaPartnerClient
+from tesla_personal_platform.tesla_client.session import (
+    PerUserTeslaClient,
+    TeslaAccessContext,
+    TeslaAccessProvider,
+)
 from tesla_personal_platform.tesla_client.transport import UrllibTransport
 
 COMPONENT = "tesla-client"
 
 __all__ = [
     "COMPONENT",
+    "BinaryDocument",
+    "CommandResult",
     "FleetStatus",
+    "ListResponse",
+    "ObjectResponse",
+    "Pagination",
     "PartnerRegistrar",
+    "PerUserTeslaClient",
     "TeslaAPIError",
+    "TeslaAccessContext",
+    "TeslaAccessProvider",
     "TeslaAuthenticationError",
     "TeslaConfigurationError",
     "TeslaFleetClient",
     "TeslaIDTokenVerifier",
     "TeslaOAuthClient",
     "TeslaOAuthConfig",
+    "TeslaPartnerClient",
     "TeslaReauthorizationRequired",
     "TeslaRegion",
     "TeslaVehicle",
+    "TeslaTransportError",
     "TokenSet",
     "UrllibTransport",
+    "ValueResponse",
+    "VehicleData",
 ]
