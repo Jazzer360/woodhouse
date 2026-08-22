@@ -2,8 +2,16 @@ project_id = "woodhouse-506215"
 region     = "us-central1"
 zone       = "us-central1-a"
 
+# Google OAuth web client ID (not a secret). Configure this before enabling
+# internet reachability for the application-authenticated MCP endpoint.
+# oidc_audience             = "replace-with-google-oauth-client-id"
+# enable_mcp_external_access = true
+
 # Use IAM member syntax. Keep empty until the operator identity is known.
 # admin_principals = ["user:operator@example.com"]
+
+# Operators allowed to impersonate the keyless add-user/disable-user identity.
+# user_admin_principals = ["user:operator@example.com"]
 
 # Add existing Monitoring notification-channel resource names when available.
 # monitoring_notification_channels = [

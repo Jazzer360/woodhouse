@@ -34,23 +34,72 @@ Simple initial structure:
 ```text
 allowed_users/{normalized_email}
   user_id
+  dataset_id
   status
   oidc_issuer
   oidc_subject
+  provisioning_state
   created_at
   notes
 ```
 
+The implementation also maintains a non-enumerable-by-email identity index:
+
+```text
+oidc_identities/{sha256(issuer + NUL + subject)}
+  allowlist_email
+  user_id
+  oidc_issuer
+  oidc_subject
+```
+
+The first successful login creates the index record and updates the allowlist
+record in one Firestore transaction. Later requests resolve this index first and
+do not use the token's current email for authorization. The index hash is a
+deterministic document key, not a password or credential.
+
 Manual admin workflow:
 
 ```text
-scripts/admin/add-user --email homer@example.com
-scripts/admin/disable-user --email homer@example.com
+uv run python scripts/admin/add-user --project-id woodhouse-506215 --email homer@example.com
+uv run python scripts/admin/disable-user --project-id woodhouse-506215 --email homer@example.com
 ```
 
 `add-user` should be idempotent and may also create the user's BigQuery dataset.
 
+The implemented workflow allocates a random `usr_<opaque>` internal ID and a
+separate random `tesla_u_<opaque>` dataset ID once. A new record remains disabled
+while its dataset is being provisioned, then becomes active only after the
+non-expiring dataset and runtime ACLs are confirmed. Re-running `add-user` keeps
+the identifiers and immutable OIDC binding, repairs the dataset/ACLs, and
+reactivates the record. `disable-user` changes only access status.
+
 No public enrollment UI is required.
+
+## 3.1 Gateway token boundary
+
+Phase 3 uses Google OIDC ID tokens as the practical default. The gateway verifies
+the Google signature, expiry, configured audience, issuer, and immutable subject.
+Both Google issuer spellings accepted by its token verifier are normalized to
+`https://accounts.google.com` before creating or resolving immutable bindings.
+Provider verification is behind an interface so the allowlist and tenant model
+do not depend on Google-specific claims.
+
+The bearer token is accepted only in the HTTP `Authorization` header. Every
+protected request derives `user_id` and `dataset_id` from Firestore. JSON fields
+that attempt to select a user, dataset, or ownership claim are rejected even
+when nested. Resource ownership checks compare the derived context with an owner
+ID read from trusted server storage; a caller's ownership statement is never an
+authorization input.
+
+The HTTP boundary limits request size and JSON nesting, applies an idle socket
+timeout, and enforces one absolute deadline for reading each request body. A
+caller cannot keep a worker occupied indefinitely by stalling or trickling a
+declared request body.
+
+The provider login/token-acquisition UX remains the OIDC client's concern in
+this phase. The gateway implements no public signup and stores no Google access
+or refresh token.
 
 ---
 

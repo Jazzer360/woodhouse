@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Idempotently disable a platform user without deleting their data."""
+
+from tesla_personal_platform.auth.cli import disable_user_main
+
+raise SystemExit(disable_user_main())

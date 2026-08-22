@@ -55,10 +55,11 @@ def test_seed_documents_remain_present() -> None:
         (processor_health, "telemetry-processor"),
     ],
 )
-def test_service_health_documents_are_scaffold_only(
+def test_service_health_documents_match_implemented_phase(
     health: Callable[[], dict[str, str]], service: str
 ) -> None:
-    assert health() == {"phase": "scaffold", "service": service, "status": "ok"}
+    expected_phase = "platform-auth" if service == "mcp-gateway" else "scaffold"
+    assert health() == {"phase": expected_phase, "service": service, "status": "ok"}
 
 
 def test_shared_package_boundaries_are_importable() -> None:

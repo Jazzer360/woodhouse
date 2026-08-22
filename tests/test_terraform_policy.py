@@ -97,3 +97,33 @@ def test_pubsub_oidc_audience_matches_the_exact_push_endpoint() -> None:
 
     assert "push_endpoint = local.telemetry_processor_push_endpoint" in pubsub
     assert "audience              = local.telemetry_processor_push_endpoint" in pubsub
+
+
+def test_mcp_external_route_is_fail_closed_until_oidc_is_configured() -> None:
+    variables = (TERRAFORM_ROOT / "variables.tf").read_text(encoding="utf-8")
+    cloud_run = (TERRAFORM_ROOT / "cloud_run.tf").read_text(encoding="utf-8")
+
+    external_access = variable_block(variables, "enable_mcp_external_access")
+    assert "default     = false" in external_access
+    assert "var.oidc_audience == null ? false" in cloud_run
+    assert 'member   = "allUsers"' in cloud_run
+
+
+def test_user_admin_has_no_key_and_only_dataset_provisioning_permissions() -> None:
+    source = terraform_source()
+    iam = (TERRAFORM_ROOT / "iam.tf").read_text(encoding="utf-8")
+
+    assert "google_service_account_key" not in source
+    custom_role_start = iam.index(
+        'resource "google_project_iam_custom_role" "user_dataset_provisioner"'
+    )
+    custom_role_end = iam.index(
+        'resource "google_project_iam_member" "user_admin_dataset_provisioner"'
+    )
+    custom_role = iam[custom_role_start:custom_role_end]
+    assert "roles/bigquery.user" not in iam
+    assert '"bigquery.datasets.create"' in custom_role
+    assert '"bigquery.datasets.get"' in custom_role
+    assert '"bigquery.datasets.update"' in custom_role
+    assert "bigquery.jobs" not in custom_role
+    assert "bigquery.tables" not in custom_role

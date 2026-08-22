@@ -1,6 +1,6 @@
 # Deployment
 
-**Status:** Phase 2 shared-infrastructure baseline. The configuration is production-shaped but still hosts health-only placeholders and implements no Tesla, OAuth, command, or telemetry behavior.
+**Status:** Phase 3 platform-authentication baseline. Shared infrastructure remains production-shaped; mcp-gateway now enforces Google OIDC plus the Firestore manual allowlist, while Tesla OAuth, vehicle behavior, commands, and telemetry remain unimplemented.
 
 ## Fixed deployment choices
 
@@ -14,21 +14,35 @@ Python remains the smallest practical common stack for the planned MCP, GCP, and
 
 ## Resource map
 
-| Resource | Terraform identity | Phase 2 behavior |
+| Resource | Terraform identity | Current behavior |
 |---|---|---|
 | Artifact Registry | `tesla-personal-platform` | New immutable-tag Docker repository |
-| MCP gateway | Cloud Run `mcp-gateway` | Private, health-only public placeholder image; no unauthenticated invoker |
+| MCP gateway | Cloud Run `mcp-gateway` | Health plus authenticated `/mcp` boundary; external reachability is opt-in only after OIDC configuration |
 | Telemetry processor | Cloud Run `telemetry-processor` | Internal ingress, authenticated same-project Pub/Sub invoker only |
 | Telemetry edge | Compute Engine `tpp-telemetry-edge` | Idle shielded COS `e2-micro`; no receiver or container deployed yet |
 | Telemetry address | Regional static external IPv4 | Reserved for the future public receiver |
 | Raw transport | `tpp-raw-telemetry` topic and processor subscription | 31-day retention; authenticated push path |
-| Mutable state | Firestore Native `(default)` | Regional database with delete protection |
+| Mutable state | Firestore Native `(default)` | Allowlist and atomic immutable OIDC identity bindings; regional database with delete protection |
 | Secret storage | Four Secret Manager containers | Metadata and IAM only; no secret versions or values |
 | Quarantine | `tesla_system_quarantine.raw_unknown_telemetry` | Restricted, partitioned append destination for unmapped telemetry |
 | Monitoring | backlog alert and unknown-vehicle log metric | No notification destination unless existing channel IDs are supplied |
 | Network | custom VPC and `/28` subnet | No default ingress rules |
 
 The MCP gateway receives project-level BigQuery job permission but no project-level data access. The telemetry processor can write only the shared quarantine dataset until Phase 3 grants it access to a newly created user's dataset.
+
+The `tpp-user-admin` service account is keyless and used only through operator
+impersonation. It can write Firestore allowlist entities, create BigQuery
+datasets, and update dataset metadata/ACLs through a custom role containing only
+`bigquery.datasets.create`, `bigquery.datasets.get`, and
+`bigquery.datasets.update`. It cannot run BigQuery jobs and has no BigQuery
+table-data, Secret Manager, Cloud Run deployment, or vehicle API access.
+
+Firestore IAM is database-wide and cannot scope `roles/datastore.user` to only
+the `allowed_users` collection. This is the principal Phase 3 IAM tradeoff: the
+keyless admin identity is operator-only and impersonation-audited, but it can
+read/write other documents in the default Firestore database. Revisit a separate
+admin service/database or narrower mediation before delegating this workflow
+beyond trusted operators.
 
 ## Network exposure
 
@@ -37,7 +51,7 @@ The telemetry VM has exactly two ingress rules:
 - TCP `443` from the public internet to the telemetry-edge service account;
 - TCP `22` only from Google's IAP TCP-forwarding range `35.235.240.0/20`.
 
-Tesla's current Fleet Telemetry overview requires a publicly reachable server but does not prescribe a port on that page or publish stable source CIDRs that can safely replace `0.0.0.0/0`. Port `443` is the documented platform default and is configurable through `fleet_telemetry_port`; Phase 7 must make the vehicle configuration, receiver listener, certificate, and firewall agree. The rule targets only the telemetry-edge service account and that single TCP port. No process listens on that port in Phase 2. If Tesla later publishes an authoritative sender range, restrict the rule in the same reviewed change that verifies receiver delivery.
+Tesla's current Fleet Telemetry overview requires a publicly reachable server but does not prescribe a port on that page or publish stable source CIDRs that can safely replace `0.0.0.0/0`. Port `443` is the documented platform default and is configurable through `fleet_telemetry_port`; Phase 7 must make the vehicle configuration, receiver listener, certificate, and firewall agree. The rule targets only the telemetry-edge service account and that single TCP port. No process listens on that port yet. If Tesla later publishes an authoritative sender range, restrict the rule in the same reviewed change that verifies receiver delivery.
 
 Firewall logging remains enabled for IAP administration but is disabled on the public Fleet Telemetry allow rule. Unauthenticated internet scanning would otherwise create unbounded log volume and cost; Phase 7 receiver health, application logs, and metrics provide useful operational visibility once a listener exists.
 
@@ -57,8 +71,14 @@ The Pub/Sub push subscription uses the complete processor handler URL, including
 | `tpp-pubsub-push` | Invoker on telemetry-processor only |
 | `tpp-build-validator` | Log writer only; no deploy, secret, or data permission |
 | `tpp-build-deployer` | Artifact Registry writer on this repository, Cloud Run developer, and `actAs` only on the two Cloud Run runtime accounts |
+| `tpp-user-admin` | Firestore user; BigQuery dataset creator; update metadata/ACLs on datasets; no table-data access |
 
 The Cloud Build service agent may mint tokens only for the two custom build identities. Neither build identity receives Owner, Editor, Secret Manager access, BigQuery data access, or vehicle-VM administration.
+
+Members in `user_admin_principals` receive only
+`roles/iam.serviceAccountTokenCreator` on `tpp-user-admin`, allowing keyless ADC
+impersonation for the manual workflow. They do not receive that service account's
+permissions directly and no service-account key is created.
 
 [Cloud Run uses its service agent to access deployed container images](https://cloud.google.com/run/docs/securing/service-identity#service-agent), and same-project Artifact Registry access needs no additional runtime-account grant. The `tpp-mcp-gateway` and `tpp-telemetry-processor` runtime identities therefore do not receive `roles/artifactregistry.reader`; adding it would expose repository contents to application code without helping Cloud Run pull an image. Cross-project repositories would instead require an explicit reader grant to the Cloud Run service agent.
 
@@ -70,6 +90,41 @@ The idempotent `add-user` workflow—not shared Terraform—will create `tesla_u
 - `roles/bigquery.dataViewer` on that dataset to `tpp-mcp-gateway`.
 
 The gateway already has project-level `roles/bigquery.jobUser` so it can run scoped queries. No caller supplies a dataset ID, and no shared project-level data-reader/writer role is granted.
+
+The Python BigQuery client serializes these two dataset grants as legacy dataset
+ACL roles `READER` and `WRITER`; for service-account principals those are the
+dataset-level equivalents of `roles/bigquery.dataViewer` and
+`roles/bigquery.dataEditor`. The workflow makes this ACL authoritative rather
+than retaining BigQuery's default `projectReaders`/`projectWriters` entries;
+re-running it removes ambient or drifted dataset grants. If a later phase needs
+another principal or authorized view, it must update this workflow explicitly.
+
+## Platform OIDC configuration
+
+Create a Google OAuth/OIDC client for the intended MCP client and record its
+client ID as `oidc_audience`. A client ID is not a secret; do not commit its
+client secret if the chosen provider flow issues one. The gateway validates only
+Google-signed ID tokens whose `aud` exactly matches this configured value and
+whose issuer is `accounts.google.com` or `https://accounts.google.com`.
+
+Terraform defaults `enable_mcp_external_access` to `false`. After deploying the
+Phase 3 gateway image and configuring `oidc_audience`, explicitly set:
+
+```hcl
+oidc_audience              = "your-google-oauth-client-id"
+enable_mcp_external_access = true
+```
+
+That switch grants the Cloud Run route to `allUsers` so internet MCP clients can
+reach application-level authentication; it does not grant application access.
+The gateway returns `401` unless the bearer token is valid and resolves to an
+active immutable allowlist binding. Terraform refuses to enable the route with
+no audience, and the process refuses to start without both `OIDC_AUDIENCE` and
+`GOOGLE_CLOUD_PROJECT`.
+
+The reserved `/mcp` route authenticates and applies the tenant-input guard before
+returning the expected Phase 3 `501` response; actual MCP protocol/tools arrive
+in later phases. `/healthz` contains no identity state and remains unauthenticated.
 
 ## One-time operator bootstrap
 
@@ -107,6 +162,60 @@ To administer telemetry-edge through IAP, place the operator's IAM member string
 admin_principals = ["user:operator@example.com"]
 ```
 
+For manual platform-user administration, separately set:
+
+```hcl
+user_admin_principals = ["user:operator@example.com"]
+```
+
+This does not make the operator a project administrator. It permits impersonation
+of only `tpp-user-admin`, whose exact permissions are described above.
+
+## Manual add Homer workflow
+
+After the reviewed Terraform configuration has created `tpp-user-admin` and the
+operator impersonation binding, establish keyless Application Default
+Credentials and install the locked workspace:
+
+```bash
+gcloud auth application-default login \
+  --impersonate-service-account=tpp-user-admin@woodhouse-506215.iam.gserviceaccount.com
+uv sync --frozen --all-packages --group dev
+```
+
+Add Homer:
+
+```bash
+uv run python scripts/admin/add-user \
+  --project-id woodhouse-506215 \
+  --email homer@example.com \
+  --notes "Homer"
+```
+
+The command transactionally allocates stable random `user_id` and `dataset_id`
+values, creates or repairs the `us-central1` dataset with no default table or
+partition expiration, enforces only gateway read and processor write ACLs, then
+marks the invitation active. Re-running the command reuses the
+same identifiers and repairs drift. If dataset provisioning fails for a new
+invitation, the record remains disabled and a safe retry completes it.
+
+On Homer's first protected request, the gateway requires a verified
+`homer@example.com` claim and atomically binds its Google issuer/subject. Later
+email changes do not change authorization. Do not edit `oidc_issuer` or
+`oidc_subject` to transfer an account; disable and follow a reviewed recovery
+procedure instead.
+
+To block access without deleting history, dataset ACLs, or the immutable binding:
+
+```bash
+uv run python scripts/admin/disable-user \
+  --project-id woodhouse-506215 \
+  --email homer@example.com
+```
+
+`disable-user` is idempotent. It does not revoke Google itself, delete BigQuery
+data, alter Tesla consent, or remove a future vehicle Virtual Key.
+
 ## Terraform state bootstrap
 
 The small `infra/terraform/bootstrap` root uses local state once to create `woodhouse-506215-tpp-tfstate`. The bucket has uniform access, enforced public-access prevention, object versioning, and cleanup of old noncurrent versions after 90 days while retaining at least 20 newer versions. It deliberately has no bucket retention policy because that can prevent Terraform from deleting its own state-lock object.
@@ -141,7 +250,7 @@ PR validation uses `cloudbuild.pr.yaml` with the validator identity. It runs Pyt
 
 The GitHub repository connection and trigger are external bootstrap concerns, so Terraform does not guess their connection IDs. Configure the PR trigger to use `tpp-build-validator`. A later main-branch delivery trigger uses `tpp-build-deployer` to push images tagged by the full commit SHA and deploy only the affected Cloud Run services. Terraform ignores the deployed container-image field so a later infrastructure plan cannot roll an application back to the Phase 2 placeholder.
 
-Terraform apply remains an explicit reviewed operation from the merged `main` state in Phase 2. Automating it requires a separately reviewed apply identity/approval gate; the application deployer intentionally cannot change IAM, networks, secrets, Firestore, BigQuery, Pub/Sub, or Compute Engine.
+Terraform apply remains an explicit reviewed operation from merged `main`. Automating it requires a separately reviewed apply identity/approval gate; the application deployer intentionally cannot change IAM, networks, secrets, Firestore, BigQuery, Pub/Sub, or Compute Engine.
 
 Telemetry-edge delivery is deferred to Phase 7, when the VM will pull an exact image digest, health-check it, and support rollback. Production must never identify a service image as `latest`.
 

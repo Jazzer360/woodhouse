@@ -32,8 +32,32 @@ variable "cloud_run_placeholder_image" {
   default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
 
+variable "oidc_audience" {
+  description = "Google OIDC OAuth client ID accepted by mcp-gateway; null keeps auth startup fail-closed."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.oidc_audience == null ? true : length(trimspace(var.oidc_audience)) > 0
+    error_message = "oidc_audience must be null or a non-empty OAuth client ID."
+  }
+}
+
+variable "enable_mcp_external_access" {
+  description = "Allow internet clients to reach mcp-gateway after application-level OIDC enforcement is configured."
+  type        = bool
+  default     = false
+}
+
 variable "admin_principals" {
   description = "IAM members allowed to administer telemetry-edge through IAP and OS Login."
+  type        = set(string)
+  default     = []
+}
+
+variable "user_admin_principals" {
+  description = "IAM members allowed to impersonate the keyless manual user-administration service account."
   type        = set(string)
   default     = []
 }

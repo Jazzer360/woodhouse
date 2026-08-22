@@ -32,6 +32,10 @@ locals {
       role   = "roles/run.developer"
       member = "serviceAccount:${google_service_account.platform["cloud_build_deployer"].email}"
     }
+    user_admin_firestore = {
+      role   = "roles/datastore.user"
+      member = "serviceAccount:${google_service_account.platform["user_admin"].email}"
+    }
   }
 }
 
@@ -103,4 +107,31 @@ resource "google_service_account_iam_member" "admin_build_service_account_user" 
   service_account_id = google_service_account.platform[each.value.account].name
   role               = "roles/iam.serviceAccountUser"
   member             = each.value.principal
+}
+
+resource "google_project_iam_custom_role" "user_dataset_provisioner" {
+  project     = var.project_id
+  role_id     = "tppUserDatasetProvisioner"
+  title       = "TPP user dataset provisioner"
+  description = "Create opaque per-user BigQuery datasets and update their metadata and ACLs."
+  stage       = "GA"
+  permissions = [
+    "bigquery.datasets.create",
+    "bigquery.datasets.get",
+    "bigquery.datasets.update",
+  ]
+}
+
+resource "google_project_iam_member" "user_admin_dataset_provisioner" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.user_dataset_provisioner.id
+  member  = "serviceAccount:${google_service_account.platform["user_admin"].email}"
+}
+
+resource "google_service_account_iam_member" "user_admin_impersonator" {
+  for_each = var.user_admin_principals
+
+  service_account_id = google_service_account.platform["user_admin"].name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = each.value
 }
