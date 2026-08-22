@@ -12,6 +12,9 @@ commands. No row additions, removals, method changes, or path changes were
 required. `charging_sessions` remains business-fleet-only, and
 `set_scheduled_charging`, `set_scheduled_departure`, and direct
 `fleet_telemetry_config_jws` remain compatibility-only/not recommended.
+The Phase 6 wake preflight was also rechecked against Tesla's current Best
+Practices: applications must inspect connectivity before commands, and a wake
+may require 10-60 seconds before the vehicle is online. No coverage row changed.
 
 This document is a completeness contract for the typed Tesla client and MCP surface.
 

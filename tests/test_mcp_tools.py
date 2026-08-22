@@ -2,6 +2,7 @@
 
 import inspect
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -26,6 +27,7 @@ from tesla_personal_platform.tesla_client import (
     TeslaAccessContext,
     TeslaAPIError,
     TeslaFleetClient,
+    TeslaVehicle,
     TokenSet,
 )
 
@@ -71,16 +73,33 @@ class FakeCredentials:
 
 
 class FakeFleet:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        vehicle_states: list[str] | None = None,
+        wake_state: str = "online",
+    ) -> None:
         self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
         self.fail = fail
+        self.vehicle_states = vehicle_states or ["online"]
+        self.wake_state = wake_state
 
     def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
         def call(*args: object, **kwargs: object) -> object:
             self.calls.append((name, args, kwargs))
             if self.fail:
                 raise TeslaAPIError("safe", category="upstream_failure")
-            if name in {"door_lock", "set_pin_to_drive", "wake_up"}:
+            if name == "vehicle":
+                state = (
+                    self.vehicle_states.pop(0)
+                    if len(self.vehicle_states) > 1
+                    else self.vehicle_states[0]
+                )
+                return TeslaVehicle(str(kwargs["vin"]), "tesla-vehicle", "Test", state)
+            if name == "wake_up":
+                return TeslaVehicle(str(kwargs["vin"]), "tesla-vehicle", "Test", self.wake_state)
+            if name in {"door_lock", "set_charge_limit", "set_pin_to_drive"}:
                 return CommandResult(True)
             return ObjectResponse({"operation": name})
 
@@ -160,6 +179,7 @@ def service(
     *,
     direct: FakeFleet | None = None,
     proxy: FakeFleet | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> tuple[TeslaMCPService, FakeFleet, FakeFleet]:
     direct = direct or FakeFleet()
     proxy = proxy or FakeFleet()
@@ -169,6 +189,7 @@ def service(
         credentials=FakeCredentials(),
         store=cast(Any, store),
         audit_store=store,
+        sleep=sleep or (lambda _seconds: None),
     )
     return instance, direct, proxy
 
@@ -231,6 +252,13 @@ def test_command_risk_classification_matches_the_coverage_matrix() -> None:
         assert MCP_TOOLS_BY_NAME[f"tesla_{command}"].risk == expected
 
 
+def test_command_tools_advertise_automatic_wake_preflight() -> None:
+    for command in matrix_command_risks():
+        spec = MCP_TOOLS_BY_NAME[f"tesla_{command}"]
+        assert spec.wake_behavior == "auto_if_needed"
+        assert spec.retry_policy == "never"
+
+
 def test_every_command_request_parameter_has_a_typed_input_model() -> None:
     for spec in MCP_TOOL_SPECS:
         if not spec.write or spec.client_method == "wake_up":
@@ -256,7 +284,8 @@ def test_exactly_one_vehicle_is_auto_selected() -> None:
 
     result = instance.call(CONTEXT, "tesla_vehicle", {})
 
-    assert result == {"data": {"operation": "vehicle"}}
+    assert result["vin"] == "VIN1"
+    assert result["state"] == "online"
     assert direct.calls[0][2]["vin"] == "VIN1"
 
 
@@ -298,7 +327,7 @@ def test_write_uses_proxy_and_records_redacted_success_audit() -> None:
         },
     )
 
-    assert not direct.calls
+    assert [call[0] for call in direct.calls] == ["vehicle"]
     assert proxy.calls[0][0] == "set_pin_to_drive"
     assert store.started[0]["redacted_parameters"] == {
         "on": True,
@@ -313,14 +342,57 @@ def test_write_uses_proxy_and_records_redacted_success_audit() -> None:
 
 def test_failed_command_keeps_attempt_and_records_safe_error_category() -> None:
     store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
-    instance, _, _ = service(store, proxy=FakeFleet(fail=True))
+    instance, _, proxy = service(store, proxy=FakeFleet(fail=True))
 
     with pytest.raises(TeslaAPIError):
         instance.call(CONTEXT, "tesla_door_lock", {"vehicle_id": "veh-one"})
 
+    assert len(proxy.calls) == 1
     assert store.started[0]["source"] == "chatgpt-mcp"
     assert store.completed[0]["result"] == "failure"
     assert store.completed[0]["error_category"] == "upstream_failure"
+
+
+def test_offline_command_is_woken_audited_and_sent_once() -> None:
+    store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
+    direct = FakeFleet(vehicle_states=["offline", "online"], wake_state="asleep")
+    sleeps: list[float] = []
+    instance, _, proxy = service(store, direct=direct, sleep=sleeps.append)
+
+    result = instance.call(
+        CONTEXT,
+        "tesla_set_charge_limit",
+        {"vehicle_id": "veh-one", "percent": 80},
+    )
+
+    assert [call[0] for call in direct.calls] == ["vehicle", "wake_up", "vehicle"]
+    assert [call[0] for call in proxy.calls] == ["set_charge_limit"]
+    assert sleeps == [10.0]
+    assert [audit["tool_name"] for audit in store.started] == [
+        "tesla_set_charge_limit",
+        "tesla_wake_up",
+    ]
+    assert store.started[1]["redacted_parameters"] == {"automatic_for": "tesla_set_charge_limit"}
+    assert [audit["result"] for audit in store.completed] == ["success", "success"]
+    assert result["successful"] is True
+    assert result["wake_correlation_id"] == store.started[1]["correlation_id"]
+
+
+def test_offline_command_is_not_sent_when_wake_times_out() -> None:
+    store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
+    direct = FakeFleet(vehicle_states=["offline"], wake_state="asleep")
+    sleeps: list[float] = []
+    instance, _, proxy = service(store, direct=direct, sleep=sleeps.append)
+
+    with pytest.raises(MCPToolError) as caught:
+        instance.call(CONTEXT, "tesla_door_lock", {"vehicle_id": "veh-one"})
+
+    assert caught.value.category == "vehicle_unavailable"
+    assert [call[0] for call in direct.calls] == ["vehicle", "wake_up"] + ["vehicle"] * 6
+    assert not proxy.calls
+    assert sleeps == [10.0] * 6
+    assert [audit["result"] for audit in store.completed] == ["success", "failure"]
+    assert store.completed[-1]["error_category"] == "vehicle_unavailable"
 
 
 def test_unexpected_command_failure_uses_normalized_audit_category() -> None:
@@ -359,6 +431,22 @@ def test_audit_completion_failure_warns_that_command_may_have_executed() -> None
 
 def test_missing_scope_is_rejected_before_vehicle_or_tesla_access() -> None:
     store = FakeStore([vehicle("veh-one", "user-a", "VIN1")], scopes=("openid",))
+    instance, direct, proxy = service(store)
+
+    with pytest.raises(MCPToolError) as caught:
+        instance.call(CONTEXT, "tesla_door_lock", {"vehicle_id": "veh-one"})
+
+    assert caught.value.category == "missing_tesla_scope"
+    assert not direct.calls
+    assert not proxy.calls
+    assert not store.started
+
+
+def test_command_requires_vehicle_data_scope_for_wake_preflight() -> None:
+    store = FakeStore(
+        [vehicle("veh-one", "user-a", "VIN1")],
+        scopes=("vehicle_cmds",),
+    )
     instance, direct, proxy = service(store)
 
     with pytest.raises(MCPToolError) as caught:

@@ -57,8 +57,13 @@ The name is an allowlisted registry entry bound to one typed client method and
 input schema; this naming convention is not a generic passthrough. All command
 tools:
 
-- are vehicle-scoped and require the selected vehicle to be awake;
-- are never retried, because a missing response does not prove non-execution;
+- are vehicle-scoped and require both their command scope and
+  `vehicle_device_data` for the live-state/wake preflight;
+- fetch the live vehicle state first and, when it is not online, audit and send
+  one automatic `tesla_wake_up`, then poll every 10 seconds for at most 60
+  seconds before sending the command;
+- send the requested command exactly once and never retry it after dispatch,
+  because a missing response does not prove non-execution;
 - route through the instance-local, non-ingress official Vehicle Command Proxy;
 - create an `attempted` Firestore audit record before contacting Tesla, then
   finalize it as `success`, `rejected`, or `failure`;
@@ -141,7 +146,13 @@ Do not paste any token or secret into chat.
    If using the local PowerShell smoke client, enter the token without echo:
 
    ```powershell
-   $token = Read-Host "Paste a fresh Google ID token locally" -MaskInput
+   $secureToken = Read-Host "Paste a fresh Google ID token locally" -AsSecureString
+   $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
+   try {
+     $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+   } finally {
+     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+   }
    $headers = @{
      Authorization = "Bearer $token"
      "Content-Type" = "application/json"
@@ -178,10 +189,12 @@ Do not paste any token or secret into chat.
 
 5. Only after the read succeeds, ask the operator to choose and explicitly
    approve one low-risk reversible command in the current turn. Suitable smoke
-   choices include climate start/stop, charge start/stop when plugged in, door
-   lock, or a media control. Do not suggest or run unlock, remote start/keyless
-   driving, trunk/frunk, HomeLink, window, PIN/valet/parental/speed-limit, or
-   another security-sensitive command for smoke testing.
+   choices include climate start/stop, charge start/stop when plugged in, charge
+   limit, door lock, or a media control. Do not suggest or run unlock, remote
+   start/keyless driving, trunk/frunk, HomeLink, window,
+   PIN/valet/parental/speed-limit, or another security-sensitive command for
+   smoke testing. If the vehicle is asleep, verify the result includes a
+   `wake_correlation_id` in addition to the command `correlation_id`.
 
 6. Call only the operator-selected typed tool. Verify Tesla's returned
    `successful` value and retain its returned `correlation_id`. Do not retry an
