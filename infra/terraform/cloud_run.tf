@@ -144,7 +144,7 @@ resource "google_cloud_run_v2_service" "platform" {
           value = "/var/run/tpp-proxy-key/tls.key"
         }
         env {
-          name  = "TESLA_HTTP_PROXY_HOST"
+          name = "TESLA_HTTP_PROXY_HOST"
           # Cloud Run startup probes target the container interface rather than
           # its loopback device. Only the application container is configured
           # for service ingress, so this port remains revision-internal.
