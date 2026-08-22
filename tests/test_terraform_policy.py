@@ -130,6 +130,14 @@ def test_tesla_onboarding_is_fail_closed_and_does_not_inject_private_key() -> No
     assert '"tesla_command_private_key"' not in gateway_access
 
 
+def test_abandoned_tesla_oauth_states_have_firestore_ttl() -> None:
+    firestore = (TERRAFORM_ROOT / "firestore.tf").read_text(encoding="utf-8")
+
+    assert 'collection = "tesla_oauth_states"' in firestore
+    assert 'field      = "expires_at"' in firestore
+    assert "ttl_config {}" in firestore
+
+
 def test_partner_admin_is_keyless_and_has_no_project_role() -> None:
     iam = (TERRAFORM_ROOT / "iam.tf").read_text(encoding="utf-8")
     secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")

@@ -212,7 +212,8 @@ tesla_initial_audience   = "https://fleet-api.prd.na.vn.cloud.tesla.com"
 
 Runtime state uses these Firestore collections:
 
-- `tesla_oauth_states`: hashed, single-use, ten-minute callback bindings;
+- `tesla_oauth_states`: hashed, single-use, ten-minute callback bindings with
+  asynchronous Firestore TTL cleanup on `expires_at`;
 - `tesla_connections`: one encrypted rotating token state per platform user;
 - `vehicles`: safe vehicle metadata and per-vehicle key status;
 - `vehicle_vin_index`: collision-safe VIN-to-owner mapping used to reject

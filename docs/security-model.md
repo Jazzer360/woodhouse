@@ -130,6 +130,9 @@ a ten-minute lifetime. The state record binds the callback to the platform
 selected user identity. Tesla's signed OIDC ID token must contain the recorded
 nonce and the configured client audience. Tesla does not currently document or
 advertise PKCE for this confidential-client flow; see `docs/tesla-onboarding.md`.
+Firestore TTL deletes abandoned state records after `expires_at`; correctness
+still comes from transactional expiry validation and single-use deletion because
+TTL processing is asynchronous.
 Gateway access logs omit all query strings so callback authorization codes and
 state values are not copied into Cloud Logging. JSON callback and onboarding
 responses are marked `no-store` with a `no-referrer` policy.

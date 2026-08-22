@@ -9,6 +9,7 @@ import pytest
 from tesla_personal_platform.tesla_client import (
     PartnerRegistrar,
     TeslaAuthenticationError,
+    TeslaConfigurationError,
     TeslaFleetClient,
     TeslaOAuthClient,
     TeslaOAuthConfig,
@@ -224,6 +225,18 @@ def test_partner_registration_is_idempotent_when_expected_key_exists() -> None:
 
     assert results[0].status == "already_registered"
     assert [request[0] for request in transport.requests] == ["POST", "GET"]
+
+
+@pytest.mark.parametrize("domain", ["woodhouse.example?unexpected=true", "bad host.example"])
+def test_partner_registration_rejects_non_hostname_domain(domain: str) -> None:
+    with pytest.raises(TeslaConfigurationError, match="bare hostname"):
+        PartnerRegistrar(RecordingTransport([])).ensure_registered(
+            client_id="client",
+            client_secret="secret",
+            domain=domain,
+            expected_public_key_pem=PUBLIC_KEY,
+            base_urls=[NA_BASE],
+        )
 
 
 def test_partner_registration_creates_missing_record_then_verifies() -> None:

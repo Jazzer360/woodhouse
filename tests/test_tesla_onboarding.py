@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from cryptography.exceptions import InvalidTag
 from tesla_personal_platform.auth import CrossUserAccessError, UserContext
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
     ConcurrentTokenRotationError,
@@ -427,5 +426,19 @@ def test_token_cipher_round_trip_and_repr_do_not_expose_credentials() -> None:
     assert "access-initial" not in repr(tokens)
     assert "refresh-initial" not in repr(tokens)
     assert cipher.decrypt(ciphertext, owner_user_id="usr_homer") == tokens
-    with pytest.raises(InvalidTag):
+    with pytest.raises(ValueError, match="Encrypted Tesla token state is invalid"):
         cipher.decrypt(ciphertext, owner_user_id="usr_marge")
+
+
+def test_token_cipher_normalizes_legacy_naive_expiry_and_rejects_malformed_state() -> None:
+    cipher = TokenCipher.from_base64(base64.b64encode(b"k" * 32).decode("ascii"))
+    ciphertext = cipher.encrypt(
+        token_set(expires_at=datetime(2026, 8, 22, 13, 0)),
+        owner_user_id="usr_homer",
+    )
+
+    restored = cipher.decrypt(ciphertext, owner_user_id="usr_homer")
+
+    assert restored.expires_at == datetime(2026, 8, 22, 13, 0, tzinfo=UTC)
+    with pytest.raises(ValueError, match="Encrypted Tesla token state is invalid"):
+        cipher.decrypt("not valid base64!", owner_user_id="usr_homer")

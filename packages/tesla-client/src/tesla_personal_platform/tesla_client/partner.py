@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 from tesla_personal_platform.tesla_client.errors import (
     TeslaAPIError,
@@ -87,9 +88,10 @@ class PartnerRegistrar:
         return token
 
     def _registered_key(self, token: str, base_url: str, domain: str) -> str | None:
+        query = urlencode({"domain": domain})
         response = self._transport.request(
             "GET",
-            f"{base_url}/api/1/partner_accounts/public_key?domain={domain}",
+            f"{base_url}/api/1/partner_accounts/public_key?{query}",
             headers={"Authorization": f"Bearer {token}"},
         )
         if response.status == 404:
@@ -119,7 +121,20 @@ def _json_mapping(response: HttpResponse, operation: str) -> Mapping[str, object
 
 def _normalize_domain(value: str) -> str:
     domain = value.strip().lower().rstrip("/")
-    if not domain or "://" in domain or "/" in domain:
+    labels = domain.split(".")
+    if (
+        len(domain) > 253
+        or len(labels) < 2
+        or any(
+            not label
+            or len(label) > 63
+            or label.startswith("-")
+            or label.endswith("-")
+            or not label.isascii()
+            or any(not (character.isalnum() or character == "-") for character in label)
+            for label in labels
+        )
+    ):
         raise TeslaConfigurationError("Tesla application domain must be a bare hostname")
     return domain
 
