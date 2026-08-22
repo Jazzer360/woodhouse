@@ -60,6 +60,11 @@ output "user_admin_service_account" {
   value       = google_service_account.platform["user_admin"].email
 }
 
+output "partner_admin_service_account" {
+  description = "Keyless identity used only for Tesla partner registration and verification."
+  value       = google_service_account.platform["partner_admin"].email
+}
+
 output "dataset_owner_service_account" {
   description = "Keyless, non-impersonatable identity holding BigQuery's mandatory direct dataset-owner entries."
   value       = google_service_account.platform["dataset_owner"].email

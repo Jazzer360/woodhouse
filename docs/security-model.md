@@ -117,6 +117,31 @@ Per-user state includes:
 
 Do not share Tesla OAuth tokens between users.
 
+Phase 4 stores access and rotating refresh tokens together as an AES-256-GCM
+authenticated ciphertext in `tesla_connections/{user_id}`. The encryption key
+is injected into mcp-gateway from the `tesla-token-encryption-key` Secret Manager
+container. The internal `user_id` is authenticated additional data, so moving a
+ciphertext between users makes decryption fail. Plaintext tokens are never
+stored in Firestore, logged, or returned by HTTP/MCP responses.
+
+Authorization requests use random, hashed-at-rest, single-use state records with
+a ten-minute lifetime. The state record binds the callback to the platform
+`user_id` resolved at `/tesla/oauth/start`; the callback accepts no caller-
+selected user identity. Tesla's signed OIDC ID token must contain the recorded
+nonce and the configured client audience. Tesla does not currently document or
+advertise PKCE for this confidential-client flow; see `docs/tesla-onboarding.md`.
+Firestore TTL deletes abandoned state records after `expires_at`; correctness
+still comes from transactional expiry validation and single-use deletion because
+TTL processing is asynchronous.
+Gateway access logs omit all query strings so callback authorization codes and
+state values are not copied into Cloud Logging. JSON callback and onboarding
+responses are marked `no-store` with a `no-referrer` policy.
+
+Refresh commits use an optimistic token version. A successful exchange must
+atomically replace the encrypted credential blob. A competing loser reloads the
+newer committed credential rather than overwriting it. Tesla `login_required`
+marks only that connection for reauthorization.
+
 ---
 
 ## 5. Vehicle ownership mapping
@@ -138,6 +163,10 @@ VIN -> vehicle registry -> owner user_id -> BigQuery dataset
 ```
 
 Unknown VINs are quarantined; ownership is never guessed.
+
+Phase 4 also creates `vehicle_vin_index/{sha256(vin)}` transactionally with the
+vehicle record. A VIN already assigned to another platform `user_id` causes
+onboarding to fail closed instead of silently creating a second owner mapping.
 
 ---
 
@@ -161,6 +190,12 @@ Private key:
 - available only to Vehicle Command Proxy / minimum command-signing runtime;
 - never returned to clients;
 - never copied to the telemetry VM.
+
+Phase 4 does not inject the private key into the gateway container because no
+command-signing path exists yet. Its public half is injected from the separate
+`tesla-command-public-key` Secret Manager container solely for the public
+`.well-known` response. Phase 6 must keep private-key access limited to the
+Vehicle Command Proxy/minimum signing runtime.
 
 Public key:
 

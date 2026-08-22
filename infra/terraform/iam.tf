@@ -135,3 +135,11 @@ resource "google_service_account_iam_member" "user_admin_impersonator" {
   role               = "roles/iam.serviceAccountTokenCreator"
   member             = each.value
 }
+
+resource "google_service_account_iam_member" "partner_admin_impersonator" {
+  for_each = var.partner_admin_principals
+
+  service_account_id = google_service_account.platform["partner_admin"].name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = each.value
+}

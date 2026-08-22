@@ -50,6 +50,48 @@ variable "enable_mcp_external_access" {
   default     = false
 }
 
+variable "enable_tesla_onboarding" {
+  description = "Inject Tesla onboarding configuration and Secret Manager versions into mcp-gateway."
+  type        = bool
+  default     = false
+}
+
+variable "tesla_client_id" {
+  description = "Tesla developer application client ID; not a secret."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "tesla_app_domain" {
+  description = "Bare hostname registered as the Tesla developer application domain."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "tesla_oauth_redirect_uri" {
+  description = "Exact HTTPS callback URI registered with the Tesla developer application."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "tesla_initial_audience" {
+  description = "Initial regional Fleet API audience used for OAuth code exchange and region discovery."
+  type        = string
+  default     = "https://fleet-api.prd.na.vn.cloud.tesla.com"
+
+  validation {
+    condition = contains([
+      "https://fleet-api.prd.na.vn.cloud.tesla.com",
+      "https://fleet-api.prd.eu.vn.cloud.tesla.com",
+      "https://fleet-api.prd.cn.vn.cloud.tesla.cn",
+    ], var.tesla_initial_audience)
+    error_message = "tesla_initial_audience must be a documented Tesla Fleet API regional base URL."
+  }
+}
+
 variable "admin_principals" {
   description = "IAM members allowed to administer telemetry-edge through IAP and OS Login."
   type        = set(string)
@@ -58,6 +100,12 @@ variable "admin_principals" {
 
 variable "user_admin_principals" {
   description = "IAM members allowed to impersonate the keyless manual user-administration service account."
+  type        = set(string)
+  default     = []
+}
+
+variable "partner_admin_principals" {
+  description = "IAM members allowed to impersonate the keyless Tesla partner-registration service account."
   type        = set(string)
   default     = []
 }

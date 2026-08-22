@@ -7,11 +7,21 @@ zone       = "us-central1-a"
 # oidc_audience             = "replace-with-google-oauth-client-id"
 # enable_mcp_external_access = true
 
+# Enable only after these Secret Manager containers have enabled versions:
+# tesla-client-secret, tesla-command-public-key, tesla-token-encryption-key.
+# enable_tesla_onboarding  = true
+# tesla_client_id          = "replace-with-tesla-application-client-id"
+# tesla_app_domain         = "woodhouse.derekjass.com"
+# tesla_oauth_redirect_uri = "https://woodhouse.derekjass.com/oauth/callback"
+
 # Use IAM member syntax. Keep empty until the operator identity is known.
 # admin_principals = ["user:operator@example.com"]
 
 # Operators allowed to impersonate the keyless add-user/disable-user identity.
 # user_admin_principals = ["user:operator@example.com"]
+
+# Operators allowed to impersonate only the Tesla partner-registration identity.
+# partner_admin_principals = ["user:operator@example.com"]
 
 # Add existing Monitoring notification-channel resource names when available.
 # monitoring_notification_channels = [

@@ -1,6 +1,6 @@
 # Deployment
 
-**Status:** Phase 3 platform-authentication baseline. Shared infrastructure remains production-shaped; mcp-gateway now enforces Google OIDC plus the Firestore manual allowlist, while Tesla OAuth, vehicle behavior, commands, and telemetry remain unimplemented.
+**Status:** Phase 4 Tesla-onboarding baseline. The gateway retains the Phase 3 Google OIDC/allowlist boundary and adds fail-closed Tesla OAuth, encrypted token rotation, multi-vehicle discovery, and per-vehicle Virtual Key status. Broad commands and telemetry configuration remain unimplemented.
 
 ## Fixed deployment choices
 
@@ -17,18 +17,18 @@ Python remains the smallest practical common stack for the planned MCP, GCP, and
 | Resource | Terraform identity | Current behavior |
 |---|---|---|
 | Artifact Registry | `tesla-personal-platform` | New immutable-tag Docker repository |
-| MCP gateway | Cloud Run `mcp-gateway` | Health plus authenticated `/mcp` boundary; external reachability is opt-in only after OIDC configuration |
+| MCP gateway | Cloud Run `mcp-gateway` | Health, authenticated `/mcp`, Tesla onboarding routes, and the public Tesla application-key path; Tesla behavior is separately opt-in |
 | Telemetry processor | Cloud Run `telemetry-processor` | Internal ingress, authenticated same-project Pub/Sub invoker only |
 | Telemetry edge | Compute Engine `tpp-telemetry-edge` | Idle shielded COS `e2-micro`; no receiver or container deployed yet |
 | Telemetry address | Regional static external IPv4 | Reserved for the future public receiver |
 | Raw transport | `tpp-raw-telemetry` topic and processor subscription | 31-day retention; authenticated push path |
 | Mutable state | Firestore Native `(default)` | Allowlist and atomic immutable OIDC identity bindings; regional database with delete protection |
-| Secret storage | Four Secret Manager containers | Metadata and IAM only; no secret versions or values |
+| Secret storage | Six Secret Manager containers | Terraform manages containers/IAM only; operators add secret versions out of band |
 | Quarantine | `tesla_system_quarantine.raw_unknown_telemetry` | Restricted, partitioned append destination for unmapped telemetry |
 | Monitoring | backlog alert and unknown-vehicle log metric | No notification destination unless existing channel IDs are supplied |
 | Network | custom VPC and `/28` subnet | No default ingress rules |
 
-The MCP gateway receives project-level BigQuery job permission but no project-level data access. The telemetry processor can write only the shared quarantine dataset until Phase 3 grants it access to a newly created user's dataset.
+The MCP gateway receives project-level BigQuery job permission but no project-level data access. Its Secret Manager access covers platform auth, the Tesla client secret, the public application key, and the token-encryption key. It deliberately cannot read the Tesla command private key before the Phase 6 signing runtime exists. The telemetry processor can write only the shared quarantine dataset until the user workflow grants it access to a newly created user's dataset.
 
 The `tpp-user-admin` service account is keyless and used only through operator
 impersonation. It can write Firestore allowlist entities, create BigQuery
@@ -71,13 +71,14 @@ The Pub/Sub push subscription uses the complete processor handler URL, including
 
 | Identity | Granted access |
 |---|---|
-| `tpp-mcp-gateway` | Firestore user; BigQuery job user; accessor on the MCP auth, Tesla client, and command-key secret containers |
+| `tpp-mcp-gateway` | Firestore user; BigQuery job user; accessor on MCP auth, Tesla client-secret, public-key, and token-encryption secret containers; no private command-key access yet |
 | `tpp-telemetry-processor` | Firestore user; writer on the quarantine dataset |
 | `tpp-telemetry-edge` | Publisher on the raw topic; log and metric writer |
 | `tpp-pubsub-push` | Invoker on telemetry-processor only |
 | `tpp-build-validator` | Log writer only; no deploy, secret, or data permission |
 | `tpp-build-deployer` | Artifact Registry writer on this repository, Cloud Run developer, and `actAs` only on the two Cloud Run runtime accounts |
 | `tpp-user-admin` | Firestore user; BigQuery dataset creator; update metadata/ACLs on datasets; no table-data access |
+| `tpp-partner-admin` | Secret accessor only for Tesla client-secret and public-key containers; no project role or runtime impersonation |
 | `tpp-dataset-owner` | Required direct owner on per-user datasets; no project roles, keys, or impersonation binding |
 
 The Cloud Build service agent may mint tokens only for the two custom build identities. Neither build identity receives Owner, Editor, Secret Manager access, BigQuery data access, or vehicle-VM administration.
@@ -181,6 +182,48 @@ user_admin_principals = ["user:operator@example.com"]
 
 This does not make the operator a project administrator. It permits impersonation
 of only `tpp-user-admin`, whose exact permissions are described above.
+
+For Tesla partner registration, set `partner_admin_principals`. This permits
+keyless impersonation of only `tpp-partner-admin`, which can read the Tesla
+client-secret and public-key containers but has no Firestore, BigQuery, Cloud
+Run, infrastructure, or vehicle-command role.
+
+## Phase 4 Tesla onboarding configuration
+
+Terraform adds `tesla-command-public-key` and `tesla-token-encryption-key`
+containers alongside the existing Tesla client-secret and private-command-key
+containers. It never creates a secret version. The gateway receives the client
+secret, public key, and token-encryption key only through Cloud Run Secret
+Manager environment references when `enable_tesla_onboarding = true`. The
+private command key is intentionally not injected until the Phase 6 signing
+runtime exists.
+
+The enable switch defaults false so a plan/apply remains deployable before the
+operator creates secret versions. Enabling requires these non-secret values in
+the uncommitted tfvars file:
+
+```hcl
+enable_tesla_onboarding  = true
+tesla_client_id          = "Tesla dashboard client ID"
+tesla_app_domain         = "woodhouse.derekjass.com"
+tesla_oauth_redirect_uri = "https://woodhouse.derekjass.com/oauth/callback"
+tesla_initial_audience   = "https://fleet-api.prd.na.vn.cloud.tesla.com"
+```
+
+Runtime state uses these Firestore collections:
+
+- `tesla_oauth_states`: hashed, single-use, ten-minute callback bindings with
+  asynchronous Firestore TTL cleanup on `expires_at`;
+- `tesla_connections`: one encrypted rotating token state per platform user;
+- `vehicles`: safe vehicle metadata and per-vehicle key status;
+- `vehicle_vin_index`: collision-safe VIN-to-owner mapping used to reject
+  cross-user ownership conflicts.
+
+Application delivery still deploys an immutable commit-SHA image after merge.
+Terraform controls configuration and secret references but ignores the image
+field so it cannot roll the application back to the original placeholder.
+Follow the ordered live procedure in
+[`docs/tesla-onboarding.md`](tesla-onboarding.md#12-required-operator-checkpoint--first-real-tesla-onboarding).
 
 ## Manual add Homer workflow
 

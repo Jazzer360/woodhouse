@@ -3,6 +3,11 @@
 **Audit date:** 2026-08-21  
 **Vehicle command count on Tesla's current page:** 72
 
+**Phase 4 onboarding subset re-verified:** 2026-08-22. Tesla still documents
+`GET /api/1/vehicles` as paginated with a default page size of 100 and
+`POST /api/1/vehicles/fleet_status` as the per-application vehicle capability
+and key-state check. The complete command-page count remains the Phase 5 audit.
+
 This document is a completeness contract for the typed Tesla client and MCP surface.
 
 Before implementing or declaring Fleet API work complete, re-audit the current official pages:

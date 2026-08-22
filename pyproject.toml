@@ -3,7 +3,7 @@ name = "tesla-personal-platform"
 version = "0.0.0"
 description = "Personal Tesla platform monorepo"
 requires-python = ">=3.12,<3.13"
-dependencies = ["tpp-auth[admin]"]
+dependencies = ["tpp-auth[admin]", "tpp-tesla-client[admin]"]
 
 [dependency-groups]
 dev = [
@@ -19,6 +19,7 @@ package = false
 
 [tool.uv.sources]
 tpp-auth = { workspace = true }
+tpp-tesla-client = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/*", "services/*"]
@@ -51,4 +52,4 @@ line-length = 100
 select = ["B", "E", "F", "I", "S", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]
+"tests/**" = ["S101", "S105", "S106"]

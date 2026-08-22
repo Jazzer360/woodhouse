@@ -1,4 +1,4 @@
-"""Phase 3 MCP gateway with a real platform-authentication boundary."""
+"""Authenticated gateway with Phase 4 Tesla onboarding routes."""
 
 import json
 import os
@@ -7,6 +7,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from time import monotonic
 from typing import Final, Protocol, cast
+from urllib.parse import parse_qs, urlsplit
 
 from google.cloud import firestore
 from tesla_personal_platform.auth import (
@@ -14,15 +15,27 @@ from tesla_personal_platform.auth import (
     Authenticator,
     CallerIdentityClaimError,
     ConfigurationError,
+    CrossUserAccessError,
 )
 from tesla_personal_platform.auth.firestore import FirestoreIdentityStore
 from tesla_personal_platform.auth.google_oidc import GoogleOIDCVerifier
 from tesla_personal_platform.mcp_gateway import SERVICE_NAME
 from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundary
+from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
+    InvalidOAuthStateError,
+    TeslaOnboardingError,
+)
+from tesla_personal_platform.mcp_gateway.tesla_runtime import TeslaRuntime, build_tesla_runtime
+from tesla_personal_platform.tesla_client import (
+    TeslaAPIError,
+    TeslaAuthenticationError,
+    TeslaReauthorizationRequired,
+)
 
 DEFAULT_HOST: Final = "127.0.0.1"
 DEFAULT_PORT: Final = 8080
 HEALTH_PATHS: Final = frozenset({"/health", "/healthz"})
+TESLA_PUBLIC_KEY_PATH: Final = "/.well-known/appspecific/com.tesla.3p.public-key.pem"
 MAX_REQUEST_BYTES: Final = 1_048_576
 REQUEST_IDLE_TIMEOUT_SECONDS: Final = 15.0
 REQUEST_BODY_TIMEOUT_SECONDS: Final = 15.0
@@ -43,7 +56,7 @@ class _TimeoutConnection(Protocol):
 
 def health_document() -> dict[str, str]:
     """Return a non-sensitive service health document."""
-    return {"phase": "platform-auth", "service": SERVICE_NAME, "status": "ok"}
+    return {"phase": "tesla-onboarding", "service": SERVICE_NAME, "status": "ok"}
 
 
 def _decode_json_request(body: bytes) -> object:
@@ -84,8 +97,8 @@ def _read_request_body(
     return b"".join(chunks)
 
 
-def build_auth_boundary() -> GatewayAuthBoundary:
-    """Build the production Google OIDC and Firestore adapters from safe config."""
+def build_runtime() -> tuple[GatewayAuthBoundary, TeslaRuntime | None]:
+    """Build platform auth and optional Tesla onboarding from runtime configuration."""
     audience = os.environ.get("OIDC_AUDIENCE", "").strip()
     project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
     if not audience:
@@ -95,7 +108,10 @@ def build_auth_boundary() -> GatewayAuthBoundary:
 
     verifier = GoogleOIDCVerifier(audience)
     identities = FirestoreIdentityStore(firestore.Client(project=project_id))
-    return GatewayAuthBoundary(Authenticator(verifier, identities))
+    return (
+        GatewayAuthBoundary(Authenticator(verifier, identities)),
+        build_tesla_runtime(project_id),
+    )
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -105,13 +121,33 @@ class _Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(REQUEST_IDLE_TIMEOUT_SECONDS)
 
     def do_GET(self) -> None:  # noqa: N802 - inherited HTTP handler API
-        if self.path not in HEALTH_PATHS:
-            self.send_error(HTTPStatus.NOT_FOUND)
+        parsed = urlsplit(self.path)
+        if parsed.path in HEALTH_PATHS:
+            self._send_json(HTTPStatus.OK, health_document())
             return
-        self._send_json(HTTPStatus.OK, health_document())
+        if parsed.path == TESLA_PUBLIC_KEY_PATH:
+            self._serve_tesla_public_key()
+            return
+        if parsed.path == "/tesla/oauth/start":
+            self._start_tesla_oauth()
+            return
+        if parsed.path == "/oauth/callback":
+            self._complete_tesla_oauth(parse_qs(parsed.query))
+            return
+        if parsed.path == "/tesla/vehicles":
+            self._list_tesla_vehicles()
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802 - inherited HTTP handler API
-        if self.path != "/mcp":
+        parsed = urlsplit(self.path)
+        if parsed.path == "/tesla/oauth/refresh":
+            self._rotate_tesla_refresh_token()
+            return
+        if parsed.path.startswith("/tesla/vehicles/") and parsed.path.endswith("/fleet-status"):
+            self._refresh_tesla_fleet_status(parsed.path)
+            return
+        if parsed.path != "/mcp":
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
@@ -144,8 +180,155 @@ class _Handler(BaseHTTPRequestHandler):
 
         self._send_json(
             HTTPStatus.NOT_IMPLEMENTED,
-            {"error": "mcp_behavior_deferred", "phase": "platform-auth"},
+            {"error": "mcp_behavior_deferred", "phase": "tesla-onboarding"},
         )
+
+    def _serve_tesla_public_key(self) -> None:
+        runtime = cast(_Server, self.server).tesla_runtime
+        if runtime is None:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "tesla_not_configured"})
+            return
+        body = runtime.public_key_pem
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-pem-file")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=300")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _start_tesla_oauth(self) -> None:
+        runtime = cast(_Server, self.server).tesla_runtime
+        if runtime is None:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "tesla_not_configured"})
+            return
+        try:
+            server = cast(_Server, self.server)
+            context = server.auth_boundary.authorize(self.headers.get("Authorization"), {})
+            location = runtime.onboarding.start(context)
+        except AuthenticationError:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"}, authenticate=True)
+            return
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _complete_tesla_oauth(self, query: dict[str, list[str]]) -> None:
+        runtime = cast(_Server, self.server).tesla_runtime
+        if runtime is None:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "tesla_not_configured"})
+            return
+        try:
+            state = _single_query_value(query, "state")
+            if _single_query_value(query, "error") is not None:
+                runtime.onboarding.decline(state=state or "")
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "tesla_authorization_denied"})
+                return
+            code = _single_query_value(query, "code")
+            if state is None or code is None:
+                raise InvalidOAuthStateError("Tesla OAuth callback is incomplete")
+            result = runtime.onboarding.callback(state=state, code=code)
+        except InvalidOAuthStateError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_oauth_state"})
+            return
+        except TeslaAuthenticationError:
+            self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "tesla_authorization_failed"})
+            return
+        except (TeslaAPIError, TeslaOnboardingError):
+            self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "tesla_onboarding_failed"})
+            return
+        self._send_json_document(
+            HTTPStatus.OK,
+            {
+                "status": "connected",
+                "connection_id": result.connection_id,
+                "region": result.region,
+                "fleet_api_base_url": result.base_url,
+                "vehicles": runtime.onboarding.vehicle_documents(result.vehicles),
+            },
+        )
+
+    def _list_tesla_vehicles(self) -> None:
+        runtime = cast(_Server, self.server).tesla_runtime
+        if runtime is None:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "tesla_not_configured"})
+            return
+        try:
+            server = cast(_Server, self.server)
+            context = server.auth_boundary.authorize(self.headers.get("Authorization"), {})
+            vehicles = runtime.onboarding.list_vehicles(context)
+        except AuthenticationError:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"}, authenticate=True)
+            return
+        self._send_json_document(HTTPStatus.OK, {"vehicles": vehicles})
+
+    def _refresh_tesla_fleet_status(self, path: str) -> None:
+        runtime = cast(_Server, self.server).tesla_runtime
+        if runtime is None:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "tesla_not_configured"})
+            return
+        vehicle_id = path.removeprefix("/tesla/vehicles/").removesuffix("/fleet-status")
+        if not vehicle_id or "/" in vehicle_id:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        try:
+            payload = self._read_json()
+            server = cast(_Server, self.server)
+            context = server.auth_boundary.authorize(self.headers.get("Authorization"), payload)
+            vehicle = runtime.onboarding.refresh_fleet_status(context, vehicle_id)
+        except TimeoutError:
+            self._send_json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request_timeout"})
+            return
+        except CallerIdentityClaimError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "caller_identity_fields_forbidden"})
+            return
+        except AuthenticationError:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"}, authenticate=True)
+            return
+        except TeslaReauthorizationRequired:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "tesla_reauthorization_required"})
+            return
+        except CrossUserAccessError:
+            self._send_json(HTTPStatus.FORBIDDEN, {"error": "vehicle_forbidden"})
+            return
+        except (TeslaAPIError, TeslaOnboardingError):
+            self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "tesla_fleet_status_failed"})
+            return
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json_request"})
+            return
+        self._send_json_document(HTTPStatus.OK, {"vehicle": vehicle})
+
+    def _rotate_tesla_refresh_token(self) -> None:
+        runtime = cast(_Server, self.server).tesla_runtime
+        if runtime is None:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "tesla_not_configured"})
+            return
+        try:
+            payload = self._read_json()
+            server = cast(_Server, self.server)
+            context = server.auth_boundary.authorize(self.headers.get("Authorization"), payload)
+            result = runtime.onboarding.rotate_refresh_token(context)
+        except TimeoutError:
+            self._send_json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request_timeout"})
+            return
+        except CallerIdentityClaimError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "caller_identity_fields_forbidden"})
+            return
+        except AuthenticationError:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"}, authenticate=True)
+            return
+        except TeslaReauthorizationRequired:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "tesla_reauthorization_required"})
+            return
+        except (TeslaAPIError, TeslaOnboardingError):
+            self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "tesla_refresh_failed"})
+            return
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json_request"})
+            return
+        self._send_json_document(HTTPStatus.OK, result)
 
     def _read_json(self) -> object:
         content_length = self.headers.get("Content-Length")
@@ -168,17 +351,40 @@ class _Handler(BaseHTTPRequestHandler):
         *,
         authenticate: bool = False,
     ) -> None:
+        self._send_json_document(status, document, authenticate=authenticate)
+
+    def _send_json_document(
+        self,
+        status: HTTPStatus,
+        document: object,
+        *,
+        authenticate: bool = False,
+    ) -> None:
         body = json.dumps(document, sort_keys=True).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
         if authenticate:
             self.send_header("WWW-Authenticate", 'Bearer realm="mcp-gateway"')
         self.end_headers()
         self.wfile.write(body)
 
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        """Log the request path without OAuth codes, state, or other query values."""
+        self.log_message(
+            '"%s %s %s" %s %s',
+            self.command,
+            urlsplit(self.path).path,
+            self.request_version,
+            str(code),
+            str(size),
+        )
+
     def log_message(self, format: str, *args: object) -> None:
-        """Use standard access logging, which never includes authorization headers."""
+        """Use standard access logging after ``log_request`` removes query values."""
         super().log_message(format, *args)
 
 
@@ -189,8 +395,10 @@ class _Server(ThreadingHTTPServer):
         self,
         server_address: tuple[str, int],
         auth_boundary: GatewayAuthBoundary,
+        tesla_runtime: TeslaRuntime | None = None,
     ) -> None:
         self.auth_boundary = auth_boundary
+        self.tesla_runtime = tesla_runtime
         super().__init__(server_address, _Handler)
 
 
@@ -198,8 +406,18 @@ def main() -> None:
     """Run the authenticated gateway boundary."""
     host = os.environ.get("HOST", DEFAULT_HOST)
     port = int(os.environ.get("PORT", str(DEFAULT_PORT)))
-    server = _Server((host, port), build_auth_boundary())
+    auth_boundary, tesla_runtime = build_runtime()
+    server = _Server((host, port), auth_boundary, tesla_runtime)
     cast(ThreadingHTTPServer, server).serve_forever()
+
+
+def _single_query_value(query: dict[str, list[str]], name: str) -> str | None:
+    values = query.get(name)
+    if values is None:
+        return None
+    if len(values) != 1 or not values[0]:
+        raise InvalidOAuthStateError("Tesla OAuth callback parameter is invalid")
+    return values[0]
 
 
 if __name__ == "__main__":

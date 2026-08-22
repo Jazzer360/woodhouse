@@ -109,6 +109,47 @@ def test_mcp_external_route_is_fail_closed_until_oidc_is_configured() -> None:
     assert 'member   = "allUsers"' in cloud_run
 
 
+def test_tesla_onboarding_is_fail_closed_and_does_not_inject_private_key() -> None:
+    variables = (TERRAFORM_ROOT / "variables.tf").read_text(encoding="utf-8")
+    cloud_run = (TERRAFORM_ROOT / "cloud_run.tf").read_text(encoding="utf-8")
+
+    onboarding = variable_block(variables, "enable_tesla_onboarding")
+    assert "default     = false" in onboarding
+    assert "TESLA_CLIENT_SECRET" in cloud_run
+    assert "TESLA_PUBLIC_KEY_PEM" in cloud_run
+    assert "TESLA_TOKEN_ENCRYPTION_KEY" in cloud_run
+    assert "TESLA_COMMAND_PRIVATE_KEY" not in cloud_run
+    secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")
+    gateway_start = secrets.index(
+        'resource "google_secret_manager_secret_iam_member" "mcp_gateway_accessor"'
+    )
+    gateway_end = secrets.index(
+        'resource "google_secret_manager_secret_iam_member" "partner_admin_accessor"'
+    )
+    gateway_access = secrets[gateway_start:gateway_end]
+    assert '"tesla_command_private_key"' not in gateway_access
+
+
+def test_abandoned_tesla_oauth_states_have_firestore_ttl() -> None:
+    firestore = (TERRAFORM_ROOT / "firestore.tf").read_text(encoding="utf-8")
+
+    assert 'collection = "tesla_oauth_states"' in firestore
+    assert 'field      = "expires_at"' in firestore
+    assert "ttl_config {}" in firestore
+
+
+def test_partner_admin_is_keyless_and_has_no_project_role() -> None:
+    iam = (TERRAFORM_ROOT / "iam.tf").read_text(encoding="utf-8")
+    secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")
+    service_accounts = (TERRAFORM_ROOT / "service_accounts.tf").read_text(encoding="utf-8")
+
+    assert 'account_id   = "tpp-partner-admin"' in service_accounts
+    project_iam = iam[: iam.index('resource "google_project_iam_member" "platform"')]
+    assert 'platform["partner_admin"]' not in project_iam
+    assert 'resource "google_service_account_iam_member" "partner_admin_impersonator"' in iam
+    assert 'resource "google_secret_manager_secret_iam_member" "partner_admin_accessor"' in secrets
+
+
 def test_user_admin_has_no_key_and_only_dataset_provisioning_permissions() -> None:
     source = terraform_source()
     iam = (TERRAFORM_ROOT / "iam.tf").read_text(encoding="utf-8")

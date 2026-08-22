@@ -13,6 +13,20 @@ locals {
       max_instances = 3
     }
   }
+
+  tesla_gateway_environment = {
+    TESLA_CLIENT_ID          = var.tesla_client_id
+    TESLA_APP_DOMAIN         = var.tesla_app_domain
+    TESLA_OAUTH_REDIRECT_URI = var.tesla_oauth_redirect_uri
+    TESLA_INITIAL_AUDIENCE   = var.tesla_initial_audience
+    TESLA_ONBOARDING_ENABLED = "true"
+  }
+
+  tesla_gateway_secret_environment = {
+    TESLA_CLIENT_SECRET        = "tesla_client_secret"
+    TESLA_PUBLIC_KEY_PEM       = "tesla_command_public_key"
+    TESLA_TOKEN_ENCRYPTION_KEY = "tesla_token_encryption_key"
+  }
 }
 
 resource "google_cloud_run_v2_service" "platform" {
@@ -65,6 +79,27 @@ resource "google_cloud_run_v2_service" "platform" {
           value = env.value
         }
       }
+
+      dynamic "env" {
+        for_each = each.key == "mcp_gateway" && var.enable_tesla_onboarding ? local.tesla_gateway_environment : {}
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = each.key == "mcp_gateway" && var.enable_tesla_onboarding ? local.tesla_gateway_secret_environment : {}
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.platform[env.value].secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
     }
   }
 
@@ -84,6 +119,16 @@ resource "google_cloud_run_v2_service" "platform" {
       template[0].containers[0].image,
       scaling,
     ]
+
+
+    precondition {
+      condition = !var.enable_tesla_onboarding || alltrue([
+        var.tesla_client_id != null && length(trimspace(var.tesla_client_id)) > 0,
+        var.tesla_app_domain != null && length(trimspace(var.tesla_app_domain)) > 0,
+        var.tesla_oauth_redirect_uri != null && startswith(var.tesla_oauth_redirect_uri, "https://"),
+      ])
+      error_message = "enable_tesla_onboarding requires tesla_client_id, tesla_app_domain, and an HTTPS tesla_oauth_redirect_uri."
+    }
   }
 
   depends_on = [google_project_service.required]
