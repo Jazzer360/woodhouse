@@ -124,7 +124,10 @@ no audience, and the process refuses to start without both `OIDC_AUDIENCE` and
 
 The reserved `/mcp` route authenticates and applies the tenant-input guard before
 returning the expected Phase 3 `501` response; actual MCP protocol/tools arrive
-in later phases. `/healthz` contains no identity state and remains unauthenticated.
+in later phases. Public smoke checks use `/health`, which contains no identity
+state and remains unauthenticated. The service also exposes `/healthz` inside the
+container for local health checks; Google Front End reserves that literal path
+on the public `run.app` hostname and returns its own `404` before the container.
 
 ## One-time operator bootstrap
 
@@ -194,7 +197,9 @@ uv run python scripts/admin/add-user \
 
 The command transactionally allocates stable random `user_id` and `dataset_id`
 values, creates or repairs the `us-central1` dataset with no default table or
-partition expiration, enforces only gateway read and processor write ACLs, then
+partition expiration, grants the dedicated `tpp-user-admin` service account the
+direct dataset owner entry required by BigQuery, and enforces only gateway read
+and processor write runtime ACLs, then
 marks the invitation active. Re-running the command reuses the
 same identifiers and repairs drift. If dataset provisioning fails for a new
 invitation, the record remains disabled and a safe retry completes it.

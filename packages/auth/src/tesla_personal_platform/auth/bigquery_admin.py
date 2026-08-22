@@ -18,12 +18,18 @@ DATASET_LABELS = {
 
 def restricted_service_account_access(
     existing: Iterable[bigquery.AccessEntry],
+    owner_service_account: str,
     gateway_service_account: str,
     processor_service_account: str,
 ) -> list[bigquery.AccessEntry]:
-    """Return the exact isolated BigQuery dataViewer/dataEditor-equivalent ACL."""
+    """Return the exact isolated ACL, including BigQuery's required direct owner."""
     del existing
     return [
+        bigquery.AccessEntry(
+            "OWNER",
+            SERVICE_ACCOUNT_ENTITY_TYPE,
+            owner_service_account,
+        ),
         bigquery.AccessEntry(
             DATA_VIEWER_ACCESS_ROLE,
             SERVICE_ACCOUNT_ENTITY_TYPE,
@@ -45,12 +51,14 @@ class BigQueryDatasetProvisioner:
         client: bigquery.Client,
         project_id: str,
         location: str,
+        owner_service_account: str,
         gateway_service_account: str,
         processor_service_account: str,
     ) -> None:
         self._client = client
         self._project_id = project_id
         self._location = location
+        self._owner_service_account = owner_service_account
         self._gateway_service_account = gateway_service_account
         self._processor_service_account = processor_service_account
 
@@ -63,6 +71,7 @@ class BigQueryDatasetProvisioner:
         dataset.default_partition_expiration_ms = None
         dataset.access_entries = restricted_service_account_access(
             (),
+            self._owner_service_account,
             self._gateway_service_account,
             self._processor_service_account,
         )
@@ -80,6 +89,7 @@ class BigQueryDatasetProvisioner:
         current.labels = DATASET_LABELS.copy()
         current.access_entries = restricted_service_account_access(
             current.access_entries,
+            self._owner_service_account,
             self._gateway_service_account,
             self._processor_service_account,
         )

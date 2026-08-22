@@ -22,6 +22,7 @@ from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundar
 
 DEFAULT_HOST: Final = "127.0.0.1"
 DEFAULT_PORT: Final = 8080
+HEALTH_PATHS: Final = frozenset({"/health", "/healthz"})
 MAX_REQUEST_BYTES: Final = 1_048_576
 REQUEST_IDLE_TIMEOUT_SECONDS: Final = 15.0
 REQUEST_BODY_TIMEOUT_SECONDS: Final = 15.0
@@ -104,7 +105,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(REQUEST_IDLE_TIMEOUT_SECONDS)
 
     def do_GET(self) -> None:  # noqa: N802 - inherited HTTP handler API
-        if self.path != "/healthz":
+        if self.path not in HEALTH_PATHS:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         self._send_json(HTTPStatus.OK, health_document())
