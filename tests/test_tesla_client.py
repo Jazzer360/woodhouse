@@ -6,6 +6,7 @@ from datetime import UTC
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from tesla_personal_platform.tesla_client import (
@@ -254,6 +255,27 @@ def test_partner_registration_rejects_non_hostname_domain(domain: str) -> None:
             client_id="client",
             client_secret="secret",
             domain=domain,
+            expected_public_key_pem=PUBLIC_KEY,
+            base_urls=[NA_BASE],
+        )
+
+
+def test_partner_registration_wraps_unsupported_pem_algorithm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_unsupported_algorithm(_: bytes) -> object:
+        raise UnsupportedAlgorithm("unsupported test algorithm")
+
+    monkeypatch.setattr(serialization, "load_pem_public_key", raise_unsupported_algorithm)
+
+    with pytest.raises(
+        TeslaConfigurationError,
+        match="Expected a secp256r1 public key in PEM or uncompressed-point hex",
+    ):
+        PartnerRegistrar(RecordingTransport([])).ensure_registered(
+            client_id="client",
+            client_secret="secret",
+            domain="woodhouse.derekjass.com",
             expected_public_key_pem=PUBLIC_KEY,
             base_urls=[NA_BASE],
         )

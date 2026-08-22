@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from tesla_personal_platform.tesla_client.errors import (
@@ -157,7 +158,7 @@ def _public_key_point(value: str) -> bytes:
             serialization.Encoding.X962,
             serialization.PublicFormat.UncompressedPoint,
         )
-    except (UnicodeEncodeError, ValueError) as error:
+    except (UnicodeEncodeError, UnsupportedAlgorithm, ValueError) as error:
         raise TeslaConfigurationError(
             "Expected a secp256r1 public key in PEM or uncompressed-point hex"
         ) from error
