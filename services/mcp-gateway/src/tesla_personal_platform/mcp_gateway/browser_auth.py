@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import secrets
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from hmac import compare_digest
 from typing import Any, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from google.cloud import firestore
 from google.cloud.firestore_v1 import Client
@@ -35,6 +36,12 @@ class BrowserAuthenticationError(Exception):
     """Safe browser authentication failure."""
 
 
+class _RejectRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        """Never forward browser OAuth credentials across an HTTP redirect."""
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class BrowserOIDCConfig:
     """Trusted browser OAuth client configuration."""
@@ -42,7 +49,7 @@ class BrowserOIDCConfig:
     issuer: str
     audience: str
     client_id: str
-    client_secret: str
+    client_secret: str = field(repr=False)
     redirect_uri: str
     scopes: tuple[str, ...] = ("openid", "email", "profile", "mcp:access")
 
@@ -67,8 +74,9 @@ class BrowserOIDCConfig:
 
 @dataclass(frozen=True, slots=True)
 class PendingBrowserLogin:
-    code_verifier: str
-    nonce: str
+    code_verifier: str = field(repr=False)
+    nonce: str = field(repr=False)
+    browser_binding_hash: str = field(repr=False)
     expires_at: datetime
 
 
@@ -76,14 +84,20 @@ class PendingBrowserLogin:
 class BrowserSession:
     issuer: str
     subject: str
-    csrf_token: str
+    csrf_token: str = field(repr=False)
     expires_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
+class BrowserLoginStart:
+    authorization_url: str = field(repr=False)
+    browser_binding_token: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class BrowserLoginResult:
-    session_token: str
-    csrf_token: str
+    session_token: str = field(repr=False)
+    csrf_token: str = field(repr=False)
     context: UserContext
 
 
@@ -109,6 +123,7 @@ class OIDCBrowserTokenClient:
     def __init__(self, config: BrowserOIDCConfig, *, timeout_seconds: float = 10.0) -> None:
         self._config = config
         self._timeout_seconds = timeout_seconds
+        self._opener = build_opener(_RejectRedirects)
 
     def exchange_code(self, code: str, *, code_verifier: str) -> Mapping[str, Any]:
         body = urlencode(
@@ -131,7 +146,7 @@ class OIDCBrowserTokenClient:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
+            with self._opener.open(request, timeout=self._timeout_seconds) as response:
                 payload = json.load(response)
         except (HTTPError, URLError, TimeoutError, ValueError) as error:
             raise BrowserAuthenticationError("Platform sign-in could not be completed") from error
@@ -160,15 +175,21 @@ class BrowserAuthService:
         self._id_tokens = id_tokens
         self._tokens = token_client or OIDCBrowserTokenClient(config)
 
-    def start(self, *, now: datetime | None = None) -> str:
+    def start(self, *, now: datetime | None = None) -> BrowserLoginStart:
         current = now or datetime.now(UTC)
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(64)
+        browser_binding_token = secrets.token_urlsafe(32)
         challenge = _pkce_challenge(verifier)
         self._store.create_login(
             state,
-            PendingBrowserLogin(verifier, nonce, current + LOGIN_STATE_LIFETIME),
+            PendingBrowserLogin(
+                verifier,
+                nonce,
+                _opaque_id(browser_binding_token),
+                current + LOGIN_STATE_LIFETIME,
+            ),
         )
         query = urlencode(
             {
@@ -183,17 +204,22 @@ class BrowserAuthService:
                 "code_challenge_method": "S256",
             }
         )
-        return f"{self.config.authorization_endpoint}?{query}"
+        return BrowserLoginStart(
+            f"{self.config.authorization_endpoint}?{query}",
+            browser_binding_token,
+        )
 
     def complete(
         self,
         *,
         state: str,
         code: str,
+        browser_binding_token: str,
         now: datetime | None = None,
     ) -> BrowserLoginResult:
         current = now or datetime.now(UTC)
         pending = self._store.consume_login(state, now=current)
+        _require_browser_binding(pending, browser_binding_token)
         tokens = self._tokens.exchange_code(code, code_verifier=pending.code_verifier)
         access_token = _required_token(tokens, "access_token")
         id_token = _required_token(tokens, "id_token")
@@ -215,9 +241,16 @@ class BrowserAuthService:
         )
         return BrowserLoginResult(session_token, csrf_token, context)
 
-    def cancel(self, state: str, *, now: datetime | None = None) -> None:
+    def cancel(
+        self,
+        state: str,
+        *,
+        browser_binding_token: str,
+        now: datetime | None = None,
+    ) -> None:
         """Consume a denied login state so it cannot be replayed."""
-        self._store.consume_login(state, now=now or datetime.now(UTC))
+        pending = self._store.consume_login(state, now=now or datetime.now(UTC))
+        _require_browser_binding(pending, browser_binding_token)
 
     def authenticate_session(
         self,
@@ -234,6 +267,11 @@ class BrowserAuthService:
     def logout(self, token: str) -> None:
         self._store.delete_session(token)
 
+    @staticmethod
+    def session_binding(token: str) -> str:
+        """Return the non-reversible binding stored with browser-started Tesla OAuth."""
+        return _opaque_id(token)
+
 
 class FirestoreBrowserAuthStore:
     """Persist one-time login state and hashed opaque sessions in Firestore."""
@@ -246,6 +284,7 @@ class FirestoreBrowserAuthStore:
             {
                 "code_verifier": login.code_verifier,
                 "nonce": login.nonce,
+                "browser_binding_hash": login.browser_binding_hash,
                 "expires_at": login.expires_at,
                 "created_at": firestore.SERVER_TIMESTAMP,
             }
@@ -298,16 +337,18 @@ def _consume_login(
         raise BrowserAuthenticationError("Platform login state is invalid")
     verifier = data.get("code_verifier")
     nonce = data.get("nonce")
+    browser_binding_hash = data.get("browser_binding_hash")
     expires_at = data.get("expires_at")
     if (
         not isinstance(verifier, str)
         or not isinstance(nonce, str)
+        or not isinstance(browser_binding_hash, str)
         or not isinstance(expires_at, datetime)
     ):
         raise BrowserAuthenticationError("Platform login state is invalid")
     if expires_at <= now:
         raise BrowserAuthenticationError("Platform login state has expired")
-    return PendingBrowserLogin(verifier, nonce, expires_at)
+    return PendingBrowserLogin(verifier, nonce, browser_binding_hash, expires_at)
 
 
 def _session_from_data(data: Mapping[str, Any] | None) -> BrowserSession:
@@ -333,6 +374,11 @@ def _required_token(tokens: Mapping[str, Any], name: str) -> str:
     if not isinstance(value, str) or not value:
         raise BrowserAuthenticationError("Platform token response is incomplete")
     return value
+
+
+def _require_browser_binding(login: PendingBrowserLogin, token: str) -> None:
+    if not token or not compare_digest(login.browser_binding_hash, _opaque_id(token)):
+        raise BrowserAuthenticationError("Platform login browser binding is invalid")
 
 
 def _opaque_id(value: str) -> str:

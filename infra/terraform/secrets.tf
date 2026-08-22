@@ -32,13 +32,12 @@ resource "google_secret_manager_secret" "platform" {
 }
 
 resource "google_secret_manager_secret_iam_member" "mcp_gateway_accessor" {
-  for_each = toset([
+  for_each = toset(concat([
     "mcp_auth_signing_key",
-    "platform_oidc_client_secret",
     "tesla_client_secret",
     "tesla_command_public_key",
     "tesla_token_encryption_key",
-  ])
+  ], var.enable_platform_oidc ? ["platform_oidc_client_secret"] : []))
 
   project   = var.project_id
   secret_id = google_secret_manager_secret.platform[each.value].secret_id

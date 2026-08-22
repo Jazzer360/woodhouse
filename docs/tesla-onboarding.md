@@ -165,8 +165,11 @@ POST /onboarding/vehicles/{internal_vehicle_id}/refresh
 ```
 
 These forms are protected by an opaque HttpOnly session and session-bound CSRF
-token. The Tesla callback redirects browser starts back to `/onboarding`; API
-starts retain the credential-free JSON result for diagnostics.
+token. A browser-started Tesla OAuth state is additionally bound to the exact
+initiating platform session and that binding is verified before code exchange,
+token persistence, or vehicle discovery. The Tesla callback redirects browser
+starts back to `/onboarding`; API starts retain the credential-free JSON result
+for diagnostics.
 
 Start endpoint:
 

@@ -141,15 +141,18 @@ The machine-checkable coverage test parses `docs/fleet-api-coverage.md` and
 requires every `Exposure=MCP` row to have exactly one registry mapping while
 also asserting the excluded command set is absent.
 
-## First live MCP operator checkpoint
+## Legacy direct-token MCP operator checkpoint
 
-Run this only after the Phase 6 revision and command-proxy sidecar are deployed.
-Do not paste any token or secret into chat.
+This records the direct diagnostic used for Phase 6 and applies only while
+`enable_platform_oidc=false`. Once platform OIDC is enabled, do not use a Google
+ID token here. Connect ChatGPT through the Auth0 OAuth flow documented in
+`docs/deployment.md`; Auth0 supplies the MCP-resource access token and the client
+manages it. Do not paste any token or secret into chat.
 
 1. Configure the MCP client with endpoint
-   `https://woodhouse.derekjass.com/mcp`, Streamable HTTP transport, and a fresh
-   Google OIDC ID token for the configured audience as its bearer credential.
-   If using the local PowerShell smoke client, enter the token without echo:
+   `https://woodhouse.derekjass.com/mcp`, Streamable HTTP transport, and, only
+   for this legacy diagnostic mode, a fresh Google OIDC ID token for the
+   configured audience as its bearer credential. Enter the token without echo:
 
    ```powershell
    $secureToken = Read-Host "Paste a fresh Google ID token locally" -AsSecureString

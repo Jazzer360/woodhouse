@@ -174,14 +174,14 @@ class ToolSpec:
             "additionalProperties": False,
         }
 
-    def mcp_document(self) -> Document:
+    def mcp_document(self, *, oauth_protected: bool = True) -> Document:
         annotations: Document = {
             "readOnlyHint": not self.write,
             "destructiveHint": self.risk == "security_sensitive",
             "idempotentHint": False if self.write else True,
             "openWorldHint": True,
         }
-        return {
+        document: Document = {
             "name": self.name,
             "description": (
                 f"{self.description} Required Tesla scope: {self.required_scope}. "
@@ -190,8 +190,10 @@ class ToolSpec:
             ),
             "inputSchema": self.input_schema(),
             "annotations": annotations,
-            "securitySchemes": [{"type": "oauth2", "scopes": [MCP_ACCESS_SCOPE]}],
         }
+        if oauth_protected:
+            document["securitySchemes"] = [{"type": "oauth2", "scopes": [MCP_ACCESS_SCOPE]}]
+        return document
 
 
 _VEHICLE_READS = {
@@ -494,15 +496,17 @@ class TeslaMCPService:
         store: TeslaOnboardingStore,
         audit_store: CommandAuditStore,
         sleep: Callable[[float], None] = time.sleep,
+        oauth_protected: bool = True,
     ) -> None:
         self._fleet = PerUserTeslaClient(fleet, credentials)
         self._commands = PerUserTeslaClient(command_fleet, credentials)
         self._store = store
         self._audit_store = audit_store
         self._sleep = sleep
+        self._oauth_protected = oauth_protected
 
     def tools(self) -> list[Document]:
-        return [spec.mcp_document() for spec in MCP_TOOL_SPECS]
+        return [spec.mcp_document(oauth_protected=self._oauth_protected) for spec in MCP_TOOL_SPECS]
 
     def call(self, context: UserContext, name: str, arguments: object) -> Document:
         spec = MCP_TOOLS_BY_NAME.get(name)

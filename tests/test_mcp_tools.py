@@ -487,6 +487,25 @@ def test_protocol_lists_typed_tools_and_reports_tool_errors_without_secrets() ->
     assert "secret" not in str(failed)
 
 
+def test_legacy_mcp_listing_does_not_advertise_unavailable_oauth_flow() -> None:
+    store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
+    direct = FakeFleet()
+    proxy = FakeFleet()
+    instance = TeslaMCPService(
+        fleet=cast(TeslaFleetClient, direct),
+        command_fleet=cast(TeslaFleetClient, proxy),
+        credentials=FakeCredentials(),
+        store=cast(Any, store),
+        audit_store=store,
+        sleep=lambda _seconds: None,
+        oauth_protected=False,
+    )
+
+    tools = instance.tools()
+
+    assert all("securitySchemes" not in tool for tool in tools)
+
+
 def test_protocol_authentication_error_includes_chatgpt_linking_challenge() -> None:
     instance, _, _ = service(FakeStore([vehicle("veh-one", "user-a", "VIN1")]))
     protocol = MCPProtocol(instance)

@@ -56,6 +56,7 @@ MAX_REQUEST_BYTES: Final = 1_048_576
 REQUEST_IDLE_TIMEOUT_SECONDS: Final = 15.0
 REQUEST_BODY_TIMEOUT_SECONDS: Final = 15.0
 SESSION_COOKIE_NAME: Final = "__Host-tpp_session"
+LOGIN_COOKIE_NAME: Final = "__Host-tpp_login"
 _REQUEST_READ_CHUNK_BYTES: Final = 64 * 1024
 LOGGER = logging.getLogger(__name__)
 
@@ -172,7 +173,7 @@ def build_runtime() -> tuple[
 
     return (
         GatewayAuthBoundary(authenticator),
-        build_tesla_runtime(project_id),
+        build_tesla_runtime(project_id, oauth_protected=authorization is not None),
         authorization,
         browser_auth,
     )
@@ -271,6 +272,7 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json_document(
                         HTTPStatus.OK,
                         runtime.mcp.authentication_required(payload, challenge),
+                        authenticate=True,
                     )
                     return
             self._send_json(
@@ -356,7 +358,11 @@ class _Handler(BaseHTTPRequestHandler):
                 ),
             )
             return
-        self._redirect(browser_auth.start())
+        login = browser_auth.start()
+        self._redirect(
+            login.authorization_url,
+            cookie=_login_cookie(login.browser_binding_token),
+        )
 
     def _complete_platform_login(self, query: dict[str, list[str]]) -> None:
         browser_auth = cast(_Server, self.server).browser_auth
@@ -368,17 +374,28 @@ class _Handler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        browser_binding_token = _cookie_token(
+            self.headers.get("Cookie"),
+            LOGIN_COOKIE_NAME,
+        )
         try:
             if _single_optional_query_value(query, "error") is not None:
                 state = _single_optional_query_value(query, "state")
                 if state is not None:
-                    browser_auth.cancel(state)
+                    browser_auth.cancel(
+                        state,
+                        browser_binding_token=browser_binding_token or "",
+                    )
                 raise BrowserAuthenticationError("The identity provider denied sign-in")
             state = _single_optional_query_value(query, "state")
             code = _single_optional_query_value(query, "code")
             if state is None or code is None:
                 raise BrowserAuthenticationError("The sign-in callback is incomplete")
-            result = browser_auth.complete(state=state, code=code)
+            result = browser_auth.complete(
+                state=state,
+                code=code,
+                browser_binding_token=browser_binding_token or "",
+            )
         except AuthenticationError:
             self._send_html(
                 HTTPStatus.FORBIDDEN,
@@ -386,24 +403,29 @@ class _Handler(BaseHTTPRequestHandler):
                     "Account not approved",
                     "Ask the operator to add this verified email before signing in.",
                 ),
+                cookie=_expired_login_cookie(),
             )
             return
         except BrowserAuthenticationError:
             self._send_html(
                 HTTPStatus.BAD_REQUEST,
                 error_page("Sign-in failed", "Start a fresh sign-in and try again."),
+                cookie=_expired_login_cookie(),
             )
             return
         self._redirect(
             "/onboarding",
-            cookie=_session_cookie(result.session_token),
+            cookie=(
+                _session_cookie(result.session_token),
+                _expired_login_cookie(),
+            ),
         )
 
     def _start_browser_tesla_oauth(self) -> None:
         session = self._require_browser_form_session()
         if session is None:
             return
-        context, _, _ = session
+        context, _, session_token = session
         runtime = cast(_Server, self.server).tesla_runtime
         if runtime is None:
             self._send_html(
@@ -413,7 +435,22 @@ class _Handler(BaseHTTPRequestHandler):
                 ),
             )
             return
-        self._redirect(runtime.onboarding.start(context, completion_mode="browser"))
+        browser_auth = cast(_Server, self.server).browser_auth
+        if browser_auth is None:
+            self._send_html(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                error_page(
+                    "Sign-in is not configured", "The operator has not enabled browser onboarding."
+                ),
+            )
+            return
+        self._redirect(
+            runtime.onboarding.start(
+                context,
+                completion_mode="browser",
+                browser_session_binding=browser_auth.session_binding(session_token),
+            )
+        )
 
     def _refresh_browser_pairing_status(self, path: str) -> None:
         session = self._require_browser_form_session()
@@ -439,6 +476,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_html(
                 HTTPStatus.FORBIDDEN,
                 error_page("Vehicle unavailable", "That vehicle is not available to this account."),
+            )
+            return
+        except TeslaReauthorizationRequired:
+            self._send_html(
+                HTTPStatus.UNAUTHORIZED,
+                error_page(
+                    "Tesla reconnection required",
+                    "Authorize Tesla again before refreshing vehicle status.",
+                    retry_path="/onboarding",
+                ),
             )
             return
         except (TeslaAPIError, TeslaOnboardingError):
@@ -537,10 +584,20 @@ class _Handler(BaseHTTPRequestHandler):
         if runtime is None:
             self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "tesla_not_configured"})
             return
+        browser_session = self._optional_browser_session()
+        browser_auth = cast(_Server, self.server).browser_auth
+        browser_session_binding = (
+            browser_auth.session_binding(browser_session[2])
+            if browser_auth is not None and browser_session is not None
+            else None
+        )
         try:
             state = _single_query_value(query, "state")
             if _single_query_value(query, "error") is not None:
-                pending = runtime.onboarding.decline(state=state or "")
+                pending = runtime.onboarding.decline(
+                    state=state or "",
+                    expected_browser_session_binding=browser_session_binding,
+                )
                 if pending.completion_mode == "browser":
                     self._redirect("/onboarding?tesla=denied", status=HTTPStatus.SEE_OTHER)
                     return
@@ -549,7 +606,11 @@ class _Handler(BaseHTTPRequestHandler):
             code = _single_query_value(query, "code")
             if state is None or code is None:
                 raise InvalidOAuthStateError("Tesla OAuth callback is incomplete")
-            result = runtime.onboarding.callback(state=state, code=code)
+            result = runtime.onboarding.callback(
+                state=state,
+                code=code,
+                expected_browser_session_binding=browser_session_binding,
+            )
         except InvalidOAuthStateError:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_oauth_state"})
             return
@@ -560,8 +621,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "tesla_onboarding_failed"})
             return
         if result.completion_mode == "browser":
-            session = self._optional_browser_session()
-            if session is None or session[0].user_id != result.owner_user_id:
+            if browser_session is None or browser_session[0].user_id != result.owner_user_id:
                 self._send_html(
                     HTTPStatus.FORBIDDEN,
                     error_page(
@@ -708,14 +768,14 @@ class _Handler(BaseHTTPRequestHandler):
         location: str,
         *,
         status: HTTPStatus = HTTPStatus.FOUND,
-        cookie: str | None = None,
+        cookie: str | tuple[str, ...] | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Location", location)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
-        if cookie is not None:
-            self.send_header("Set-Cookie", cookie)
+        for value in _cookie_headers(cookie):
+            self.send_header("Set-Cookie", value)
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -724,7 +784,7 @@ class _Handler(BaseHTTPRequestHandler):
         status: HTTPStatus,
         body: bytes,
         *,
-        cookie: str | None = None,
+        cookie: str | tuple[str, ...] | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -738,8 +798,8 @@ class _Handler(BaseHTTPRequestHandler):
             "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
             "base-uri 'none'; frame-ancestors 'none'",
         )
-        if cookie is not None:
-            self.send_header("Set-Cookie", cookie)
+        for value in _cookie_headers(cookie):
+            self.send_header("Set-Cookie", value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -845,6 +905,10 @@ def _single_optional_query_value(query: dict[str, list[str]], name: str) -> str 
 
 
 def _session_token(cookie_header: str | None) -> str | None:
+    return _cookie_token(cookie_header, SESSION_COOKIE_NAME)
+
+
+def _cookie_token(cookie_header: str | None, name: str) -> str | None:
     if not cookie_header:
         return None
     cookie = SimpleCookie()
@@ -852,7 +916,7 @@ def _session_token(cookie_header: str | None) -> str | None:
         cookie.load(cookie_header)
     except (CookieError, ValueError):
         return None
-    morsel = cookie.get(SESSION_COOKIE_NAME)
+    morsel = cookie.get(name)
     return morsel.value if morsel is not None and morsel.value else None
 
 
@@ -863,8 +927,25 @@ def _session_cookie(token: str) -> str:
     )
 
 
+def _login_cookie(token: str) -> str:
+    max_age = 10 * 60
+    return f"{LOGIN_COOKIE_NAME}={token}; Path=/; Max-Age={max_age}; Secure; HttpOnly; SameSite=Lax"
+
+
 def _expired_session_cookie() -> str:
     return f"{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax"
+
+
+def _expired_login_cookie() -> str:
+    return f"{LOGIN_COOKIE_NAME}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax"
+
+
+def _cookie_headers(cookie: str | tuple[str, ...] | None) -> tuple[str, ...]:
+    if cookie is None:
+        return ()
+    if isinstance(cookie, str):
+        return (cookie,)
+    return cookie
 
 
 def _is_mcp_tool_call(payload: object) -> bool:

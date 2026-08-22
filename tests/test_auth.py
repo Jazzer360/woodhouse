@@ -201,20 +201,25 @@ def test_unauthenticated_mcp_tool_call_returns_linking_challenge() -> None:
     try:
         with urlopen(request, timeout=2) as response:  # noqa: S310
             assert response.status == 200
+            http_challenge = response.headers["WWW-Authenticate"]
             payload = json.load(response)
         challenge = payload["result"]["_meta"]["mcp/www_authenticate"][0]
         assert payload["result"]["isError"] is True
         assert 'resource_metadata="https://woodhouse.derekjass.com/' in challenge
         assert 'error="invalid_token"' in challenge
         assert 'error_description="Sign in to use Woodhouse Tesla tools"' in challenge
+        assert http_challenge is not None
+        assert 'resource_metadata="https://woodhouse.derekjass.com/' in http_challenge
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
 
 
+@pytest.mark.parametrize("callback_path", ["/oauth/callback", "/auth/callback"])
 def test_gateway_access_log_omits_oauth_callback_query_values(
     monkeypatch: pytest.MonkeyPatch,
+    callback_path: str,
 ) -> None:
     messages: list[str] = []
 
@@ -230,11 +235,11 @@ def test_gateway_access_log_omits_oauth_callback_query_values(
         with pytest.raises(HTTPError):
             urlopen(  # noqa: S310 - fixed loopback test server
                 "http://127.0.0.1:"
-                f"{server.server_port}/oauth/callback?code=sensitive-code&state=sensitive-state",
+                f"{server.server_port}{callback_path}?code=sensitive-code&state=sensitive-state",
                 timeout=2,
             )
         captured = "\n".join(messages)
-        assert "/oauth/callback" in captured
+        assert callback_path in captured
         assert "sensitive-code" not in captured
         assert "sensitive-state" not in captured
     finally:

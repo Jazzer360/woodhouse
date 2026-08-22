@@ -170,6 +170,12 @@ Allowed Logout URL:   https://woodhouse.derekjass.com/
 Allowed Web Origin:   https://woodhouse.derekjass.com
 ```
 
+Because the API uses **Per-app authorization**, also open the MCP API's
+**Application Access** tab, add this Regular Web Application, and grant it
+User-Delegated Access to only `mcp:access`. Both the imported ChatGPT client and
+the browser-onboarding client need that one permission; no other API permission
+is required.
+
 Put its client secret into Secret Manager locally; do not paste it into chat,
 Terraform, shell history, or a checked-in file:
 
@@ -196,7 +202,10 @@ The gateway exposes both
 authorization-server/OIDC discovery, authorization, token, registration, and
 UserInfo endpoints. The gateway validates token signature, exact issuer,
 audience `https://woodhouse.derekjass.com/mcp`, time claims, subject, and
-`mcp:access` before resolving the Firestore allowlist.
+`mcp:access` before resolving the Firestore allowlist. MCP access-token
+authorization uses the immutable issuer/subject and does not forward that
+bearer token to UserInfo. The separate browser flow obtains verified email from
+its signed ID token only when creating the first allowlist binding.
 
 The old `oidc_audience` Google client setting is retained only for a controlled
 migration or direct diagnostic deployment when `enable_platform_oidc=false`.
@@ -300,9 +309,10 @@ Runtime state uses these Firestore collections:
 
 Cloud Run emits a platform request log containing the full URL before gateway
 code can strip query parameters. Terraform therefore excludes the gateway's
-`/oauth/callback?...` request-log entries from Cloud Logging. Application access
-logs retain the query-free callback path. The exclusion is prospective and does
-not remove any entry retained before it was applied.
+Tesla `/oauth/callback?...` and platform `/auth/callback?...` request-log entries
+from Cloud Logging. Application access logs retain only the query-free callback
+paths. The exclusion is prospective and does not remove any entry retained
+before it was applied.
 
 Application delivery still deploys an immutable commit-SHA image after merge.
 Terraform controls configuration and secret references but ignores the image

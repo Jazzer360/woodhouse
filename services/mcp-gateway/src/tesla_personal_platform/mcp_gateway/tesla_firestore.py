@@ -48,6 +48,7 @@ class FirestoreTeslaOnboardingStore:
                 "nonce": pending.nonce,
                 "expires_at": pending.expires_at,
                 "completion_mode": pending.completion_mode,
+                "browser_session_binding": pending.browser_session_binding,
                 "created_at": firestore.SERVER_TIMESTAMP,
             }
         )
@@ -307,18 +308,28 @@ def _consume_state(
     nonce = data.get("nonce")
     expires_at = data.get("expires_at")
     completion_mode = data.get("completion_mode", "api")
+    browser_session_binding = data.get("browser_session_binding")
     if (
         not isinstance(owner, str)
         or not isinstance(nonce, str)
         or not isinstance(expires_at, datetime)
+        or not isinstance(completion_mode, str)
         or completion_mode not in {"api", "browser"}
+        or (completion_mode == "browser" and not isinstance(browser_session_binding, str))
+        or (completion_mode == "api" and browser_session_binding is not None)
     ):
         raise InvalidOAuthStateError("Tesla OAuth state is invalid")
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     if expires_at <= now:
         raise InvalidOAuthStateError("Tesla OAuth state has expired")
-    return PendingAuthorization(owner, nonce, expires_at, completion_mode)
+    return PendingAuthorization(
+        owner,
+        nonce,
+        expires_at,
+        completion_mode,
+        browser_session_binding,
+    )
 
 
 @firestore.transactional
