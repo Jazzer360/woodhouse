@@ -13,20 +13,20 @@ def test_dataset_access_is_exact_minimal_and_idempotent() -> None:
 
     once = restricted_service_account_access(
         existing,
-        "admin@example.iam",
+        "dataset-owner@example.iam",
         "gateway@example.iam",
         "processor@example.iam",
     )
     twice = restricted_service_account_access(
         once,
-        "admin@example.iam",
+        "dataset-owner@example.iam",
         "gateway@example.iam",
         "processor@example.iam",
     )
 
     assert twice == once
     assert {(entry.role, entry.entity_type, entry.entity_id) for entry in twice} == {
-        ("OWNER", "userByEmail", "admin@example.iam"),
+        ("OWNER", "userByEmail", "dataset-owner@example.iam"),
         ("READER", "userByEmail", "gateway@example.iam"),
         ("WRITER", "userByEmail", "processor@example.iam"),
     }
@@ -77,7 +77,7 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
         client,  # type: ignore[arg-type]
         "project",
         "us-central1",
-        "admin@example.iam",
+        "dataset-owner@example.iam",
         "gateway@example.iam",
         "processor@example.iam",
     )
@@ -102,7 +102,7 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
     assert {
         (entry.role, entry.entity_type, entry.entity_id) for entry in client.current.access_entries
     } == {
-        ("OWNER", "userByEmail", "admin@example.iam"),
+        ("OWNER", "userByEmail", "dataset-owner@example.iam"),
         ("READER", "userByEmail", "gateway@example.iam"),
         ("WRITER", "userByEmail", "processor@example.iam"),
     }

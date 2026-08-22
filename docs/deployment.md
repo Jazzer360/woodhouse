@@ -37,6 +37,12 @@ datasets, and update dataset metadata/ACLs through a custom role containing only
 `bigquery.datasets.update`. It cannot run BigQuery jobs and has no BigQuery
 table-data, Secret Manager, Cloud Run deployment, or vehicle API access.
 
+The keyless `tpp-dataset-owner` service account has no project-level roles, keys,
+or operator impersonation binding. BigQuery requires every dataset policy to
+retain a direct owner, so each per-user dataset grants that otherwise dormant
+identity `OWNER`. Keeping this mandatory data-capable entry separate prevents
+the impersonatable `tpp-user-admin` path from reading user telemetry.
+
 Firestore IAM is database-wide and cannot scope `roles/datastore.user` to only
 the `allowed_users` collection. This is the principal Phase 3 IAM tradeoff: the
 keyless admin identity is operator-only and impersonation-audited, but it can
@@ -72,6 +78,7 @@ The Pub/Sub push subscription uses the complete processor handler URL, including
 | `tpp-build-validator` | Log writer only; no deploy, secret, or data permission |
 | `tpp-build-deployer` | Artifact Registry writer on this repository, Cloud Run developer, and `actAs` only on the two Cloud Run runtime accounts |
 | `tpp-user-admin` | Firestore user; BigQuery dataset creator; update metadata/ACLs on datasets; no table-data access |
+| `tpp-dataset-owner` | Required direct owner on per-user datasets; no project roles, keys, or impersonation binding |
 
 The Cloud Build service agent may mint tokens only for the two custom build identities. Neither build identity receives Owner, Editor, Secret Manager access, BigQuery data access, or vehicle-VM administration.
 
@@ -86,6 +93,7 @@ permissions directly and no service-account key is created.
 
 The idempotent `add-user` workflow—not shared Terraform—will create `tesla_u_<opaque_user_id>` with no default expiration and grant:
 
+- `OWNER` on that dataset to the dormant, non-impersonatable `tpp-dataset-owner` identity, as required by BigQuery;
 - `roles/bigquery.dataEditor` on that dataset to `tpp-telemetry-processor`;
 - `roles/bigquery.dataViewer` on that dataset to `tpp-mcp-gateway`.
 
@@ -197,9 +205,9 @@ uv run python scripts/admin/add-user \
 
 The command transactionally allocates stable random `user_id` and `dataset_id`
 values, creates or repairs the `us-central1` dataset with no default table or
-partition expiration, grants the dedicated `tpp-user-admin` service account the
-direct dataset owner entry required by BigQuery, and enforces only gateway read
-and processor write runtime ACLs, then
+partition expiration, grants the dormant `tpp-dataset-owner` identity the direct
+owner entry required by BigQuery, and enforces only gateway read and processor
+write runtime ACLs, then
 marks the invitation active. Re-running the command reuses the
 same identifiers and repairs drift. If dataset provisioning fails for a new
 invitation, the record remains disabled and a safe retry completes it.

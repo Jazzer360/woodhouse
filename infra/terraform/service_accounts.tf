@@ -28,6 +28,10 @@ locals {
       account_id   = "tpp-user-admin"
       display_name = "Tesla Personal Platform manual user administrator"
     }
+    dataset_owner = {
+      account_id   = "tpp-dataset-owner"
+      display_name = "Tesla Personal Platform per-user dataset owner"
+    }
   }
 }
 

@@ -112,6 +112,7 @@ def test_mcp_external_route_is_fail_closed_until_oidc_is_configured() -> None:
 def test_user_admin_has_no_key_and_only_dataset_provisioning_permissions() -> None:
     source = terraform_source()
     iam = (TERRAFORM_ROOT / "iam.tf").read_text(encoding="utf-8")
+    service_accounts = (TERRAFORM_ROOT / "service_accounts.tf").read_text(encoding="utf-8")
 
     assert "google_service_account_key" not in source
     custom_role_start = iam.index(
@@ -127,3 +128,8 @@ def test_user_admin_has_no_key_and_only_dataset_provisioning_permissions() -> No
     assert '"bigquery.datasets.update"' in custom_role
     assert "bigquery.jobs" not in custom_role
     assert "bigquery.tables" not in custom_role
+    assert 'account_id   = "tpp-dataset-owner"' in service_accounts
+    impersonation = iam[
+        iam.index('resource "google_service_account_iam_member" "user_admin_impersonator"') :
+    ]
+    assert 'platform["dataset_owner"]' not in impersonation

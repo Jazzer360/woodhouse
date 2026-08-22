@@ -14,6 +14,8 @@ htmlcov/
 .terraform/
 *.tfvars
 !*.tfvars.example
+*.tfvars.json
+!*.tfvars.json.example
 *.tfplan
 *.tfstate
 *.tfstate.*

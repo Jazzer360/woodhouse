@@ -30,7 +30,7 @@ def _service(arguments: argparse.Namespace) -> UserAdminService:
     processor = getattr(arguments, "processor_service_account", None) or (
         f"tpp-telemetry-processor@{project_id}.iam.gserviceaccount.com"
     )
-    owner = f"tpp-user-admin@{project_id}.iam.gserviceaccount.com"
+    owner = f"tpp-dataset-owner@{project_id}.iam.gserviceaccount.com"
     location = str(getattr(arguments, "location", DEFAULT_LOCATION))
     allowlist = FirestoreAllowlistAdminStore(firestore.Client(project=project_id))
     datasets = BigQueryDatasetProvisioner(
