@@ -53,6 +53,14 @@ def test_gateway_deploy_preserves_command_proxy_sidecar() -> None:
     assert "Vehicle Command Proxy sidecar" in gateway_deploy
 
 
+def test_terraform_preserves_delivery_owned_revision_metadata() -> None:
+    source = (ROOT / "infra" / "terraform" / "cloud_run.tf").read_text(encoding="utf-8")
+
+    assert "template[0].containers[0].image" in source
+    assert "template[0].labels" in source
+    assert "tpp-deployed-commit" in source
+
+
 def test_main_delivery_waits_for_readiness_and_smoke_checks_gateway() -> None:
     source = (ROOT / "cloudbuild.main.yaml").read_text(encoding="utf-8")
 

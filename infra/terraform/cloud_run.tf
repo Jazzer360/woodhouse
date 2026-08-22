@@ -287,7 +287,10 @@ resource "google_cloud_run_v2_service" "platform" {
   }
 
   lifecycle {
-    # Application delivery owns the commit-addressed image after initial creation.
+    # Application delivery owns the commit-addressed image and revision labels
+    # after initial creation. Preserve its tpp-deployed-commit label (and the
+    # provider-managed revision labels returned alongside it) across later
+    # infrastructure applies.
     # The API also reports an unset service-level scaling block as explicit
     # zero values. Ignore that computed normalization while continuing to
     # manage revision scaling under template.scaling above.
@@ -295,6 +298,7 @@ resource "google_cloud_run_v2_service" "platform" {
       client,
       client_version,
       template[0].containers[0].image,
+      template[0].labels,
       scaling,
     ]
 
