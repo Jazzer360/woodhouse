@@ -10,12 +10,15 @@ class AllowlistAdminStore(Protocol):
 
     def ensure_invitation(self, email: str, notes: str | None = None) -> AllowedUser:
         """Create or return stable opaque identifiers for one invitation."""
+        ...
 
     def activate(self, email: str) -> AllowedUser:
         """Mark a fully provisioned invitation active."""
+        ...
 
     def disable(self, email: str) -> AllowedUser:
         """Idempotently block a user without deleting data or identity state."""
+        ...
 
 
 class DatasetProvisioner(Protocol):
@@ -23,6 +26,7 @@ class DatasetProvisioner(Protocol):
 
     def provision(self, user: AllowedUser) -> None:
         """Ensure the dataset, no-expiration policy, and runtime access."""
+        ...
 
 
 class UserAdminService:

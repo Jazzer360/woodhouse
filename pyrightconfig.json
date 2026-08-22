@@ -1,0 +1,24 @@
+{
+  "include": [
+    "packages",
+    "services",
+    "tests"
+  ],
+  "exclude": [
+    "**/__pycache__"
+  ],
+  "extraPaths": [
+    "packages/analytics/src",
+    "packages/auth/src",
+    "packages/event-schema/src",
+    "packages/shared-models/src",
+    "packages/tesla-client/src",
+    "services/mcp-gateway/src",
+    "services/telemetry-edge/src",
+    "services/telemetry-processor/src"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard",
+  "venv": ".venv",
+  "venvPath": "."
+}

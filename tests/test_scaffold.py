@@ -4,7 +4,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from tesla_personal_platform import analytics, auth, event_schema, shared_models, tesla_client
+import tesla_personal_platform.analytics as analytics
+import tesla_personal_platform.auth as auth
+import tesla_personal_platform.event_schema as event_schema
+import tesla_personal_platform.shared_models as shared_models
+import tesla_personal_platform.tesla_client as tesla_client
 from tesla_personal_platform.mcp_gateway.main import health_document as gateway_health
 from tesla_personal_platform.telemetry_edge.main import health_document as edge_health
 from tesla_personal_platform.telemetry_processor.main import health_document as processor_health

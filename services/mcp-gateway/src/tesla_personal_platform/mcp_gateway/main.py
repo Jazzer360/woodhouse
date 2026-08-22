@@ -31,11 +31,13 @@ _REQUEST_READ_CHUNK_BYTES: Final = 64 * 1024
 class _RequestBodyReader(Protocol):
     def read1(self, size: int = -1, /) -> bytes:
         """Read at most one buffered/raw chunk."""
+        ...
 
 
 class _TimeoutConnection(Protocol):
     def settimeout(self, value: float | None) -> None:
         """Set the timeout for the next socket operation."""
+        ...
 
 
 def health_document() -> dict[str, str]:
@@ -96,8 +98,6 @@ def build_auth_boundary() -> GatewayAuthBoundary:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server: "_Server"
-
     def setup(self) -> None:
         """Bound idle socket operations, including request-header parsing."""
         super().setup()
@@ -116,7 +116,8 @@ class _Handler(BaseHTTPRequestHandler):
 
         try:
             payload = self._read_json()
-            self.server.auth_boundary.authorize(self.headers.get("Authorization"), payload)
+            server = cast(_Server, self.server)
+            server.auth_boundary.authorize(self.headers.get("Authorization"), payload)
         except TimeoutError:
             self._send_json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request_timeout"})
             return

@@ -31,6 +31,7 @@ class TokenVerifier(Protocol):
 
     def verify(self, token: str) -> VerifiedIdentity:
         """Return trusted claims or raise ``InvalidTokenError``."""
+        ...
 
 
 class IdentityStore(Protocol):
@@ -38,6 +39,7 @@ class IdentityStore(Protocol):
 
     def resolve_or_bind(self, identity: VerifiedIdentity) -> UserContext:
         """Return the active internal user context for verified claims."""
+        ...
 
 
 class Authenticator:

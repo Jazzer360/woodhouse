@@ -1,0 +1,21 @@
+{
+  "flake8.enabled": false,
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/packages/analytics/src",
+    "${workspaceFolder}/packages/auth/src",
+    "${workspaceFolder}/packages/event-schema/src",
+    "${workspaceFolder}/packages/shared-models/src",
+    "${workspaceFolder}/packages/tesla-client/src",
+    "${workspaceFolder}/services/mcp-gateway/src",
+    "${workspaceFolder}/services/telemetry-edge/src",
+    "${workspaceFolder}/services/telemetry-processor/src"
+  ],
+  "python.analysis.typeCheckingMode": "standard",
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "ruff.lineLength": 100
+}
