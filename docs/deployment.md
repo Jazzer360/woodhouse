@@ -451,7 +451,69 @@ If Firestore or the state bucket already exists, import it rather than attemptin
 
 PR validation uses `cloudbuild.pr.yaml` with the validator identity. It runs Python quality/tests/audit, container builds, Terraform formatting/validation, and `-refresh=false` speculative plans for both Terraform roots. For the shared root it copies the complete Terraform directory, excluding only the nested bootstrap root, generated `.terraform` data, and the dedicated `backend.tf`, so future modules, templates, and other Terraform inputs participate automatically. The result checks the complete create graph rather than live drift. The validator has only log-writing permission and cannot read or mutate GCP resources.
 
-The GitHub repository connection and trigger are external bootstrap concerns, so Terraform does not guess their connection IDs. Configure the PR trigger to use `tpp-build-validator`. A later main-branch delivery trigger uses `tpp-build-deployer` to push images tagged by the full commit SHA and deploy only the affected Cloud Run services. Terraform ignores the deployed container-image field so a later infrastructure plan cannot roll an application back to the Phase 2 placeholder.
+The GitHub repository connection and triggers are external bootstrap concerns,
+so Terraform does not guess their connection IDs. The regional
+`tpp-pr-validation` trigger uses `tpp-build-validator` and
+`cloudbuild.pr.yaml` for pull requests targeting `main`.
+
+Two push triggers use `tpp-build-deployer` and the shared
+`cloudbuild.main.yaml` delivery contract:
+
+- `tpp-main-mcp-gateway` selects gateway, package, workspace-lock, and delivery
+  configuration changes and substitutes `_SERVICE=mcp-gateway`;
+- `tpp-main-telemetry-processor` selects processor, package, workspace-lock,
+  and delivery configuration changes and substitutes
+  `_SERVICE=telemetry-processor`.
+
+Create the regional GitHub v2 triggers against the same repository connection
+as the PR trigger:
+
+```bash
+gcloud builds triggers create github \
+  --project=woodhouse-506215 \
+  --region=us-central1 \
+  --name=tpp-main-mcp-gateway \
+  --description="Deploy the affected MCP gateway revision after a main merge" \
+  --repository=projects/woodhouse-506215/locations/us-central1/connections/tpp-github/repositories/Jazzer360-woodhouse \
+  --branch-pattern='^main$' \
+  --build-config=cloudbuild.main.yaml \
+  --included-files='cloudbuild.main.yaml,services/mcp-gateway/**,packages/**,pyproject.toml,uv.lock' \
+  --substitutions=_SERVICE=mcp-gateway \
+  --service-account=projects/woodhouse-506215/serviceAccounts/tpp-build-deployer@woodhouse-506215.iam.gserviceaccount.com \
+  --include-logs-with-status
+
+gcloud builds triggers create github \
+  --project=woodhouse-506215 \
+  --region=us-central1 \
+  --name=tpp-main-telemetry-processor \
+  --description="Deploy the affected telemetry processor revision after a main merge" \
+  --repository=projects/woodhouse-506215/locations/us-central1/connections/tpp-github/repositories/Jazzer360-woodhouse \
+  --branch-pattern='^main$' \
+  --build-config=cloudbuild.main.yaml \
+  --included-files='cloudbuild.main.yaml,services/telemetry-processor/**,packages/**,pyproject.toml,uv.lock' \
+  --substitutions=_SERVICE=telemetry-processor \
+  --service-account=projects/woodhouse-506215/serviceAccounts/tpp-build-deployer@woodhouse-506215.iam.gserviceaccount.com \
+  --include-logs-with-status
+```
+
+The delivery build uses the repository root as Docker context, tags and pushes
+the affected service image with the full merge commit SHA, resolves the
+Artifact Registry digest, and deploys that digest. Gateway delivery updates only
+the named `application` container so it cannot replace the Tesla Vehicle
+Command Proxy sidecar. The build waits for the latest Cloud Run revision to be
+ready, verifies the revision image digest, runs the gateway's public `/health`
+smoke check, and records service, commit, revision, and digest in Cloud Build
+logs. The telemetry processor has internal-only ingress, so its automated
+checkpoint is Cloud Run revision readiness and digest identity; Phase 7 adds a
+real synthetic Pub/Sub ingestion check without exposing an unauthenticated
+health route.
+
+The main delivery allowlist intentionally excludes `telemetry-edge`. Phase 7
+must first replace its placeholder with the reviewed Fleet Telemetry receiver,
+then add exact-digest VM pull/restart, health checking, and rollback before a
+main trigger may deploy it. Terraform ignores deployed Cloud Run image fields,
+so a later infrastructure plan cannot roll application containers back to the
+Phase 2 placeholder.
 
 For an operator-initiated deployment, submit source through the dedicated
 `${project_id}-tpp-cloudbuild-source` bucket by passing

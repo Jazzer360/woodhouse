@@ -70,4 +70,10 @@ docker build -f services/telemetry-edge/Dockerfile .
 
 The shared-root speculative plan is generated from a backend-free temporary copy in `cloudbuild.pr.yaml`. Authoritative local plans use the bootstrapped GCS backend described in [deployment notes](docs/deployment.md).
 
-The Cloud Build PR configuration runs the same categories without deploying or contacting real vehicles.
+The Cloud Build PR configuration runs the same categories without deploying or
+contacting real vehicles. `cloudbuild.main.yaml` delivers only affected Cloud
+Run services from `main` by full commit tag and resolved image digest, preserves
+the gateway command-proxy sidecar, and performs readiness/health verification.
+Terraform apply remains a separate reviewed operator action, and telemetry-edge
+delivery remains deferred until Phase 7 implements its real receiver and VM
+rollback path.
