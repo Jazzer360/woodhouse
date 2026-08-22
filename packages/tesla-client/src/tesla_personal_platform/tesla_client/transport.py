@@ -8,6 +8,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
+from tesla_personal_platform.tesla_client.coverage import COMMAND_NAMES
+
 _TESLA_API_HOSTS = frozenset(
     {
         "auth.tesla.com",
@@ -152,6 +154,7 @@ class LocalCommandProxyTransport:
             or len(path_parts) != 7
             or path_parts[1:4] != ["api", "1", "vehicles"]
             or path_parts[5] != "command"
+            or path_parts[6] not in COMMAND_NAMES
         ):
             raise ValueError("Vehicle Command Proxy transport accepts typed commands only")
 

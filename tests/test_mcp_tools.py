@@ -92,6 +92,11 @@ class SecretEchoFleet(FakeFleet):
         return ObjectResponse({"access_token": "must-not-leak", "enabled": True})
 
 
+class UnexpectedFailureFleet(FakeFleet):
+    def door_lock(self, *_args: object, **_kwargs: object) -> CommandResult:
+        raise RuntimeError("internal implementation detail")
+
+
 class FakeStore:
     def __init__(self, vehicles: list[VehicleRecord], scopes: tuple[str, ...] = ALL_SCOPES) -> None:
         self.vehicles = vehicles
@@ -318,6 +323,17 @@ def test_failed_command_keeps_attempt_and_records_safe_error_category() -> None:
     assert store.completed[0]["error_category"] == "upstream_failure"
 
 
+def test_unexpected_command_failure_uses_normalized_audit_category() -> None:
+    store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
+    instance, _, _ = service(store, proxy=UnexpectedFailureFleet())
+
+    with pytest.raises(RuntimeError, match="internal implementation detail"):
+        instance.call(CONTEXT, "tesla_door_lock", {"vehicle_id": "veh-one"})
+
+    assert store.completed[0]["result"] == "failure"
+    assert store.completed[0]["error_category"] == "internal_error"
+
+
 def test_command_is_not_sent_when_initial_audit_write_fails() -> None:
     store = FailingAuditStore([vehicle("veh-one", "user-a", "VIN1")], fail_on="begin")
     instance, _, proxy = service(store)
@@ -378,6 +394,20 @@ def test_protocol_lists_typed_tools_and_reports_tool_errors_without_secrets() ->
     assert failed["result"]["isError"] is True
     assert failed["result"]["structuredContent"]["error"] == "vehicle_ambiguous"
     assert "secret" not in str(failed)
+
+
+def test_unique_array_items_are_enforced_by_tool_validation() -> None:
+    instance, direct, _ = service(FakeStore([vehicle("veh-one", "user-a", "VIN1")]))
+
+    with pytest.raises(MCPToolError) as caught:
+        instance.call(
+            CONTEXT,
+            "tesla_vehicle_data",
+            {"vehicle_id": "veh-one", "endpoints": ["location_data", "location_data"]},
+        )
+
+    assert caught.value.category == "invalid_arguments"
+    assert not direct.calls
 
 
 def test_unexpected_credential_fields_are_redacted_from_tool_responses() -> None:

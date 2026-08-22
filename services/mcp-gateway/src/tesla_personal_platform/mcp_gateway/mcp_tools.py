@@ -607,7 +607,7 @@ class TeslaMCPService:
             category = (
                 error.category
                 if isinstance(error, (TeslaAPIError, MCPToolError))
-                else type(error).__name__
+                else "internal_error"
             )
             self._finalize_audit(audit_id, "failure", category)
             raise
@@ -906,6 +906,10 @@ def _matches_schema(value: object, schema: dict[str, object]) -> bool:
     if isinstance(value, list):
         minimum_items = schema.get("minItems")
         if isinstance(minimum_items, int) and len(value) < minimum_items:
+            return False
+        if schema.get("uniqueItems") is True and any(
+            item in value[index + 1 :] for index, item in enumerate(value)
+        ):
             return False
         item_schema = schema.get("items")
         if isinstance(item_schema, dict) and any(
