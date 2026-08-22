@@ -1,7 +1,7 @@
 # Terraform
 
 This root defines the shared GCP baseline for project `woodhouse-506215` in
-`us-central1`. Phase 6 adds optional loopback-only Vehicle Command Proxy sidecar
+`us-central1`. Phase 6 adds optional instance-local Vehicle Command Proxy sidecar
 configuration and two empty TLS secret containers. Terraform still creates no
 per-user BigQuery datasets and no secret values.
 

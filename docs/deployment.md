@@ -2,7 +2,7 @@
 
 **Status:** Phase 6 live MCP baseline. The gateway retains the Google
 OIDC/allowlist and per-user Tesla OAuth boundaries, exposes the coverage-matrix
-MCP surface, and routes signed commands through a loopback-only official Tesla
+MCP surface, and routes signed commands through an instance-local official Tesla
 Vehicle Command Proxy sidecar. Broad Fleet Telemetry configuration remains
 deferred.
 
@@ -359,10 +359,12 @@ minimum runtime references.
 ## Phase 6 Vehicle Command Proxy deployment
 
 The supported private model is Tesla's official `tesla/vehicle-command` image
-as a sidecar in the `mcp-gateway` Cloud Run revision. It binds
-`127.0.0.1:4443`, has no Cloud Run ingress container port, and is reachable only
-through the shared loopback network namespace. The application connects over
-TLS and trusts only the mounted proxy certificate. Commands are never retried.
+as a sidecar in the `mcp-gateway` Cloud Run revision. It binds port `4443` on
+the revision's shared container network so Cloud Run can perform its required
+startup probe, but it has no Cloud Run ingress container port. External service
+traffic is routed only to the `application` container on port `8080`; the
+gateway reaches the proxy through `https://localhost:4443`. The application
+trusts only the mounted proxy certificate. Commands are never retried.
 
 Before planning the enabled revision:
 
