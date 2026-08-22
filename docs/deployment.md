@@ -25,7 +25,7 @@ Python remains the smallest practical common stack for the planned MCP, GCP, and
 | Mutable state | Firestore Native `(default)` | Allowlist and atomic immutable OIDC identity bindings; regional database with delete protection |
 | Secret storage | Six Secret Manager containers | Terraform manages containers/IAM only; operators add secret versions out of band |
 | Quarantine | `tesla_system_quarantine.raw_unknown_telemetry` | Restricted, partitioned append destination for unmapped telemetry |
-| Monitoring | backlog alert and unknown-vehicle log metric | No notification destination unless existing channel IDs are supplied |
+| Monitoring | backlog alert, unknown-vehicle log metric, and OAuth callback request-log exclusion | No notification destination unless existing channel IDs are supplied; callback query URLs are excluded from Cloud Logging |
 | Network | custom VPC and `/28` subnet | No default ingress rules |
 
 The MCP gateway receives project-level BigQuery job permission but no project-level data access. Its Secret Manager access covers platform auth, the Tesla client secret, the public application key, and the token-encryption key. It deliberately cannot read the Tesla command private key before the Phase 6 signing runtime exists. The telemetry processor can write only the shared quarantine dataset until the user workflow grants it access to a newly created user's dataset.
@@ -218,6 +218,12 @@ Runtime state uses these Firestore collections:
 - `vehicles`: safe vehicle metadata and per-vehicle key status;
 - `vehicle_vin_index`: collision-safe VIN-to-owner mapping used to reject
   cross-user ownership conflicts.
+
+Cloud Run emits a platform request log containing the full URL before gateway
+code can strip query parameters. Terraform therefore excludes the gateway's
+`/oauth/callback?...` request-log entries from Cloud Logging. Application access
+logs retain the query-free callback path. The exclusion is prospective and does
+not remove any entry retained before it was applied.
 
 Application delivery still deploys an immutable commit-SHA image after merge.
 Terraform controls configuration and secret references but ignores the image

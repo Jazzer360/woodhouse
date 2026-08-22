@@ -1,3 +1,17 @@
+resource "google_logging_project_exclusion" "mcp_oauth_callback_request_urls" {
+  project     = var.project_id
+  name        = "tpp-mcp-oauth-callback-request-urls"
+  description = "Exclude Cloud Run platform request logs that contain Tesla OAuth callback query parameters. Application logs retain only the query-free path."
+  filter      = <<-EOT
+    resource.type="cloud_run_revision"
+    resource.labels.service_name="${google_cloud_run_v2_service.platform["mcp_gateway"].name}"
+    log_id("run.googleapis.com/requests")
+    httpRequest.requestUrl=~"/oauth/callback\\?"
+  EOT
+
+  depends_on = [google_project_service.required]
+}
+
 resource "google_logging_metric" "unknown_vehicle_telemetry" {
   project     = var.project_id
   name        = "tpp/unknown_vehicle_telemetry"

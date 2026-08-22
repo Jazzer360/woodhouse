@@ -4,6 +4,17 @@
 class TeslaAPIError(Exception):
     """A Tesla endpoint returned an invalid or unsuccessful response."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "unspecified",
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.status_code = status_code
+
 
 class TeslaAuthenticationError(TeslaAPIError):
     """A Tesla OAuth exchange or identity-token validation failed."""

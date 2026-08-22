@@ -4,6 +4,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from tesla_personal_platform.tesla_client.errors import (
     TeslaAPIError,
     TeslaConfigurationError,
@@ -22,7 +24,7 @@ class PartnerRegistration:
 
 
 class PartnerRegistrar:
-    """Verify existing registration before creating it, then verify again."""
+    """Create or confirm a registration, then verify its hosted public key."""
 
     def __init__(self, transport: HttpTransport) -> None:
         self._transport = transport
@@ -39,18 +41,11 @@ class PartnerRegistrar:
         if not client_id.strip() or not client_secret.strip():
             raise TeslaConfigurationError("Tesla partner credentials are required")
         normalized_domain = _normalize_domain(domain)
-        expected_key = _normalize_pem(expected_public_key_pem)
+        expected_key = _public_key_point(expected_public_key_pem)
         results: list[PartnerRegistration] = []
         for value in base_urls:
             base_url = normalize_base_url(value)
             token = self._partner_token(client_id, client_secret, base_url)
-            current = self._registered_key(token, base_url, normalized_domain)
-            if current is not None:
-                if _normalize_pem(current) != expected_key:
-                    raise TeslaConfigurationError(f"Tesla registration key mismatch for {base_url}")
-                results.append(PartnerRegistration(base_url, "already_registered"))
-                continue
-
             response = self._transport.request(
                 "POST",
                 f"{base_url}/api/1/partner_accounts",
@@ -61,12 +56,13 @@ class PartnerRegistrar:
                 raise TeslaAPIError(
                     f"Tesla partner registration failed with status {response.status}"
                 )
+            status = "already_registered" if response.status == 409 else "registered"
             verified = self._registered_key(token, base_url, normalized_domain)
-            if verified is None or _normalize_pem(verified) != expected_key:
+            if verified is None or _public_key_point(verified) != expected_key:
                 raise TeslaConfigurationError(
                     f"Tesla did not verify the expected public key for {base_url}"
                 )
-            results.append(PartnerRegistration(base_url, "registered"))
+            results.append(PartnerRegistration(base_url, status))
         return results
 
     def _partner_token(self, client_id: str, client_secret: str, audience: str) -> str:
@@ -139,10 +135,29 @@ def _normalize_domain(value: str) -> str:
     return domain
 
 
-def _normalize_pem(value: str) -> str:
-    normalized = "\n".join(line.strip() for line in value.strip().splitlines())
-    if not normalized.startswith("-----BEGIN PUBLIC KEY-----") or not normalized.endswith(
-        "-----END PUBLIC KEY-----"
-    ):
-        raise TeslaConfigurationError("Expected a PEM-encoded public key")
-    return normalized
+def _public_key_point(value: str) -> bytes:
+    encoded = value.strip()
+    try:
+        if encoded.startswith("-----BEGIN PUBLIC KEY-----"):
+            key = serialization.load_pem_public_key(encoded.encode("ascii"))
+            if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(
+                key.curve, ec.SECP256R1
+            ):
+                raise TeslaConfigurationError("Expected a secp256r1 public key")
+            return key.public_bytes(
+                serialization.Encoding.X962,
+                serialization.PublicFormat.UncompressedPoint,
+            )
+
+        point = bytes.fromhex(encoded)
+        if len(point) != 65 or point[0] != 0x04:
+            raise TeslaConfigurationError("Expected an uncompressed secp256r1 public key")
+        key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), point)
+        return key.public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
+    except (UnicodeEncodeError, ValueError) as error:
+        raise TeslaConfigurationError(
+            "Expected a secp256r1 public key in PEM or uncompressed-point hex"
+        ) from error
