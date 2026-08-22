@@ -113,8 +113,24 @@ def test_mcp_external_route_is_fail_closed_until_oidc_is_configured() -> None:
 
     external_access = variable_block(variables, "enable_mcp_external_access")
     assert "default     = false" in external_access
+    assert "var.enable_platform_oidc ||" in cloud_run
     assert "var.oidc_audience == null ? false" in cloud_run
     assert 'member   = "allUsers"' in cloud_run
+
+
+def test_platform_oidc_is_opt_in_and_browser_secret_is_secret_manager_only() -> None:
+    variables = (TERRAFORM_ROOT / "variables.tf").read_text(encoding="utf-8")
+    cloud_run = (TERRAFORM_ROOT / "cloud_run.tf").read_text(encoding="utf-8")
+    secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")
+
+    platform_oidc = variable_block(variables, "enable_platform_oidc")
+    assert "default     = false" in platform_oidc
+    assert "PLATFORM_OIDC_CLIENT_SECRET" in cloud_run
+    assert 'secret  = google_secret_manager_secret.platform["platform_oidc_client_secret"]' in (
+        cloud_run
+    )
+    assert 'platform_oidc_client_secret  = "platform-oidc-client-secret"' in secrets
+    assert "google_secret_manager_secret_version" not in secrets
 
 
 def test_tesla_onboarding_is_fail_closed_and_does_not_inject_private_key() -> None:

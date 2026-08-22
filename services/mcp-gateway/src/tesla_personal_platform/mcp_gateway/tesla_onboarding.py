@@ -46,6 +46,7 @@ class PendingAuthorization:
     owner_user_id: str
     nonce: str
     expires_at: datetime
+    completion_mode: str = "api"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +105,7 @@ class OnboardingResult:
     region: str
     base_url: str
     vehicles: tuple[VehicleRecord, ...]
+    completion_mode: str = "api"
 
 
 class TeslaOnboardingStore(Protocol):
@@ -199,13 +201,26 @@ class TeslaOnboardingService:
         if not self._app_domain or "://" in self._app_domain or "/" in self._app_domain:
             raise ValueError("Tesla application domain must be a bare hostname")
 
-    def start(self, context: UserContext, *, now: datetime | None = None) -> str:
+    def start(
+        self,
+        context: UserContext,
+        *,
+        now: datetime | None = None,
+        completion_mode: str = "api",
+    ) -> str:
+        if completion_mode not in {"api", "browser"}:
+            raise ValueError("Unsupported Tesla OAuth completion mode")
         current = now or datetime.now(UTC)
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
         self._store.create_oauth_state(
             state,
-            PendingAuthorization(context.user_id, nonce, current + OAUTH_STATE_LIFETIME),
+            PendingAuthorization(
+                context.user_id,
+                nonce,
+                current + OAUTH_STATE_LIFETIME,
+                completion_mode,
+            ),
         )
         return self._oauth.authorization_url(state=state, nonce=nonce)
 
@@ -248,11 +263,12 @@ class TeslaOnboardingService:
             region=region.region,
             base_url=region.base_url,
             vehicles=tuple(records),
+            completion_mode=pending.completion_mode,
         )
 
-    def decline(self, *, state: str, now: datetime | None = None) -> None:
+    def decline(self, *, state: str, now: datetime | None = None) -> PendingAuthorization:
         """Consume state after a Tesla denial so it cannot be replayed."""
-        self._store.consume_oauth_state(state, now=now or datetime.now(UTC))
+        return self._store.consume_oauth_state(state, now=now or datetime.now(UTC))
 
     def list_vehicles(self, context: UserContext) -> list[dict[str, object]]:
         return self.vehicle_documents(self._store.list_vehicles(context.user_id))

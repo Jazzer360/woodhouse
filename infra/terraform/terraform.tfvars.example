@@ -2,10 +2,17 @@ project_id = "woodhouse-506215"
 region     = "us-central1"
 zone       = "us-central1-a"
 
-# Google OAuth web client ID (not a secret). Configure this before enabling
-# internet reachability for the application-authenticated MCP endpoint.
-# oidc_audience             = "replace-with-google-oauth-client-id"
+# Phase 6.1: Auth0 is the documented OAuth 2.1 broker with Google upstream.
+# Add the browser application secret only to platform-oidc-client-secret.
+# enable_platform_oidc         = true
+# platform_oidc_issuer         = "https://tenant.us.auth0.com/"
+# platform_oidc_resource_url   = "https://woodhouse.derekjass.com/mcp"
+# platform_oidc_client_id      = "replace-with-auth0-browser-client-id"
+# platform_oidc_redirect_uri   = "https://woodhouse.derekjass.com/auth/callback"
 # enable_mcp_external_access = true
+
+# Legacy direct Google ID-token audience; do not use as the ChatGPT OAuth contract.
+# oidc_audience = "replace-with-google-oauth-client-id"
 
 # Enable only after these Secret Manager containers have enabled versions:
 # tesla-client-secret, tesla-command-public-key, tesla-token-encryption-key.

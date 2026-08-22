@@ -103,6 +103,26 @@ first live MCP checkpoint remain operator actions after merge.
 
 ---
 
+## Phase 6.1 — ChatGPT OAuth compatibility and browser onboarding
+
+**Goal:** Make the completed MCP surface linkable from ChatGPT and make the
+manual allowlist lead to a guided, per-user Tesla/Virtual Key onboarding page.
+
+**Implementation status:** Implemented in code; Auth0/Google configuration,
+deployment, existing-owner identity migration, and the first ChatGPT connection
+remain operator checkpoint actions.
+
+**Exit criteria:**
+
+- `/mcp` publishes the current OAuth protected-resource and per-tool metadata;
+- access tokens are validated for issuer, MCP audience, expiry, and scope;
+- `add-user` remains the only enrollment path;
+- `/onboarding` binds only verified allowlisted identities and stores opaque sessions;
+- Tesla OAuth and per-vehicle Virtual Key pairing are guided without exposing credentials;
+- multiple vehicles and partial pairing are represented independently.
+
+---
+
 ## Phase 7 — Fleet Telemetry edge and permanent raw BigQuery history
 
 **Goal:** Receive Fleet Telemetry and permanently retain every valid received observation.

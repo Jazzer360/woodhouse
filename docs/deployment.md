@@ -126,30 +126,93 @@ another principal or authorized view, it must update this workflow explicitly.
 
 ## Platform OIDC configuration
 
-Create a Google OAuth/OIDC client for the intended MCP client and record its
-client ID as `oidc_audience`. A client ID is not a secret; do not commit its
-client secret if the chosen provider flow issues one. The gateway validates only
-Google-signed ID tokens whose `aud` exactly matches this configured value and
-whose issuer is `accounts.google.com` or `https://accounts.google.com`.
+The Phase 6.1 default is Auth0 as the OAuth 2.1 authorization server, with
+Google configured as its upstream social connection. This is two distinct
+pieces: Auth0 issues MCP-resource access tokens to ChatGPT and browser sessions;
+Google authenticates the human. The Firestore allowlist remains the final
+authorization decision.
 
-Terraform defaults `enable_mcp_external_access` to `false`. After deploying the
-Phase 3 gateway image and configuring `oidc_audience`, explicitly set:
+Create an Auth0 API/resource server whose identifier is exactly:
 
-```hcl
-oidc_audience              = "your-google-oauth-client-id"
-enable_mcp_external_access = true
+```text
+https://woodhouse.derekjass.com/mcp
 ```
 
-That switch grants the Cloud Run route to `allUsers` so internet MCP clients can
+Use RS256 access tokens and define the `mcp:access` permission. In **Tenant
+Settings > Default Audience**, select this API so Auth0 emits a locally
+verifiable RS256 JWT for the MCP resource. Do not create a custom authorization
+server in this repository.
+
+Use Auth0's manual CIMD registration for ChatGPT:
+
+1. In **Dashboard > Settings > Advanced**, enable **Client ID Metadata Document
+   (CIMD) Registration**.
+2. In the ChatGPT plugin/app management page, copy the exact Client ID Metadata
+   Document URL shown for this MCP connection.
+3. In **Applications > Applications**, choose **Create Application > Import
+   from URL**, paste that CIMD URL, preview it, and create the third-party
+   application.
+4. In the MCP API's **Settings > Application Access Policy**, choose
+   **Per-app authorization** for User-Delegated Access.
+5. In the API's **Application Access** tab, edit the imported ChatGPT client and
+   grant User-Delegated Access only to `mcp:access`.
+
+Auth0 discovery must publish PKCE `S256` and CIMD support. Configure Google as
+the intended social connection and promote it to a domain-level connection so
+the imported third-party application can use it. Request `openid email profile
+mcp:access`.
+
+Create a separate Auth0 **Regular Web Application** for browser onboarding:
+
+```text
+Allowed Callback URL: https://woodhouse.derekjass.com/auth/callback
+Allowed Logout URL:   https://woodhouse.derekjass.com/
+Allowed Web Origin:   https://woodhouse.derekjass.com
+```
+
+Put its client secret into Secret Manager locally; do not paste it into chat,
+Terraform, shell history, or a checked-in file:
+
+```powershell
+$secret = Read-Host "Paste Auth0 browser client secret" -MaskInput
+$secret | gcloud secrets versions add platform-oidc-client-secret --data-file=-
+Remove-Variable secret
+```
+
+Then configure Terraform with public identifiers only:
+
+```hcl
+enable_platform_oidc          = true
+platform_oidc_issuer          = "https://YOUR_TENANT.REGION.auth0.com/"
+platform_oidc_resource_url    = "https://woodhouse.derekjass.com/mcp"
+platform_oidc_client_id       = "AUTH0_BROWSER_CLIENT_ID"
+platform_oidc_redirect_uri    = "https://woodhouse.derekjass.com/auth/callback"
+enable_mcp_external_access    = true
+```
+
+The gateway exposes both
+`/.well-known/oauth-protected-resource` and the path-aware compatibility URL
+`/.well-known/oauth-protected-resource/mcp`. Auth0 remains responsible for its
+authorization-server/OIDC discovery, authorization, token, registration, and
+UserInfo endpoints. The gateway validates token signature, exact issuer,
+audience `https://woodhouse.derekjass.com/mcp`, time claims, subject, and
+`mcp:access` before resolving the Firestore allowlist.
+
+The old `oidc_audience` Google client setting is retained only for a controlled
+migration or direct diagnostic deployment when `enable_platform_oidc=false`.
+It is not sufficient for ChatGPT's MCP OAuth contract because its ID token is
+audienced to the Google client rather than the MCP resource.
+
+Terraform defaults `enable_mcp_external_access` to `false`. That switch grants
+the Cloud Run route to `allUsers` so internet MCP clients can
 reach application-level authentication; it does not grant application access.
 The gateway returns `401` unless the bearer token is valid and resolves to an
-active immutable allowlist binding. Terraform refuses to enable the route with
-no audience, and the process refuses to start without both `OIDC_AUDIENCE` and
-`GOOGLE_CLOUD_PROJECT`.
+active immutable allowlist binding. Terraform refuses to enable the route unless
+either platform OIDC or the legacy diagnostic audience is configured. The
+process fails closed unless it has `GOOGLE_CLOUD_PROJECT` and one of those two
+authentication configurations.
 
-The reserved `/mcp` route authenticates and applies the tenant-input guard before
-returning the expected Phase 3 `501` response; actual MCP protocol/tools arrive
-in later phases. Public smoke checks use `/health`, which contains no identity
+Public smoke checks use `/health`, which contains no identity
 state and remains unauthenticated. The service also exposes `/healthz` inside the
 container for local health checks; Google Front End reserves that literal path
 on the public `run.app` hostname and returns its own `404` before the container.
@@ -278,10 +341,35 @@ same identifiers and repairs drift. If dataset provisioning fails for a new
 invitation, the record remains disabled and a safe retry completes it.
 
 On Homer's first protected request, the gateway requires a verified
-`homer@example.com` claim and atomically binds its Google issuer/subject. Later
+`homer@example.com` claim and atomically binds its configured issuer/subject. Later
 email changes do not change authorization. Do not edit `oidc_issuer` or
 `oidc_subject` to transfer an account; disable and follow a reviewed recovery
 procedure instead.
+
+After deployment, Homer visits:
+
+```text
+https://woodhouse.derekjass.com/onboarding
+```
+
+The page starts Google sign-in through Auth0, enforces the invitation, starts
+Tesla OAuth, lists all returned vehicles, and offers a separate Virtual Key link
+and status refresh for each vehicle. Tesla pairing still completes in the Tesla
+mobile app.
+
+For the one-time transition of an account already bound directly to Google's
+issuer, confirm the existing opaque `user_id` from `add-user` output and run:
+
+```bash
+uv run python scripts/admin/reset-user-identity \
+  --project-id woodhouse-506215 \
+  --email homer@example.com \
+  --confirm-user-id usr_REPLACE_WITH_EXISTING_ID
+```
+
+This deletes only the old identity index and clears the binding. It preserves
+the internal user, dataset, Tesla connection, vehicle ownership, and history.
+Run it only immediately before that same approved user signs in through Auth0.
 
 To block access without deleting history, dataset ACLs, or the immutable binding:
 
@@ -293,6 +381,33 @@ uv run python scripts/admin/disable-user \
 
 `disable-user` is idempotent. It does not revoke Google itself, delete BigQuery
 data, alter Tesla consent, or remove a future vehicle Virtual Key.
+
+## Phase 6.1 ChatGPT connection checkpoint
+
+After applying Terraform and deploying the reviewed gateway image:
+
+1. Verify `https://woodhouse.derekjass.com/.well-known/oauth-protected-resource`
+   returns the exact MCP resource, Auth0 issuer, and `mcp:access` scope.
+2. Open `https://woodhouse.derekjass.com/onboarding`, sign in with an allowlisted
+   Google account, authorize Tesla, and verify every expected vehicle appears.
+3. Open each pending pairing link, complete the Tesla-app action, and use
+   **Refresh pairing status**. A partially paired account remains partially
+   paired; statuses are per vehicle.
+4. In ChatGPT enable developer mode, open Plugins, add the public MCP URL
+   `https://woodhouse.derekjass.com/mcp`, and choose OAuth with CIMD.
+5. Import the exact ChatGPT Client ID Metadata Document URL into Auth0 and grant
+   that imported client User-Delegated Access to only `mcp:access`, as described
+   above. The CIMD supplies ChatGPT's exact redirect URI; do not reuse the
+   browser-onboarding application's client secret. Never enter a Tesla token,
+   Auth0 client secret, or EC private key into ChatGPT.
+6. Refresh the plugin metadata, verify all typed tools declare `mcp:access`, and
+   run `tesla_list_vehicles` before any write. Continue to require explicit
+   current-turn intent for security-sensitive operations.
+
+Current OpenAI references:
+
+- <https://developers.openai.com/plugins/build/auth>
+- <https://developers.openai.com/plugins/deploy/connect-chatgpt>
 
 ## Terraform state bootstrap
 

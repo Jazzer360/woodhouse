@@ -6,7 +6,7 @@ from dataclasses import replace
 from threading import Thread
 from typing import cast
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 from tesla_personal_platform.auth import (
@@ -35,6 +35,8 @@ from tesla_personal_platform.mcp_gateway.main import (
     _read_request_body,
     _Server,
 )
+from tesla_personal_platform.mcp_gateway.mcp_auth import MCPAuthorizationSettings
+from tesla_personal_platform.mcp_gateway.mcp_tools import MCPProtocol, TeslaMCPService
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import TeslaOnboardingService
 from tesla_personal_platform.mcp_gateway.tesla_runtime import TeslaRuntime
 from tesla_personal_platform.tesla_client import TeslaAPIError
@@ -127,6 +129,84 @@ def test_tesla_public_key_route_fails_closed_before_configuration() -> None:
                 timeout=2,
             )
         assert error.value.code == 503
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_oauth_protected_resource_metadata_is_public_and_exact() -> None:
+    authorization = MCPAuthorizationSettings(
+        "https://woodhouse.derekjass.com/mcp",
+        "https://tenant.example.auth0.com/",
+        ("mcp:access",),
+    )
+    server = _Server(
+        ("127.0.0.1", 0),
+        boundary_for(InMemoryIdentityStore(), {}),
+        mcp_authorization=authorization,
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        with urlopen(  # noqa: S310 - fixed loopback test server
+            f"http://127.0.0.1:{server.server_port}/.well-known/oauth-protected-resource",
+            timeout=2,
+        ) as response:
+            assert response.status == 200
+            assert json.load(response) == {
+                "resource": "https://woodhouse.derekjass.com/mcp",
+                "authorization_servers": ["https://tenant.example.auth0.com/"],
+                "scopes_supported": ["mcp:access"],
+                "resource_documentation": "https://woodhouse.derekjass.com/onboarding",
+            }
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_unauthenticated_mcp_tool_call_returns_linking_challenge() -> None:
+    authorization = MCPAuthorizationSettings(
+        "https://woodhouse.derekjass.com/mcp",
+        "https://tenant.example.auth0.com/",
+        ("mcp:access",),
+    )
+    protocol = MCPProtocol(cast(TeslaMCPService, object()))
+    runtime = TeslaRuntime(cast(TeslaOnboardingService, object()), b"", protocol)
+    server = _Server(
+        ("127.0.0.1", 0),
+        boundary_for(InMemoryIdentityStore(), {}),
+        runtime,
+        authorization,
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    request = Request(  # noqa: S310 - fixed loopback test server
+        f"http://127.0.0.1:{server.server_port}/mcp",
+        data=json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {"name": "tesla_vehicle", "arguments": {}},
+            }
+        ).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=2) as response:  # noqa: S310
+            assert response.status == 200
+            payload = json.load(response)
+        challenge = payload["result"]["_meta"]["mcp/www_authenticate"][0]
+        assert payload["result"]["isError"] is True
+        assert 'resource_metadata="https://woodhouse.derekjass.com/' in challenge
+        assert 'error="invalid_token"' in challenge
+        assert 'error_description="Sign in to use Woodhouse Tesla tools"' in challenge
     finally:
         server.shutdown()
         server.server_close()
@@ -485,6 +565,14 @@ class MemoryAdminStore:
         self.users[key] = replace(self.users[key], status=UserStatus.DISABLED)
         return self.users[key]
 
+    def reset_identity(self, email: str, expected_user_id: str) -> AllowedUser:
+        key = email.strip().casefold()
+        user = self.users[key]
+        if user.user_id != expected_user_id:
+            raise ValueError("mismatch")
+        self.users[key] = replace(user, oidc_issuer=None, oidc_subject=None)
+        return self.users[key]
+
 
 class RecordingDatasetProvisioner:
     def __init__(self) -> None:
@@ -536,3 +624,23 @@ def test_new_invitation_stays_disabled_if_dataset_provisioning_fails() -> None:
         service.add_user("homer@example.com")
 
     assert store.users["homer@example.com"].status is UserStatus.DISABLED
+
+
+def test_identity_reset_requires_exact_user_id_and_preserves_tenant() -> None:
+    store = MemoryAdminStore()
+    service = UserAdminService(store, RecordingDatasetProvisioner())
+    added = service.add_user("homer@example.com")
+    store.users[added.invitation_email] = replace(
+        added,
+        oidc_issuer="https://accounts.google.com",
+        oidc_subject="legacy-google-subject",
+    )
+
+    with pytest.raises(ValueError, match="mismatch"):
+        service.reset_user_identity("homer@example.com", "usr_wrong")
+
+    reset = service.reset_user_identity("homer@example.com", added.user_id)
+    assert reset.user_id == added.user_id
+    assert reset.dataset_id == added.dataset_id
+    assert reset.oidc_issuer is None
+    assert reset.oidc_subject is None

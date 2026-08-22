@@ -25,6 +25,7 @@ from tesla_personal_platform.auth.models import (
     UserStatus,
     VerifiedIdentity,
 )
+from tesla_personal_platform.auth.oidc import OIDCAccessTokenVerifier, OIDCIDTokenVerifier
 
 COMPONENT = "auth"
 
@@ -46,6 +47,8 @@ __all__ = [
     "UserNotAllowedError",
     "UserStatus",
     "VerifiedIdentity",
+    "OIDCAccessTokenVerifier",
+    "OIDCIDTokenVerifier",
     "assert_no_caller_identity_claims",
     "authorize_trusted_owner",
     "normalize_email",

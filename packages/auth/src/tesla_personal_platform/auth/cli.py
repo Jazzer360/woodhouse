@@ -89,3 +89,23 @@ def disable_user_main() -> int:
         _fail(parser, error)
     _print_result("disable-user", user)
     return 0
+
+
+def reset_user_identity_main() -> int:
+    """Clear one immutable binding for an explicit provider migration or recovery."""
+    parser = _base_parser("Reset one platform user's OIDC binding")
+    parser.add_argument(
+        "--confirm-user-id",
+        required=True,
+        help="Opaque user_id printed by add-user; must exactly match the record",
+    )
+    arguments = parser.parse_args()
+    try:
+        user = _service(arguments).reset_user_identity(
+            arguments.email,
+            arguments.confirm_user_id,
+        )
+    except (AuthenticationError, GoogleAPICallError, ValueError) as error:
+        _fail(parser, error)
+    _print_result("reset-user-identity", user)
+    return 0

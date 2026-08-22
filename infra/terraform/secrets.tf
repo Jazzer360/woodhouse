@@ -1,6 +1,7 @@
 locals {
   secret_containers = {
     mcp_auth_signing_key         = "mcp-auth-signing-key"
+    platform_oidc_client_secret  = "platform-oidc-client-secret"
     tesla_client_secret          = "tesla-client-secret"
     tesla_command_private_key    = "tesla-command-private-key"
     tesla_command_proxy_tls_cert = "tesla-command-proxy-tls-cert"
@@ -33,6 +34,7 @@ resource "google_secret_manager_secret" "platform" {
 resource "google_secret_manager_secret_iam_member" "mcp_gateway_accessor" {
   for_each = toset([
     "mcp_auth_signing_key",
+    "platform_oidc_client_secret",
     "tesla_client_secret",
     "tesla_command_public_key",
     "tesla_token_encryption_key",

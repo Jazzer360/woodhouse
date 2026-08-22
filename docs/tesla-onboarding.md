@@ -139,6 +139,13 @@ add-user homer@example.com
 
 The user then signs into the platform. On first verified login, bind immutable OIDC identity.
 
+The implemented browser path is `https://woodhouse.derekjass.com/onboarding`.
+An unbound visitor can only start platform sign-in. An active allowlisted user
+can authorize/reconnect Tesla, see all discovered vehicles, open a separate
+vehicle-specific Tesla Virtual Key pairing link, and refresh each vehicle's
+status. The page never accepts a caller-selected user, dataset, VIN ownership,
+or Tesla credential.
+
 ---
 
 ## 6. Tesla OAuth authorization-code flow
@@ -149,6 +156,17 @@ MCP gateway exposes:
 GET /tesla/oauth/start
 GET /oauth/callback
 ```
+
+The browser UI reuses the same service through authenticated POST routes:
+
+```text
+POST /onboarding/tesla/start
+POST /onboarding/vehicles/{internal_vehicle_id}/refresh
+```
+
+These forms are protected by an opaque HttpOnly session and session-bound CSRF
+token. The Tesla callback redirects browser starts back to `/onboarding`; API
+starts retain the credential-free JSON result for diagnostics.
 
 Start endpoint:
 
@@ -222,6 +240,10 @@ https://www.tesla.com/_ak/woodhouse.derekjass.com?vin=<VIN>
 ```
 
 Tesla explicitly supports selecting among multiple vehicles or passing a VIN.
+
+The browser page renders this exact vehicle-specific deep link as a normal user
+gesture. It does not claim that OAuth paired the key, automate Tesla-app
+confirmation, or treat one paired vehicle as proof that all vehicles are paired.
 
 After pairing, verify key state with `fleet_status` before enabling signed controls/telemetry setup. Tesla returns per-vehicle capability fields under
 `response.vehicle_info`, while `response.key_paired_vins` and

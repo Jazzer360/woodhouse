@@ -10,7 +10,14 @@ This is not a public signup system. The owner manually approves users.
 
 ## 2. Human identity
 
-Initial recommendation: use a mainstream OIDC identity provider (Google is the practical first choice) and reuse the proven MCP authorization pattern from the existing personal YNAB integration where possible.
+Use a mainstream OIDC identity provider and reuse the proven MCP authorization
+pattern from the existing personal YNAB integration where practical. Google is
+the upstream login identity. Auth0 is the default OAuth 2.1 authorization
+server because ChatGPT requires MCP protected-resource discovery, PKCE S256,
+resource-specific access tokens, and supported client registration. ChatGPT is
+registered as an Auth0 third-party client through its exact Client ID Metadata
+Document URL and receives only the user-delegated `mcp:access` permission. The
+platform does not implement a custom authorization server.
 
 The platform stores:
 
@@ -78,12 +85,14 @@ No public enrollment UI is required.
 
 ## 3.1 Gateway token boundary
 
-Phase 3 uses Google OIDC ID tokens as the practical default. The gateway verifies
-the Google signature, expiry, configured audience, issuer, and immutable subject.
-Both Google issuer spellings accepted by its token verifier are normalized to
-`https://accounts.google.com` before creating or resolving immutable bindings.
-Provider verification is behind an interface so the allowlist and tenant model
-do not depend on Google-specific claims.
+Phase 6.1 uses Auth0 as the standards-compliant OAuth authorization server with
+Google configured as its upstream social/OIDC connection. The gateway verifies
+the access-token signature through the issuer JWKS, exact issuer, MCP resource
+audience, expiry/not-before claims, subject, and `mcp:access` scope. Verified
+email comes from signed claims or the issuer's HTTPS UserInfo endpoint and is
+used only for the first allowlist bind. Direct Google ID-token verification is
+retained temporarily as a migration/diagnostic path when platform OIDC is not
+enabled; it is not the ChatGPT connector contract.
 
 The bearer token is accepted only in the HTTP `Authorization` header. Every
 protected request derives `user_id` and `dataset_id` from Firestore. JSON fields
@@ -97,9 +106,24 @@ timeout, and enforces one absolute deadline for reading each request body. A
 caller cannot keep a worker occupied indefinitely by stalling or trickling a
 declared request body.
 
-The provider login/token-acquisition UX remains the OIDC client's concern in
-this phase. The gateway implements no public signup and stores no Google access
-or refresh token.
+The gateway publishes `/.well-known/oauth-protected-resource`, advertises OAuth
+on every MCP tool, and returns both HTTP `WWW-Authenticate` challenges and MCP
+`_meta["mcp/www_authenticate"]` errors. ChatGPT performs authorization code +
+PKCE against Auth0 and sends only the resulting MCP access token to `/mcp`.
+
+Browser onboarding uses a separate Auth0 regular-web-app client with
+authorization code + PKCE and nonce/state validation. Its client secret is
+injected from Secret Manager. The browser receives only an opaque, random,
+`Secure; HttpOnly; SameSite=Lax` session cookie; login state and sessions live
+server-side in Firestore and expire. Every session use re-resolves the immutable
+identity and active allowlist status, so `disable-user` takes effect immediately.
+State-changing onboarding forms require a session-bound CSRF token.
+
+No public signup is introduced. Auth0 authentication does not bypass the
+Firestore invitation. Existing records bound directly to Google require the
+guarded `reset-user-identity` operator workflow once before binding to the new
+Auth0 issuer/subject; the command preserves `user_id`, dataset, Tesla ownership,
+and history.
 
 ---
 

@@ -3,7 +3,13 @@
 **Status:** Phase 6 typed live surface.
 
 The gateway implements stateless MCP Streamable HTTP JSON-RPC at `POST /mcp`.
-Platform OIDC and the manual allowlist run before JSON-RPC dispatch. Tools never
+It publishes RFC 9728 protected-resource metadata and uses OAuth 2.1
+authorization-code + PKCE through the configured authorization server. Every
+tool declares `securitySchemes: [{type: oauth2, scopes: [mcp:access]}]`.
+Unauthenticated tool calls return an MCP `mcp/www_authenticate` challenge;
+invalid bearer requests also receive an HTTP `WWW-Authenticate` challenge.
+Issuer, audience, expiry, signature, and scope are validated before the manual
+allowlist. Tools never
 accept a user ID, email, dataset ID, VIN, ownership claim, Tesla token, or
 arbitrary HTTP method/path. Current state always comes from Fleet API.
 

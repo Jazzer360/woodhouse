@@ -30,6 +30,21 @@ locals {
     TESLA_PUBLIC_KEY_PEM       = "tesla_command_public_key"
     TESLA_TOKEN_ENCRYPTION_KEY = "tesla_token_encryption_key"
   }
+
+  platform_oidc_environment = {
+    PLATFORM_OIDC_ISSUER = (
+      var.platform_oidc_issuer == null ? "" : var.platform_oidc_issuer
+    )
+    PLATFORM_OIDC_RESOURCE_URL = (
+      var.platform_oidc_resource_url == null ? "" : var.platform_oidc_resource_url
+    )
+    PLATFORM_OIDC_CLIENT_ID = (
+      var.platform_oidc_client_id == null ? "" : var.platform_oidc_client_id
+    )
+    PLATFORM_OIDC_REDIRECT_URI = (
+      var.platform_oidc_redirect_uri == null ? "" : var.platform_oidc_redirect_uri
+    )
+  }
 }
 
 resource "google_cloud_run_v2_service" "platform" {
@@ -84,6 +99,27 @@ resource "google_cloud_run_v2_service" "platform" {
         content {
           name  = "OIDC_AUDIENCE"
           value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = each.key == "mcp_gateway" && var.enable_platform_oidc ? local.platform_oidc_environment : {}
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = each.key == "mcp_gateway" && var.enable_platform_oidc ? [1] : []
+        content {
+          name = "PLATFORM_OIDC_CLIENT_SECRET"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.platform["platform_oidc_client_secret"].secret_id
+              version = "latest"
+            }
+          }
         }
       }
 
@@ -273,6 +309,16 @@ resource "google_cloud_run_v2_service" "platform" {
     }
 
     precondition {
+      condition = !var.enable_platform_oidc || alltrue([
+        var.platform_oidc_issuer != null && startswith(var.platform_oidc_issuer, "https://"),
+        var.platform_oidc_resource_url != null && startswith(var.platform_oidc_resource_url, "https://"),
+        var.platform_oidc_client_id != null && length(trimspace(var.platform_oidc_client_id)) > 0,
+        var.platform_oidc_redirect_uri != null && startswith(var.platform_oidc_redirect_uri, "https://"),
+      ])
+      error_message = "enable_platform_oidc requires HTTPS issuer/resource/redirect URLs and a client ID."
+    }
+
+    precondition {
       condition = !var.enable_tesla_command_proxy || (
         each.key != "mcp_gateway" || (
           var.enable_tesla_onboarding && var.tesla_command_proxy_image != null
@@ -296,8 +342,10 @@ resource "google_cloud_run_v2_service_iam_member" "mcp_external_invoker" {
 
   lifecycle {
     precondition {
-      condition     = var.oidc_audience == null ? false : length(trimspace(var.oidc_audience)) > 0
-      error_message = "enable_mcp_external_access requires a configured oidc_audience."
+      condition = var.enable_platform_oidc || (
+        var.oidc_audience == null ? false : length(trimspace(var.oidc_audience)) > 0
+      )
+      error_message = "enable_mcp_external_access requires platform OIDC or the legacy Google audience."
     }
   }
 }

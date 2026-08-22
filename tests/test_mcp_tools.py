@@ -479,9 +479,31 @@ def test_protocol_lists_typed_tools_and_reports_tool_errors_without_secrets() ->
     assert failed is not None
     tools = listed["result"]["tools"]
     assert isinstance(tools, list) and len(tools) == len(MCP_TOOL_SPECS)
+    assert all(
+        tool["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp:access"]}] for tool in tools
+    )
     assert failed["result"]["isError"] is True
     assert failed["result"]["structuredContent"]["error"] == "vehicle_ambiguous"
     assert "secret" not in str(failed)
+
+
+def test_protocol_authentication_error_includes_chatgpt_linking_challenge() -> None:
+    instance, _, _ = service(FakeStore([vehicle("veh-one", "user-a", "VIN1")]))
+    protocol = MCPProtocol(instance)
+    request = {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {"name": "tesla_vehicle", "arguments": {}},
+    }
+
+    result = protocol.authentication_required(
+        request,
+        'Bearer resource_metadata="https://woodhouse.example/.well-known/oauth-protected-resource"',
+    )
+
+    assert result["result"]["isError"] is True
+    assert "mcp/www_authenticate" in result["result"]["_meta"]
 
 
 def test_unique_array_items_are_enforced_by_tool_validation() -> None:
