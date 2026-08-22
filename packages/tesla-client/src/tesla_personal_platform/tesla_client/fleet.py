@@ -36,7 +36,10 @@ class TeslaFleetClient:
         region = _string(response, "region")
         discovered = response.get("fleet_api_base_url", response.get("base_url"))
         if not isinstance(discovered, str):
-            raise TeslaAPIError("Tesla region response is missing Fleet API base URL")
+            raise TeslaAPIError(
+                "Tesla region response is missing Fleet API base URL",
+                category="invalid_payload",
+            )
         return TeslaRegion(region=region, base_url=normalize_base_url(discovered))
 
     def list_vehicles(self, access_token: str, *, base_url: str) -> list[TeslaVehicle]:
@@ -51,14 +54,23 @@ class TeslaFleetClient:
             )
             response = document.get("response")
             if not isinstance(response, Sequence) or isinstance(response, (str, bytes)):
-                raise TeslaAPIError("Tesla vehicle list response is invalid")
+                raise TeslaAPIError(
+                    "Tesla vehicle list response is invalid",
+                    category="invalid_payload",
+                )
             for item in response:
                 if not isinstance(item, Mapping):
-                    raise TeslaAPIError("Tesla vehicle list contains an invalid record")
+                    raise TeslaAPIError(
+                        "Tesla vehicle list contains an invalid record",
+                        category="invalid_payload",
+                    )
                 vin = _string(item, "vin")
                 vehicle_id = item.get("id_s", item.get("id"))
                 if not isinstance(vehicle_id, (str, int)) or isinstance(vehicle_id, bool):
-                    raise TeslaAPIError("Tesla vehicle record is missing its ID")
+                    raise TeslaAPIError(
+                        "Tesla vehicle record is missing its ID",
+                        category="invalid_payload",
+                    )
                 display_name = item.get("display_name")
                 state = item.get("state")
                 vehicles.append(
@@ -81,7 +93,10 @@ class TeslaFleetClient:
             else:
                 page += 1
             if page > 100:
-                raise TeslaAPIError("Tesla vehicle pagination exceeded safe bounds")
+                raise TeslaAPIError(
+                    "Tesla vehicle pagination exceeded safe bounds",
+                    category="pagination_limit",
+                )
         return vehicles
 
     def fleet_status(
@@ -144,29 +159,51 @@ def normalize_base_url(value: str) -> str:
 
 def _successful_json(response: HttpResponse) -> Mapping[str, object]:
     if response.status == 401:
-        raise TeslaReauthorizationRequired("Tesla access token was rejected")
+        raise TeslaReauthorizationRequired(
+            "Tesla access token was rejected",
+            category="reauthorization_required",
+            status_code=response.status,
+        )
     if response.status < 200 or response.status >= 300:
-        raise TeslaAPIError(f"Tesla Fleet API request failed with status {response.status}")
+        raise TeslaAPIError(
+            f"Tesla Fleet API request failed with status {response.status}",
+            category="http_error",
+            status_code=response.status,
+        )
     try:
         document = response.json()
     except (UnicodeDecodeError, ValueError) as error:
-        raise TeslaAPIError("Tesla Fleet API returned invalid JSON") from error
+        raise TeslaAPIError(
+            "Tesla Fleet API returned invalid JSON",
+            category="invalid_json",
+            status_code=response.status,
+        ) from error
     if not isinstance(document, Mapping):
-        raise TeslaAPIError("Tesla Fleet API returned an invalid document")
+        raise TeslaAPIError(
+            "Tesla Fleet API returned an invalid document",
+            category="invalid_document",
+            status_code=response.status,
+        )
     return document
 
 
 def _response_mapping(document: Mapping[str, object]) -> Mapping[str, object]:
     response = document.get("response")
     if not isinstance(response, Mapping):
-        raise TeslaAPIError("Tesla Fleet API response payload is invalid")
+        raise TeslaAPIError(
+            "Tesla Fleet API response payload is invalid",
+            category="invalid_payload",
+        )
     return response
 
 
 def _string(document: Mapping[str, object], key: str) -> str:
     value = document.get(key)
     if not isinstance(value, str) or not value:
-        raise TeslaAPIError(f"Tesla response is missing {key}")
+        raise TeslaAPIError(
+            f"Tesla response is missing {key}",
+            category="invalid_payload",
+        )
     return value
 
 

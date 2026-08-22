@@ -6,8 +6,12 @@ from datetime import UTC
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from tesla_personal_platform.tesla_client import (
     PartnerRegistrar,
+    TeslaAPIError,
     TeslaAuthenticationError,
     TeslaConfigurationError,
     TeslaFleetClient,
@@ -19,10 +23,15 @@ from tesla_personal_platform.tesla_client import (
 from tesla_personal_platform.tesla_client.transport import HttpResponse
 
 NA_BASE = "https://fleet-api.prd.na.vn.cloud.tesla.com"
-PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
-TEST-PUBLIC-MATERIAL
------END PUBLIC KEY-----
-"""
+PUBLIC_KEY_HEX = (
+    "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"
+    "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
+)
+PUBLIC_KEY = (
+    ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), bytes.fromhex(PUBLIC_KEY_HEX))
+    .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    .decode("ascii")
+)
 
 
 class RecordingTransport:
@@ -208,11 +217,23 @@ def test_vehicle_list_paginates_and_fleet_status_is_per_vin() -> None:
     assert transport.requests[2][2]["json_body"] == {"vins": ["VIN1", "VIN2"]}
 
 
+def test_fleet_http_error_retains_only_safe_diagnostic_metadata() -> None:
+    client = TeslaFleetClient(RecordingTransport([response(403, {"error": "forbidden"})]))
+
+    with pytest.raises(TeslaAPIError) as caught:
+        client.fleet_status("access", base_url=NA_BASE, vins=["VIN1"])
+
+    assert caught.value.category == "http_error"
+    assert caught.value.status_code == 403
+    assert "forbidden" not in str(caught.value)
+
+
 def test_partner_registration_is_idempotent_when_expected_key_exists() -> None:
     transport = RecordingTransport(
         [
             response(200, {"access_token": "partner-token"}),
-            response(200, {"response": {"public_key": PUBLIC_KEY}}),
+            response(409, {"error": "already_registered"}),
+            response(200, {"response": {"public_key": PUBLIC_KEY_HEX}}),
         ]
     )
     results = PartnerRegistrar(transport).ensure_registered(
@@ -224,7 +245,7 @@ def test_partner_registration_is_idempotent_when_expected_key_exists() -> None:
     )
 
     assert results[0].status == "already_registered"
-    assert [request[0] for request in transport.requests] == ["POST", "GET"]
+    assert [request[0] for request in transport.requests] == ["POST", "POST", "GET"]
 
 
 @pytest.mark.parametrize("domain", ["woodhouse.example?unexpected=true", "bad host.example"])
@@ -239,13 +260,33 @@ def test_partner_registration_rejects_non_hostname_domain(domain: str) -> None:
         )
 
 
+def test_partner_registration_wraps_unsupported_pem_algorithm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_unsupported_algorithm(_: bytes) -> object:
+        raise UnsupportedAlgorithm("unsupported test algorithm")
+
+    monkeypatch.setattr(serialization, "load_pem_public_key", raise_unsupported_algorithm)
+
+    with pytest.raises(
+        TeslaConfigurationError,
+        match="Expected a secp256r1 public key in PEM or uncompressed-point hex",
+    ):
+        PartnerRegistrar(RecordingTransport([])).ensure_registered(
+            client_id="client",
+            client_secret="secret",
+            domain="woodhouse.derekjass.com",
+            expected_public_key_pem=PUBLIC_KEY,
+            base_urls=[NA_BASE],
+        )
+
+
 def test_partner_registration_creates_missing_record_then_verifies() -> None:
     transport = RecordingTransport(
         [
             response(200, {"access_token": "partner-token"}),
-            response(404, {"error": "not_found"}),
             response(200, {"response": {}}),
-            response(200, {"response": {"public_key": PUBLIC_KEY}}),
+            response(200, {"response": {"public_key": PUBLIC_KEY_HEX}}),
         ]
     )
     results = PartnerRegistrar(transport).ensure_registered(
@@ -257,7 +298,8 @@ def test_partner_registration_creates_missing_record_then_verifies() -> None:
     )
 
     assert results[0].status == "registered"
-    assert transport.requests[2][2]["json_body"] == {"domain": "woodhouse.derekjass.com"}
+    assert transport.requests[1][2]["json_body"] == {"domain": "woodhouse.derekjass.com"}
+    assert [request[0] for request in transport.requests] == ["POST", "POST", "GET"]
 
 
 def test_production_transport_rejects_non_tesla_hosts_before_network() -> None:

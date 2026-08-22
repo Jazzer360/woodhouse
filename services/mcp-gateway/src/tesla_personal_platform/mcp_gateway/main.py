@@ -1,6 +1,7 @@
 """Authenticated gateway with Phase 4 Tesla onboarding routes."""
 
 import json
+import logging
 import os
 from collections.abc import Callable
 from http import HTTPStatus
@@ -40,6 +41,7 @@ MAX_REQUEST_BYTES: Final = 1_048_576
 REQUEST_IDLE_TIMEOUT_SECONDS: Final = 15.0
 REQUEST_BODY_TIMEOUT_SECONDS: Final = 15.0
 _REQUEST_READ_CHUNK_BYTES: Final = 64 * 1024
+LOGGER = logging.getLogger(__name__)
 
 
 class _RequestBodyReader(Protocol):
@@ -292,7 +294,14 @@ class _Handler(BaseHTTPRequestHandler):
         except CrossUserAccessError:
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "vehicle_forbidden"})
             return
-        except (TeslaAPIError, TeslaOnboardingError):
+        except TeslaAPIError as error:
+            _log_tesla_failure("tesla_fleet_status_failed", error)
+            self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "tesla_fleet_status_failed"})
+            return
+        except TeslaOnboardingError:
+            LOGGER.warning(
+                "tesla_fleet_status_failed category=onboarding_error upstream_status=none"
+            )
             self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "tesla_fleet_status_failed"})
             return
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
@@ -418,6 +427,17 @@ def _single_query_value(query: dict[str, list[str]], name: str) -> str | None:
     if len(values) != 1 or not values[0]:
         raise InvalidOAuthStateError("Tesla OAuth callback parameter is invalid")
     return values[0]
+
+
+def _log_tesla_failure(event: str, error: TeslaAPIError) -> None:
+    """Log only credential-free Tesla failure metadata."""
+    upstream_status = str(error.status_code) if error.status_code is not None else "none"
+    LOGGER.warning(
+        "%s category=%s upstream_status=%s",
+        event,
+        error.category,
+        upstream_status,
+    )
 
 
 if __name__ == "__main__":

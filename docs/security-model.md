@@ -133,8 +133,12 @@ advertise PKCE for this confidential-client flow; see `docs/tesla-onboarding.md`
 Firestore TTL deletes abandoned state records after `expires_at`; correctness
 still comes from transactional expiry validation and single-use deletion because
 TTL processing is asynchronous.
-Gateway access logs omit all query strings so callback authorization codes and
-state values are not copied into Cloud Logging. JSON callback and onboarding
+Gateway application access logs omit all query strings. Cloud Run's platform
+request log records the full request URL before application-level redaction, so
+Terraform excludes `run.googleapis.com/requests` entries for callback URLs that
+contain a query string. This prevents callback authorization codes and state
+values from being retained prospectively; the exclusion does not retroactively
+delete earlier entries. JSON callback and onboarding
 responses are marked `no-store` with a `no-referrer` policy.
 
 Refresh commits use an optimistic token version. A successful exchange must

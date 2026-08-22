@@ -285,6 +285,10 @@ The callback derives its owner exclusively from consumed server-side OAuth
 state. Vehicle status routes accept only an internal vehicle ID and verify its
 stored owner against the authenticated platform identity before contacting
 Tesla. The callback and status documents never contain Tesla credentials.
+Gateway application logs strip query strings, and the Terraform-managed Cloud
+Logging exclusion drops Cloud Run platform request-log entries for callback
+URLs containing query parameters. This is required because Cloud Run captures
+the full request URL before the gateway can redact it.
 
 Partner registration is a trusted operator command, not an MCP operation:
 
@@ -297,11 +301,10 @@ uv run python scripts/admin/register-partner \
 ```
 
 The command reads the client secret and expected public key directly from their
-Secret Manager versions. It verifies before registering, registers only when
-missing, and verifies the returned key afterward. Repeat `--region eu` when
-serving an EMEA account. China requires the separately documented Tesla China
-account/application and is not enabled merely by adding `--region cn` to the
-North American application.
+Secret Manager versions. It attempts the idempotent registration first and then
+verifies the returned key. Repeat `--region eu` when serving an EMEA account.
+China requires the separately documented Tesla China account/application and is
+not enabled merely by adding `--region cn` to the North American application.
 
 ---
 
@@ -418,6 +421,14 @@ uv run python scripts/admin/register-partner --project-id woodhouse-506215 --cli
 The safe output must say `registered` or `already_registered`; it contains no
 partner token or secret. Register additional non-China regions only when users
 there are actually supported, using another `--region` argument.
+
+The command follows Tesla's documented registration order: it posts the domain
+registration first, accepts an existing-registration conflict as idempotent,
+and only then reads back the registered public key. Tesla may reject the public
+key lookup before the partner account exists, so it is not used as a preflight
+existence check. Tesla's readback currently returns the uncompressed
+secp256r1 public point as hexadecimal rather than PEM; the command parses both
+representations and compares the actual curve point.
 
 ### Checkpoint E — one approved user's Tesla OAuth
 

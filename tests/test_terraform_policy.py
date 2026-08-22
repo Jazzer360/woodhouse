@@ -92,6 +92,14 @@ def test_cloud_build_speculative_plan_copies_the_complete_root() -> None:
     assert "sed -i" not in cloud_build
 
 
+def test_oauth_callback_request_urls_are_excluded_from_cloud_logging() -> None:
+    monitoring = (TERRAFORM_ROOT / "monitoring.tf").read_text(encoding="utf-8")
+
+    assert 'resource "google_logging_project_exclusion"' in monitoring
+    assert 'log_id("run.googleapis.com/requests")' in monitoring
+    assert 'httpRequest.requestUrl=~"/oauth/callback\\\\?"' in monitoring
+
+
 def test_pubsub_oidc_audience_matches_the_exact_push_endpoint() -> None:
     pubsub = (TERRAFORM_ROOT / "pubsub.tf").read_text(encoding="utf-8")
 

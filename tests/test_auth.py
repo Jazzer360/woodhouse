@@ -1,6 +1,7 @@
 """Platform authentication, allowlist, and tenant-isolation tests."""
 
 import json
+import logging
 from dataclasses import replace
 from threading import Thread
 from typing import cast
@@ -30,11 +31,13 @@ from tesla_personal_platform.mcp_gateway.main import (
     REQUEST_IDLE_TIMEOUT_SECONDS,
     _decode_json_request,
     _Handler,
+    _log_tesla_failure,
     _read_request_body,
     _Server,
 )
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import TeslaOnboardingService
 from tesla_personal_platform.mcp_gateway.tesla_runtime import TeslaRuntime
+from tesla_personal_platform.tesla_client import TeslaAPIError
 
 
 class TokenMapVerifier:
@@ -158,6 +161,22 @@ def test_gateway_access_log_omits_oauth_callback_query_values(
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_tesla_failure_log_contains_only_safe_metadata(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    error = TeslaAPIError(
+        "credential-bearing response must not be logged",
+        category="http_error",
+        status_code=403,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        _log_tesla_failure("tesla_fleet_status_failed", error)
+
+    assert "tesla_fleet_status_failed category=http_error upstream_status=403" in caplog.text
+    assert "credential-bearing" not in caplog.text
 
 
 def test_non_allowlisted_login_is_rejected() -> None:
