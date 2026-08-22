@@ -97,7 +97,7 @@ def test_oauth_callback_request_urls_are_excluded_from_cloud_logging() -> None:
 
     assert 'resource "google_logging_project_exclusion"' in monitoring
     assert 'log_id("run.googleapis.com/requests")' in monitoring
-    assert 'httpRequest.requestUrl=~"/oauth/callback\\\\?"' in monitoring
+    assert 'httpRequest.requestUrl=~"/(auth|oauth)/callback\\\\?"' in monitoring
 
 
 def test_pubsub_oidc_audience_matches_the_exact_push_endpoint() -> None:
@@ -113,8 +113,26 @@ def test_mcp_external_route_is_fail_closed_until_oidc_is_configured() -> None:
 
     external_access = variable_block(variables, "enable_mcp_external_access")
     assert "default     = false" in external_access
+    assert "var.enable_platform_oidc ||" in cloud_run
     assert "var.oidc_audience == null ? false" in cloud_run
     assert 'member   = "allUsers"' in cloud_run
+
+
+def test_platform_oidc_is_opt_in_and_browser_secret_is_secret_manager_only() -> None:
+    variables = (TERRAFORM_ROOT / "variables.tf").read_text(encoding="utf-8")
+    cloud_run = (TERRAFORM_ROOT / "cloud_run.tf").read_text(encoding="utf-8")
+    secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")
+
+    platform_oidc = variable_block(variables, "enable_platform_oidc")
+    assert "default     = false" in platform_oidc
+    assert "PLATFORM_OIDC_CLIENT_SECRET" in cloud_run
+    assert (
+        'secret  = google_secret_manager_secret.platform["platform_oidc_client_secret"].secret_id'
+        in cloud_run
+    )
+    assert 'platform_oidc_client_secret  = "platform-oidc-client-secret"' in secrets
+    assert 'var.enable_platform_oidc ? ["platform_oidc_client_secret"] : []' in secrets
+    assert "google_secret_manager_secret_version" not in secrets
 
 
 def test_tesla_onboarding_is_fail_closed_and_does_not_inject_private_key() -> None:
@@ -157,12 +175,17 @@ def test_command_proxy_is_digest_pinned_non_ingress_and_kept_off_telemetry_edge(
     assert "tesla-command-private-key" not in compute
 
 
-def test_abandoned_tesla_oauth_states_have_firestore_ttl() -> None:
+def test_abandoned_oauth_states_and_sessions_have_firestore_ttl() -> None:
     firestore = (TERRAFORM_ROOT / "firestore.tf").read_text(encoding="utf-8")
 
-    assert 'collection = "tesla_oauth_states"' in firestore
-    assert 'field      = "expires_at"' in firestore
-    assert "ttl_config {}" in firestore
+    for collection in (
+        "tesla_oauth_states",
+        "platform_login_states",
+        "platform_web_sessions",
+    ):
+        assert f'collection = "{collection}"' in firestore
+    assert firestore.count('field      = "expires_at"') == 3
+    assert firestore.count("ttl_config {}") == 3
 
 
 def test_partner_admin_is_keyless_and_has_no_project_role() -> None:

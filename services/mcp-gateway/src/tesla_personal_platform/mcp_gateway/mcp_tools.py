@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, Union, get_args, get_origin, get_type_hints
 
 from tesla_personal_platform.auth import CrossUserAccessError, UserContext
+from tesla_personal_platform.mcp_gateway.mcp_auth import MCP_ACCESS_SCOPE
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
     TeslaOnboardingError,
     TeslaOnboardingStore,
@@ -173,14 +174,14 @@ class ToolSpec:
             "additionalProperties": False,
         }
 
-    def mcp_document(self) -> Document:
+    def mcp_document(self, *, oauth_protected: bool = True) -> Document:
         annotations: Document = {
             "readOnlyHint": not self.write,
             "destructiveHint": self.risk == "security_sensitive",
             "idempotentHint": False if self.write else True,
             "openWorldHint": True,
         }
-        return {
+        document: Document = {
             "name": self.name,
             "description": (
                 f"{self.description} Required Tesla scope: {self.required_scope}. "
@@ -190,6 +191,9 @@ class ToolSpec:
             "inputSchema": self.input_schema(),
             "annotations": annotations,
         }
+        if oauth_protected:
+            document["securitySchemes"] = [{"type": "oauth2", "scopes": [MCP_ACCESS_SCOPE]}]
+        return document
 
 
 _VEHICLE_READS = {
@@ -492,15 +496,17 @@ class TeslaMCPService:
         store: TeslaOnboardingStore,
         audit_store: CommandAuditStore,
         sleep: Callable[[float], None] = time.sleep,
+        oauth_protected: bool = True,
     ) -> None:
         self._fleet = PerUserTeslaClient(fleet, credentials)
         self._commands = PerUserTeslaClient(command_fleet, credentials)
         self._store = store
         self._audit_store = audit_store
         self._sleep = sleep
+        self._oauth_protected = oauth_protected
 
     def tools(self) -> list[Document]:
-        return [spec.mcp_document() for spec in MCP_TOOL_SPECS]
+        return [spec.mcp_document(oauth_protected=self._oauth_protected) for spec in MCP_TOOL_SPECS]
 
     def call(self, context: UserContext, name: str, arguments: object) -> Document:
         spec = MCP_TOOLS_BY_NAME.get(name)
@@ -821,7 +827,7 @@ class MCPProtocol:
     def __init__(self, service: TeslaMCPService) -> None:
         self._service = service
 
-    def handle(self, context: UserContext, payload: object) -> Document | None:
+    def handle(self, context: UserContext | None, payload: object) -> Document | None:
         if not isinstance(payload, dict) or payload.get("jsonrpc") != "2.0":
             return _jsonrpc_error(None, -32600, "Invalid JSON-RPC request")
         request_id = payload.get("id")
@@ -847,6 +853,8 @@ class MCPProtocol:
         if method == "tools/list":
             return _jsonrpc_result(request_id, {"tools": self._service.tools()})
         if method == "tools/call":
+            if context is None:
+                return _jsonrpc_error(request_id, -32001, "Authentication required")
             params = payload.get("params")
             if not isinstance(params, dict) or not isinstance(params.get("name"), str):
                 return _jsonrpc_error(request_id, -32602, "Invalid tool call parameters")
@@ -876,6 +884,18 @@ class MCPProtocol:
                 )
             return _tool_result(request_id, result, False)
         return _jsonrpc_error(request_id, -32601, "Method not found")
+
+    def authentication_required(self, payload: object, challenge: str) -> Document:
+        request_id = payload.get("id") if isinstance(payload, dict) else None
+        result = _tool_result(
+            request_id,
+            {"error": "authentication_required", "message": "Sign in to continue"},
+            True,
+        )
+        result_value = result.get("result")
+        if isinstance(result_value, dict):
+            result_value["_meta"] = {"mcp/www_authenticate": [challenge]}
+        return result
 
 
 def _tool_result(request_id: object, document: Document, is_error: bool) -> Document:

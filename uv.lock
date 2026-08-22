@@ -912,6 +912,7 @@ source = { editable = "packages/auth" }
 dependencies = [
     { name = "google-auth" },
     { name = "google-cloud-firestore" },
+    { name = "pyjwt", extra = ["crypto"] },
 ]
 
 [package.optional-dependencies]
@@ -924,6 +925,7 @@ requires-dist = [
     { name = "google-auth", specifier = ">=2.38,<3" },
     { name = "google-cloud-bigquery", marker = "extra == 'admin'", specifier = ">=3.30,<4" },
     { name = "google-cloud-firestore", specifier = ">=2.20,<3" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
 ]
 provides-extras = ["admin"]
 

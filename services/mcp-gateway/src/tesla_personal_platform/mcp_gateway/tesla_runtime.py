@@ -29,7 +29,11 @@ class TeslaRuntime:
     mcp: MCPProtocol | None = None
 
 
-def build_tesla_runtime(project_id: str) -> TeslaRuntime | None:
+def build_tesla_runtime(
+    project_id: str,
+    *,
+    oauth_protected: bool = False,
+) -> TeslaRuntime | None:
     """Build Tesla support only when Secret Manager-backed env injection is enabled."""
     enabled = os.environ.get("TESLA_ONBOARDING_ENABLED", "false").strip().casefold()
     if enabled not in {"true", "1"}:
@@ -66,7 +70,12 @@ def build_tesla_runtime(project_id: str) -> TeslaRuntime | None:
     )
     fleet = TeslaFleetClient(transport)
     onboarding = TeslaOnboardingService(oauth, fleet, store, values["TESLA_APP_DOMAIN"])
-    mcp = _build_mcp_runtime(fleet, onboarding, store)
+    mcp = _build_mcp_runtime(
+        fleet,
+        onboarding,
+        store,
+        oauth_protected=oauth_protected,
+    )
     return TeslaRuntime(
         onboarding=onboarding,
         public_key_pem=public_key_pem,
@@ -78,6 +87,8 @@ def _build_mcp_runtime(
     fleet: TeslaFleetClient,
     onboarding: TeslaOnboardingService,
     store: FirestoreTeslaOnboardingStore,
+    *,
+    oauth_protected: bool,
 ) -> MCPProtocol | None:
     enabled = os.environ.get("TESLA_COMMAND_PROXY_ENABLED", "false").strip().casefold()
     if enabled not in {"true", "1"}:
@@ -98,6 +109,7 @@ def _build_mcp_runtime(
             credentials=onboarding,
             store=store,
             audit_store=store,
+            oauth_protected=oauth_protected,
         )
     )
 

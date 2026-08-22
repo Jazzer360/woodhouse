@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Deliberately reset an OIDC binding after confirming its opaque user ID."""
+
+from tesla_personal_platform.auth.cli import reset_user_identity_main
+
+raise SystemExit(reset_user_identity_main())

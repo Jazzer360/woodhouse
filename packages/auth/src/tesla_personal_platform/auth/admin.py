@@ -20,6 +20,10 @@ class AllowlistAdminStore(Protocol):
         """Idempotently block a user without deleting data or identity state."""
         ...
 
+    def reset_identity(self, email: str, expected_user_id: str) -> AllowedUser:
+        """Deliberately clear one binding after confirming its opaque user ID."""
+        ...
+
 
 class DatasetProvisioner(Protocol):
     """Create and repair one isolated per-user analytics dataset."""
@@ -45,3 +49,7 @@ class UserAdminService:
     def disable_user(self, email: str) -> AllowedUser:
         """Block platform access while preserving bindings and historical data."""
         return self._allowlist.disable(email)
+
+    def reset_user_identity(self, email: str, expected_user_id: str) -> AllowedUser:
+        """Clear a stale provider binding without changing the tenant identifiers."""
+        return self._allowlist.reset_identity(email, expected_user_id)

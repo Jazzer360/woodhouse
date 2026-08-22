@@ -193,6 +193,44 @@ Finish with an OPERATOR CHECKPOINT for the first live MCP smoke test. First walk
 
 ---
 
+## Prompt 6.1 — ChatGPT OAuth and browser onboarding
+
+```text
+Read AGENTS.md, docs/architecture.md, docs/security-model.md,
+docs/tesla-onboarding.md, docs/mcp-tool-catalog.md, and the existing gateway.
+Re-check OpenAI's current official plugin MCP authentication and connection
+documentation before implementation.
+
+Make the public /mcp endpoint compatible with ChatGPT's current OAuth 2.1/MCP
+authorization contract using an established authorization server, Auth0 by
+default, with Google as the upstream identity provider. Publish protected
+resource metadata, validate access-token signature/issuer/audience/expiry/scope,
+advertise per-tool security schemes, and return discovery challenges. Preserve
+the Firestore manual allowlist and immutable issuer+subject binding.
+
+Add a minimal browser onboarding flow at the application domain. After an
+operator runs add-user, the approved user signs in, authorizes Tesla, sees all
+owned vehicles, opens Tesla's vehicle-specific Virtual Key pairing flow for
+each vehicle, and refreshes per-vehicle status. Pairing remains user-in-the-loop.
+Use server-side state, PKCE, nonce, opaque HttpOnly sessions, CSRF protection,
+and Secret Manager injection. Do not add public signup or expose credentials.
+
+Add tests for OAuth metadata/challenges, claim validation, allowlist/disabled
+behavior, session isolation, multiple vehicles, partial pairing, and secret
+leakage. Automated tests must not contact Tesla or a real vehicle. Finish with
+an operator checkpoint for provider configuration, deployment, browser
+onboarding, and the first ChatGPT developer-mode connection.
+```
+
+### Phase 6.1 completion check
+
+- ChatGPT can discover OAuth and link an approved user to `/mcp`.
+- The onboarding page works only for active allowlisted identities.
+- Every discovered vehicle has an independent pairing action and status.
+- No platform/Tesla secret or token reaches HTML, MCP results, or logs.
+
+---
+
 ## Prompt 7 — Fleet Telemetry edge and permanent raw BigQuery history
 
 ```text

@@ -4,6 +4,7 @@ Administrative entry points are trusted, explicit operator workflows.
 
 - Phase 2: infrastructure/bootstrap helpers only if Terraform cannot express the operation cleanly.
 - Phase 3: idempotent `add-user` and `disable-user` workflows (implemented).
+- Phase 6.1: guarded `reset-user-identity` for provider migration/recovery.
 - Phase 4: idempotent Tesla partner registration/verification (implemented as
   `register-partner`).
 - Phases 7-8: explicit telemetry validation and repair operations.
@@ -15,6 +16,21 @@ keyless `tpp-user-admin` service account:
 uv run python scripts/admin/add-user --project-id woodhouse-506215 --email homer@example.com
 uv run python scripts/admin/disable-user --project-id woodhouse-506215 --email homer@example.com
 ```
+
+After `add-user`, the user can visit
+`https://woodhouse.derekjass.com/onboarding` to sign in, authorize Tesla, and
+pair each vehicle. An account already bound to the legacy direct-Google issuer
+must be reset exactly once before its first Auth0-brokered login:
+
+```bash
+uv run python scripts/admin/reset-user-identity \
+  --project-id woodhouse-506215 \
+  --email homer@example.com \
+  --confirm-user-id usr_REPLACE_WITH_EXISTING_ID
+```
+
+The confirmation protects against resetting the wrong tenant. The operation
+preserves dataset, vehicle, Tesla connection, and historical data.
 
 The commands never accept or print a token, secret, service-account key, or
 Tesla credential. See [`docs/deployment.md`](../../docs/deployment.md#manual-add-homer-workflow)

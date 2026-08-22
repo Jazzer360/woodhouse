@@ -33,7 +33,7 @@ variable "cloud_run_placeholder_image" {
 }
 
 variable "oidc_audience" {
-  description = "Google OIDC OAuth client ID accepted by mcp-gateway; null keeps auth startup fail-closed."
+  description = "Legacy direct Google ID-token audience; retained during the platform-OIDC migration."
   type        = string
   default     = null
   nullable    = true
@@ -42,6 +42,40 @@ variable "oidc_audience" {
     condition     = var.oidc_audience == null ? true : length(trimspace(var.oidc_audience)) > 0
     error_message = "oidc_audience must be null or a non-empty OAuth client ID."
   }
+}
+
+variable "enable_platform_oidc" {
+  description = "Enable standards-compliant MCP OAuth and browser onboarding through the configured OIDC provider."
+  type        = bool
+  default     = false
+}
+
+variable "platform_oidc_issuer" {
+  description = "HTTPS issuer URL for the established OAuth/OIDC provider (Auth0 is the documented default)."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "platform_oidc_resource_url" {
+  description = "Canonical protected MCP resource URL, normally https://<domain>/mcp."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "platform_oidc_client_id" {
+  description = "Non-secret OIDC client ID used only by the browser onboarding flow."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "platform_oidc_redirect_uri" {
+  description = "Exact HTTPS browser sign-in callback URI registered with the OIDC provider."
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "enable_mcp_external_access" {

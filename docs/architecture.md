@@ -122,7 +122,13 @@ Initial flow:
 4. Future authorization uses the immutable identity, not merely the email string.
 5. Disabling the allowlist record immediately blocks MCP access without deleting historical data.
 
-Use the already-proven personal MCP authorization pattern from the YNAB project where practical. Initial identity provider can be Google OIDC/Firebase-style authentication; do not couple the rest of the architecture to Google-specific identity semantics.
+Use the already-proven personal MCP authorization pattern from the YNAB project where practical. Google remains the practical upstream sign-in identity. For ChatGPT interoperability, an established OAuth 2.1 authorization server (Auth0 by default) brokers Google sign-in and issues an access token whose audience is the MCP resource. Do not couple the allowlist or tenant model to provider-specific identity semantics.
+
+The gateway also serves a small browser onboarding page. It is not a signup
+portal: an operator must run `scripts/admin/add-user` first. After platform
+sign-in, the page starts the existing per-user Tesla OAuth flow, lists every
+owned vehicle, provides Tesla's vehicle-specific Virtual Key deep link, and
+refreshes pairing status. Pairing itself remains an explicit Tesla app action.
 
 ### 3.2 Adding a friend should remain simple
 
@@ -325,6 +331,8 @@ Do not split repositories until there is a concrete reason.
 Owns:
 
 - MCP protocol endpoint;
+- OAuth protected-resource discovery and access-token validation;
+- allowlisted browser onboarding at `/onboarding`;
 - platform authentication / allowlist enforcement;
 - Tesla OAuth start/callback/refresh;
 - `.well-known` Tesla public-key endpoint;

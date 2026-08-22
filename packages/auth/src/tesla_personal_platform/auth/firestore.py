@@ -209,6 +209,15 @@ class FirestoreAllowlistAdminStore:
         """Disable without deleting identifiers, bindings, or data."""
         return self._set_status(email, UserStatus.DISABLED, "ready")
 
+    def reset_identity(self, email: str, expected_user_id: str) -> AllowedUser:
+        """Clear a binding only after the operator confirms the opaque user ID."""
+        normalized = normalize_email(email)
+        transaction = self.client.transaction()
+        return cast(
+            AllowedUser,
+            _reset_identity_transaction(transaction, self, normalized, expected_user_id),
+        )
+
     def _set_status(
         self,
         email: str,
@@ -298,3 +307,34 @@ def _set_status_transaction(
         },
     )
     return replace(user, status=status)
+
+
+@firestore.transactional
+def _reset_identity_transaction(
+    transaction: Transaction,
+    store: FirestoreAllowlistAdminStore,
+    email: str,
+    expected_user_id: str,
+) -> AllowedUser:
+    reference = store.document(email)
+    snapshot = reference.get(transaction=transaction)
+    if not snapshot.exists:
+        raise UserNotAllowedError("Allowlist record does not exist")
+    user = _record_from_data(email, snapshot.to_dict())
+    if user.user_id != expected_user_id:
+        raise ValueError("Confirmed user ID does not match the allowlist record")
+    if user.oidc_issuer is not None and user.oidc_subject is not None:
+        identity_reference = store.client.collection(OIDC_IDENTITIES_COLLECTION).document(
+            _identity_document_id(user.oidc_issuer, user.oidc_subject)
+        )
+        transaction.delete(identity_reference)
+    transaction.update(
+        reference,
+        {
+            "oidc_issuer": None,
+            "oidc_subject": None,
+            "bound_at": firestore.DELETE_FIELD,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        },
+    )
+    return replace(user, oidc_issuer=None, oidc_subject=None)

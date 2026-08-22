@@ -4,6 +4,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from hmac import compare_digest
 from typing import Protocol
 from urllib.parse import quote
 
@@ -46,6 +47,8 @@ class PendingAuthorization:
     owner_user_id: str
     nonce: str
     expires_at: datetime
+    completion_mode: str = "api"
+    browser_session_binding: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +107,7 @@ class OnboardingResult:
     region: str
     base_url: str
     vehicles: tuple[VehicleRecord, ...]
+    completion_mode: str = "api"
 
 
 class TeslaOnboardingStore(Protocol):
@@ -199,13 +203,30 @@ class TeslaOnboardingService:
         if not self._app_domain or "://" in self._app_domain or "/" in self._app_domain:
             raise ValueError("Tesla application domain must be a bare hostname")
 
-    def start(self, context: UserContext, *, now: datetime | None = None) -> str:
+    def start(
+        self,
+        context: UserContext,
+        *,
+        now: datetime | None = None,
+        completion_mode: str = "api",
+        browser_session_binding: str | None = None,
+    ) -> str:
+        if completion_mode not in {"api", "browser"}:
+            raise ValueError("Unsupported Tesla OAuth completion mode")
+        if (completion_mode == "browser") != (browser_session_binding is not None):
+            raise ValueError("Browser Tesla OAuth requires an initiating session binding")
         current = now or datetime.now(UTC)
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
         self._store.create_oauth_state(
             state,
-            PendingAuthorization(context.user_id, nonce, current + OAUTH_STATE_LIFETIME),
+            PendingAuthorization(
+                context.user_id,
+                nonce,
+                current + OAUTH_STATE_LIFETIME,
+                completion_mode,
+                browser_session_binding,
+            ),
         )
         return self._oauth.authorization_url(state=state, nonce=nonce)
 
@@ -214,10 +235,12 @@ class TeslaOnboardingService:
         *,
         state: str,
         code: str,
+        expected_browser_session_binding: str | None = None,
         now: datetime | None = None,
     ) -> OnboardingResult:
         current = now or datetime.now(UTC)
         pending = self._store.consume_oauth_state(state, now=current)
+        _require_browser_session_binding(pending, expected_browser_session_binding)
         tokens = self._oauth.exchange_code(code, nonce=pending.nonce)
         connection = self._store.save_connection(
             pending.owner_user_id,
@@ -248,11 +271,20 @@ class TeslaOnboardingService:
             region=region.region,
             base_url=region.base_url,
             vehicles=tuple(records),
+            completion_mode=pending.completion_mode,
         )
 
-    def decline(self, *, state: str, now: datetime | None = None) -> None:
+    def decline(
+        self,
+        *,
+        state: str,
+        expected_browser_session_binding: str | None = None,
+        now: datetime | None = None,
+    ) -> PendingAuthorization:
         """Consume state after a Tesla denial so it cannot be replayed."""
-        self._store.consume_oauth_state(state, now=now or datetime.now(UTC))
+        pending = self._store.consume_oauth_state(state, now=now or datetime.now(UTC))
+        _require_browser_session_binding(pending, expected_browser_session_binding)
+        return pending
 
     def list_vehicles(self, context: UserContext) -> list[dict[str, object]]:
         return self.vehicle_documents(self._store.list_vehicles(context.user_id))
@@ -391,3 +423,17 @@ def require_vehicle_owner(record: VehicleRecord, owner_user_id: str) -> None:
         raise CrossUserAccessError("Vehicle is outside the authenticated user boundary")
     if record.authorization_status != "active":
         raise TeslaOnboardingError("Vehicle is no longer returned by the Tesla connection")
+
+
+def _require_browser_session_binding(
+    pending: PendingAuthorization,
+    expected: str | None,
+) -> None:
+    if pending.completion_mode != "browser":
+        return
+    if (
+        pending.browser_session_binding is None
+        or expected is None
+        or not compare_digest(pending.browser_session_binding, expected)
+    ):
+        raise InvalidOAuthStateError("Tesla OAuth browser session binding does not match")

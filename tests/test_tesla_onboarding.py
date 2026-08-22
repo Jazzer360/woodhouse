@@ -299,6 +299,35 @@ def test_oauth_state_is_single_use_and_expires() -> None:
         onboarding.callback(state=expired, code="authorization-code", now=NOW)
 
 
+def test_browser_oauth_state_requires_the_initiating_platform_session() -> None:
+    onboarding, store, oauth, _ = service()
+    url = onboarding.start(
+        context(),
+        now=NOW,
+        completion_mode="browser",
+        browser_session_binding="initiating-session-hash",
+    )
+    state = parse_qs(urlsplit(url).query)["state"][0]
+
+    with pytest.raises(InvalidOAuthStateError, match="session binding"):
+        onboarding.callback(
+            state=state,
+            code="authorization-code",
+            expected_browser_session_binding="different-session-hash",
+            now=NOW,
+        )
+
+    assert oauth.exchanged_nonce is None
+    assert store.connections == {}
+
+
+def test_browser_oauth_start_requires_a_session_binding() -> None:
+    onboarding, _, _, _ = service()
+
+    with pytest.raises(ValueError, match="initiating session binding"):
+        onboarding.start(context(), now=NOW, completion_mode="browser")
+
+
 def test_multiple_vehicles_and_partial_pairing_are_preserved_per_vehicle() -> None:
     onboarding, _, _, _ = service()
     result = onboard(onboarding)
