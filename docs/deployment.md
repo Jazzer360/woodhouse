@@ -505,9 +505,10 @@ health route.
 The main delivery allowlist intentionally excludes `telemetry-edge`. Phase 7
 must first replace its placeholder with the reviewed Fleet Telemetry receiver,
 then add exact-digest VM pull/restart, health checking, and rollback before a
-main trigger may deploy it. Terraform ignores deployed Cloud Run image fields,
-so a later infrastructure plan cannot roll application containers back to the
-Phase 2 placeholder.
+main trigger may deploy it. Terraform ignores delivery-owned Cloud Run image
+fields and revision labels, so a later infrastructure plan cannot roll
+application containers back to the Phase 2 placeholder or erase the recorded
+deployment commit.
 
 For an operator-initiated deployment, submit source through the dedicated
 `${project_id}-tpp-cloudbuild-source` bucket by passing
