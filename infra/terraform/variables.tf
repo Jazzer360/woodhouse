@@ -32,6 +32,21 @@ variable "cloud_run_placeholder_image" {
   default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
 
+variable "cloud_build_repository" {
+  description = "Existing regional Cloud Build v2 repository resource used by Terraform-managed triggers; the interactive GitHub connection remains an external bootstrap step."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.cloud_build_repository == null ? true : can(regex(
+      "^projects/[^/]+/locations/[^/]+/connections/[^/]+/repositories/[^/]+$",
+      var.cloud_build_repository
+    ))
+    error_message = "cloud_build_repository must be null or a full Cloud Build v2 repository resource name."
+  }
+}
+
 variable "oidc_audience" {
   description = "Legacy direct Google ID-token audience; retained during the platform-OIDC migration."
   type        = string

@@ -56,7 +56,8 @@ steps:
         rm /tmp/tpp-terraform-plan/backend.tf
         terraform -chdir=/tmp/tpp-terraform-plan init -backend=false
         terraform -chdir=/tmp/tpp-terraform-plan plan -refresh=false -input=false -lock=false -no-color \
-          -var=project_id=woodhouse-506215
+          -var=project_id=woodhouse-506215 \
+          -var=cloud_build_repository=projects/woodhouse-506215/locations/us-central1/connections/tpp-github/repositories/Jazzer360-woodhouse
 
   - id: build-mcp-gateway
     name: gcr.io/cloud-builders/docker

@@ -1,0 +1,109 @@
+substitutions:
+  _REGION: us-central1
+  _REPOSITORY: tesla-personal-platform
+  # Main-branch triggers must override this with one of the allowlisted services.
+  _SERVICE: unset
+
+steps:
+  - id: build-and-push
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        case "${_SERVICE}" in
+          mcp-gateway)
+            dockerfile="services/mcp-gateway/Dockerfile"
+            ;;
+          telemetry-processor)
+            dockerfile="services/telemetry-processor/Dockerfile"
+            ;;
+          *)
+            echo "Unsupported deploy service: ${_SERVICE}" >&2
+            exit 2
+            ;;
+        esac
+
+        tagged_image="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$COMMIT_SHA"
+        docker build --file "$$dockerfile" --tag "$$tagged_image" .
+        docker push "$$tagged_image"
+
+  - id: deploy-and-verify
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    waitFor: [build-and-push]
+    args:
+      - -ceu
+      - |
+        tagged_image="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$COMMIT_SHA"
+        digest="$$(gcloud artifacts docker images describe "$$tagged_image" \
+          --project="$PROJECT_ID" \
+          --format='value(image_summary.digest)')"
+        case "$$digest" in
+          sha256:????????????????????????????????????????????????????????????????) ;;
+          *)
+            echo "Artifact Registry did not return a full sha256 digest" >&2
+            exit 1
+            ;;
+        esac
+        digest_image="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}@$$digest"
+
+        case "${_SERVICE}" in
+          mcp-gateway)
+            # Preserve the instance-local Tesla Vehicle Command Proxy sidecar.
+            gcloud run services update mcp-gateway \
+              --project="$PROJECT_ID" \
+              --region="${_REGION}" \
+              --update-labels="tpp-deployed-commit=$COMMIT_SHA" \
+              --container=application \
+              --image="$$digest_image"
+            ;;
+          telemetry-processor)
+            gcloud run services update telemetry-processor \
+              --project="$PROJECT_ID" \
+              --region="${_REGION}" \
+              --update-labels="tpp-deployed-commit=$COMMIT_SHA" \
+              --image="$$digest_image"
+            ;;
+          *)
+            echo "Unsupported deploy service: ${_SERVICE}" >&2
+            exit 2
+            ;;
+        esac
+
+        revision="$$(gcloud run services describe "${_SERVICE}" \
+          --project="$PROJECT_ID" \
+          --region="${_REGION}" \
+          --format='value(status.latestReadyRevisionName)')"
+        revision_json="$$(gcloud run revisions describe "$$revision" \
+          --project="$PROJECT_ID" \
+          --region="${_REGION}" \
+          --format=json)"
+        ready="$$(printf '%s' "$$revision_json" | python3 -c \
+          'import json, sys; data = json.load(sys.stdin); print(next(item["status"] for item in data["status"]["conditions"] if item["type"] == "Ready"))')"
+        deployed_image="$$(printf '%s' "$$revision_json" | python3 -c \
+          'import json, sys; data = json.load(sys.stdin); print(next(item["image"] for item in data["spec"]["containers"] if item["name"] == "application"))')"
+
+        test "$$ready" = "True"
+        test "$$deployed_image" = "$$digest_image"
+
+        if test "${_SERVICE}" = "mcp-gateway"; then
+          service_url="$$(gcloud run services describe mcp-gateway \
+            --project="$PROJECT_ID" \
+            --region="${_REGION}" \
+            --format='value(status.url)')"
+          curl --fail --silent --show-error \
+            --retry 10 --retry-all-errors --retry-delay 3 --max-time 15 \
+            "$$service_url/health" >/dev/null
+        fi
+
+        echo "deployed_service=${_SERVICE} commit=$COMMIT_SHA revision=$$revision digest=$$digest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags:
+  - tpp-main-delivery
+  - ${_SERVICE}
+
+timeout: 1200s

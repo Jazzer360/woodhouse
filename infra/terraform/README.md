@@ -20,6 +20,11 @@ Enable `enable_tesla_command_proxy` only after adding the separate proxy TLS
 certificate/key secret versions and selecting the official proxy image by full
 digest. See [deployment notes](../../docs/deployment.md#phase-6-vehicle-command-proxy-deployment).
 
+Set `cloud_build_repository` to the existing regional Cloud Build v2 repository
+resource. Terraform manages the PR and main-branch triggers but deliberately
+does not own the interactive GitHub App authorization/connection. Import live
+triggers before the first plan; see the deployment notes for the exact commands.
+
 ## State bootstrap
 
 The `bootstrap/` root creates the versioned, private GCS bucket used by the shared root. Its one-resource local state is intentionally separate because Terraform cannot create its own backend bucket while using that backend.
