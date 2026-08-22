@@ -55,6 +55,11 @@ output "cloud_build_service_accounts" {
   }
 }
 
+output "cloud_build_source_bucket" {
+  description = "Private short-lived staging bucket for manually submitted deployment sources."
+  value       = google_storage_bucket.cloud_build_source.name
+}
+
 output "user_admin_service_account" {
   description = "Keyless identity used by the manual add-user and disable-user workflows."
   value       = google_service_account.platform["user_admin"].email
