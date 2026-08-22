@@ -115,14 +115,34 @@ class TeslaFleetClient:
             json_body={"vins": list(vins)},
         )
         response = _response_mapping(document)
+        vehicle_info = response.get("vehicle_info")
+        if not isinstance(vehicle_info, Mapping):
+            raise TeslaAPIError(
+                "Tesla fleet status response is missing vehicle_info",
+                category="invalid_payload",
+            )
+        paired_vins = _optional_string_set(response, "key_paired_vins")
+        unpaired_vins = _optional_string_set(response, "unpaired_vins")
+        if paired_vins is not None and unpaired_vins is not None:
+            if paired_vins & unpaired_vins:
+                raise TeslaAPIError(
+                    "Tesla fleet status pairing lists overlap",
+                    category="invalid_payload",
+                )
+
         statuses: dict[str, FleetStatus] = {}
-        for vin, raw in response.items():
+        for vin, raw in vehicle_info.items():
             if not isinstance(vin, str) or not isinstance(raw, Mapping):
                 continue
             raw_copy = {str(key): value for key, value in raw.items()}
+            key_paired: bool | None = None
+            if paired_vins is not None and vin in paired_vins:
+                key_paired = True
+            elif unpaired_vins is not None and vin in unpaired_vins:
+                key_paired = False
             statuses[vin] = FleetStatus(
                 vin=vin,
-                key_paired=_optional_bool(raw, "key_paired"),
+                key_paired=key_paired,
                 vehicle_command_protocol_required=_optional_bool(
                     raw, "vehicle_command_protocol_required"
                 ),
@@ -220,3 +240,20 @@ def _optional_bool(document: Mapping[str, object], key: str) -> bool | None:
 def _optional_int(document: Mapping[str, object], key: str) -> int | None:
     value = document.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _optional_string_set(document: Mapping[str, object], key: str) -> frozenset[str] | None:
+    value = document.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise TeslaAPIError(
+            f"Tesla response contains invalid {key}",
+            category="invalid_payload",
+        )
+    if any(not isinstance(item, str) or not item for item in value):
+        raise TeslaAPIError(
+            f"Tesla response contains invalid {key}",
+            category="invalid_payload",
+        )
+    return frozenset(value)

@@ -197,8 +197,17 @@ def test_vehicle_list_paginates_and_fleet_status_is_per_vin() -> None:
                 200,
                 {
                     "response": {
-                        "VIN1": {"key_paired": True, "total_number_of_keys": 3},
-                        "VIN2": {"key_paired": False},
+                        "key_paired_vins": ["VIN1"],
+                        "unpaired_vins": ["VIN2"],
+                        "vehicle_info": {
+                            "VIN1": {
+                                "vehicle_command_protocol_required": True,
+                                "total_number_of_keys": 3,
+                            },
+                            "VIN2": {
+                                "vehicle_command_protocol_required": True,
+                            },
+                        },
                     }
                 },
             ),
@@ -214,7 +223,43 @@ def test_vehicle_list_paginates_and_fleet_status_is_per_vin() -> None:
     assert [vehicle.vin for vehicle in vehicles] == ["VIN1", "VIN2"]
     assert statuses["VIN1"].key_paired is True
     assert statuses["VIN2"].key_paired is False
+    assert statuses["VIN1"].total_number_of_keys == 3
+    assert statuses["VIN2"].vehicle_command_protocol_required is True
     assert transport.requests[2][2]["json_body"] == {"vins": ["VIN1", "VIN2"]}
+
+
+def test_fleet_status_rejects_missing_vehicle_info_wrapper() -> None:
+    client = TeslaFleetClient(
+        RecordingTransport([response(200, {"response": {"key_paired_vins": ["VIN1"]}})])
+    )
+
+    with pytest.raises(TeslaAPIError) as caught:
+        client.fleet_status("access", base_url=NA_BASE, vins=["VIN1"])
+
+    assert caught.value.category == "invalid_payload"
+
+
+def test_fleet_status_keeps_pairing_unknown_when_lists_omit_vehicle() -> None:
+    client = TeslaFleetClient(
+        RecordingTransport(
+            [
+                response(
+                    200,
+                    {
+                        "response": {
+                            "key_paired_vins": [],
+                            "unpaired_vins": [],
+                            "vehicle_info": {"VIN1": {}},
+                        }
+                    },
+                )
+            ]
+        )
+    )
+
+    statuses = client.fleet_status("access", base_url=NA_BASE, vins=["VIN1"])
+
+    assert statuses["VIN1"].key_paired is None
 
 
 def test_fleet_http_error_retains_only_safe_diagnostic_metadata() -> None:

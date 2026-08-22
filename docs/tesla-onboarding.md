@@ -220,7 +220,10 @@ https://www.tesla.com/_ak/woodhouse.derekjass.com?vin=<VIN>
 
 Tesla explicitly supports selecting among multiple vehicles or passing a VIN.
 
-After pairing, verify key state with `fleet_status` before enabling signed controls/telemetry setup.
+After pairing, verify key state with `fleet_status` before enabling signed controls/telemetry setup. Tesla returns per-vehicle capability fields under
+`response.vehicle_info`, while `response.key_paired_vins` and
+`response.unpaired_vins` report pairing separately. Treat a VIN omitted from
+both pairing lists as unknown rather than guessing its state.
 
 ---
 
