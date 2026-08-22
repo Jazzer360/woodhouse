@@ -22,6 +22,7 @@ from tesla_personal_platform.auth.admin import UserAdminService
 from tesla_personal_platform.auth.memory import InMemoryIdentityStore
 from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundary
 from tesla_personal_platform.mcp_gateway.main import (
+    REQUEST_IDLE_TIMEOUT_SECONDS,
     _decode_json_request,
     _read_request_body,
 )
@@ -286,7 +287,35 @@ def test_request_body_read_enforces_one_absolute_deadline() -> None:
             clock=lambda: next(moments),
         )
 
-    assert connection.timeouts == [0.75]
+    assert connection.timeouts == [0.75, REQUEST_IDLE_TIMEOUT_SECONDS]
+
+
+def test_request_body_read_restores_idle_timeout_after_success() -> None:
+    class CompleteReader:
+        def read1(self, size: int = -1, /) -> bytes:
+            assert size == 2
+            return b"{}"
+
+    class RecordingConnection:
+        def __init__(self) -> None:
+            self.timeouts: list[float | None] = []
+
+        def settimeout(self, value: float | None) -> None:
+            self.timeouts.append(value)
+
+    moments = iter([0.0, 0.99])
+    connection = RecordingConnection()
+
+    body = _read_request_body(
+        CompleteReader(),
+        connection,
+        2,
+        timeout_seconds=1.0,
+        clock=lambda: next(moments),
+    )
+
+    assert body == b"{}"
+    assert connection.timeouts == [pytest.approx(0.01), REQUEST_IDLE_TIMEOUT_SECONDS]
 
 
 def test_trusted_cross_user_resource_is_rejected() -> None:

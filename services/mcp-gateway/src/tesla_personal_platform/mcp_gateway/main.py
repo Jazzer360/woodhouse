@@ -64,16 +64,19 @@ def _read_request_body(
     chunks: list[bytes] = []
     remaining = length
 
-    while remaining:
-        time_left = deadline - clock()
-        if time_left <= 0:
-            raise TimeoutError("Request body read deadline exceeded")
-        connection.settimeout(time_left)
-        chunk = reader.read1(min(remaining, _REQUEST_READ_CHUNK_BYTES))
-        if not chunk:
-            raise ValueError("Request body ended before Content-Length")
-        chunks.append(chunk)
-        remaining -= len(chunk)
+    try:
+        while remaining:
+            time_left = deadline - clock()
+            if time_left <= 0:
+                raise TimeoutError("Request body read deadline exceeded")
+            connection.settimeout(time_left)
+            chunk = reader.read1(min(remaining, _REQUEST_READ_CHUNK_BYTES))
+            if not chunk:
+                raise ValueError("Request body ended before Content-Length")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        connection.settimeout(REQUEST_IDLE_TIMEOUT_SECONDS)
 
     return b"".join(chunks)
 
@@ -115,7 +118,6 @@ class _Handler(BaseHTTPRequestHandler):
             payload = self._read_json()
             self.server.auth_boundary.authorize(self.headers.get("Authorization"), payload)
         except TimeoutError:
-            self.connection.settimeout(REQUEST_IDLE_TIMEOUT_SECONDS)
             self._send_json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request_timeout"})
             return
         except CallerIdentityClaimError:
