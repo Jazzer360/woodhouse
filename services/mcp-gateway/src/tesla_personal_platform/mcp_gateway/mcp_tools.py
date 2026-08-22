@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import json
 import secrets
+import time
 import types
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, Union, get_args, get_origin, get_type_hints
@@ -22,6 +24,7 @@ from tesla_personal_platform.tesla_client import (
     PerUserTeslaClient,
     TeslaAPIError,
     TeslaFleetClient,
+    TeslaVehicle,
 )
 from tesla_personal_platform.tesla_client.coverage import COMMAND_NAMES
 from tesla_personal_platform.tesla_client.models import JsonObject
@@ -66,8 +69,10 @@ from tesla_personal_platform.tesla_client.requests import (
 from tesla_personal_platform.tesla_client.session import TeslaAccessProvider
 
 Risk = Literal["read_only", "normal", "security_sensitive"]
-WakeBehavior = Literal["never", "requires_awake", "explicit"]
+WakeBehavior = Literal["never", "requires_awake", "explicit", "auto_if_needed"]
 type Document = dict[str, Any]
+_WAKE_POLL_ATTEMPTS = 6
+_WAKE_POLL_INTERVAL_SECONDS = 10.0
 _RESPONSE_SECRET_KEYS = frozenset(
     {
         "access_token",
@@ -463,7 +468,7 @@ def _build_specs() -> tuple[ToolSpec, ...]:
                 True,
                 True,
                 risk,
-                "requires_awake",
+                "auto_if_needed",
                 "never",
                 _COMMAND_REQUEST_TYPES.get(command),
             )
@@ -486,11 +491,13 @@ class TeslaMCPService:
         credentials: TeslaAccessProvider,
         store: TeslaOnboardingStore,
         audit_store: CommandAuditStore,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._fleet = PerUserTeslaClient(fleet, credentials)
         self._commands = PerUserTeslaClient(command_fleet, credentials)
         self._store = store
         self._audit_store = audit_store
+        self._sleep = sleep
 
     def tools(self) -> list[Document]:
         return [spec.mcp_document() for spec in MCP_TOOL_SPECS]
@@ -518,6 +525,15 @@ class TeslaMCPService:
             raise MCPToolError(
                 "missing_tesla_scope",
                 f"Reconnect Tesla with the required {spec.required_scope} scope",
+            )
+        if (
+            spec.client_method in COMMAND_NAMES
+            and "vehicle_device_data" not in connection.tokens.scopes
+        ):
+            raise MCPToolError(
+                "missing_tesla_scope",
+                "Reconnect Tesla with the required vehicle_device_data scope "
+                "for command wake checks",
             )
         endpoints = arguments.get("endpoints", [])
         if (
@@ -602,6 +618,9 @@ class TeslaMCPService:
                     "virtual_key_not_paired",
                     "The selected vehicle still requires Virtual Key pairing",
                 )
+            wake_correlation_id = None
+            if spec.client_method in COMMAND_NAMES:
+                wake_correlation_id = self._ensure_vehicle_online(context, spec, vehicle)
             result = self._execute(context, spec, vehicle, values)
         except Exception as error:
             category = (
@@ -619,7 +638,77 @@ class TeslaMCPService:
         )
         document = _serialize(result)
         document["correlation_id"] = correlation_id
+        if wake_correlation_id is not None:
+            document["wake_correlation_id"] = wake_correlation_id
         return document
+
+    def _ensure_vehicle_online(
+        self,
+        context: UserContext,
+        spec: ToolSpec,
+        vehicle: VehicleRecord,
+    ) -> str | None:
+        """Wake an offline vehicle before a command, without retrying the command itself."""
+        live_vehicle = self._live_vehicle(context.user_id, vehicle.vin)
+        if live_vehicle.state == "online":
+            return None
+
+        audit_id = f"audit_{secrets.token_hex(16)}"
+        correlation_id = f"corr_{secrets.token_hex(16)}"
+        try:
+            self._audit_store.begin_command_audit(
+                audit_id=audit_id,
+                timestamp=datetime.now(UTC),
+                owner_user_id=context.user_id,
+                vehicle_id=vehicle.vehicle_id,
+                tool_name="tesla_wake_up",
+                redacted_parameters={"automatic_for": spec.name},
+                correlation_id=correlation_id,
+                source="chatgpt-mcp",
+            )
+        except Exception as error:
+            raise MCPToolError(
+                "audit_unavailable",
+                "Command was not sent because its automatic wake could not be audited",
+            ) from error
+
+        try:
+            wake_result = self._fleet.execute(
+                context.user_id,
+                lambda fleet, token, base: fleet.wake_up(
+                    token,
+                    base_url=base,
+                    vin=vehicle.vin,
+                ),
+            )
+        except Exception as error:
+            category = (
+                error.category
+                if isinstance(error, (TeslaAPIError, MCPToolError))
+                else "internal_error"
+            )
+            self._finalize_audit(audit_id, "failure", category)
+            raise
+
+        self._finalize_audit(audit_id, "success", None)
+        if wake_result.state == "online":
+            return correlation_id
+
+        for _attempt in range(_WAKE_POLL_ATTEMPTS):
+            self._sleep(_WAKE_POLL_INTERVAL_SECONDS)
+            if self._live_vehicle(context.user_id, vehicle.vin).state == "online":
+                return correlation_id
+
+        raise MCPToolError(
+            "vehicle_unavailable",
+            "Vehicle did not come online within 60 seconds; command was not sent",
+        )
+
+    def _live_vehicle(self, owner_user_id: str, vin: str) -> TeslaVehicle:
+        return self._fleet.execute(
+            owner_user_id,
+            lambda fleet, token, base: fleet.vehicle(token, base_url=base, vin=vin),
+        )
 
     def _finalize_audit(self, audit_id: str, result: str, error_category: str | None) -> None:
         try:

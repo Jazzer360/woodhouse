@@ -568,6 +568,13 @@ Examples:
 
 Require clear user intent but do not invent redundant confirmations.
 
+Before sending any MCP vehicle command, the gateway fetches the live vehicle
+state. If the vehicle is not online, it records and sends one `wake_up`, polls
+the vehicle endpoint every 10 seconds for at most 60 seconds, and sends the
+requested command once only after the vehicle reports online. The gateway never
+retries a command after sending it because a missing or 5xx response does not
+prove non-execution. Read tools continue to avoid implicit wakes.
+
 ### Security-sensitive controls
 
 Examples:
