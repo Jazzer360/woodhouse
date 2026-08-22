@@ -258,4 +258,18 @@ Never log tokens, secrets, PINs, or unnecessary exact location.
 
 Command audit is required, but redacted.
 
+Phase 6 creates `tesla_command_audits/{random_audit_id}` before every MCP write
+reaches Tesla. A completion update records success, Tesla rejection, or a safe
+error category; if completion fails, the initial `attempted` record remains.
+Audit parameters structurally redact PIN/password, token, VIN, calendar, and
+exact-location fields. Tesla response bodies are not copied into the audit.
+
+The official Vehicle Command Proxy is a loopback-only Cloud Run sidecar. Only
+that container mounts the application EC private key and its separate TLS
+private key. The Python container mounts the TLS certificate only. Cloud Run
+uses one service account for all containers in a revision, so this is a mount
+and process boundary rather than distinct IAM principals; telemetry-edge and
+telemetry-processor have no access. A separate signing service is the future
+hardening option if the trust population expands.
+
 Analytics job metadata may record bytes processed, duration, tables referenced, and user/vehicle scope; do not dump query results into general logs.

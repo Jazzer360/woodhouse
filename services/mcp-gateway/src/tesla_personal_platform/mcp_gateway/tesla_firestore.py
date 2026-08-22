@@ -25,11 +25,13 @@ from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
 )
 from tesla_personal_platform.mcp_gateway.token_crypto import TokenCipher
 from tesla_personal_platform.tesla_client import FleetStatus, TeslaVehicle, TokenSet
+from tesla_personal_platform.tesla_client.models import JsonObject
 
 OAUTH_STATES = "tesla_oauth_states"
 CONNECTIONS = "tesla_connections"
 VEHICLES = "vehicles"
 VIN_INDEX = "vehicle_vin_index"
+COMMAND_AUDITS = "tesla_command_audits"
 
 
 class FirestoreTeslaOnboardingStore:
@@ -178,6 +180,50 @@ class FirestoreTeslaOnboardingStore:
                 vehicle_id,
                 status,
             ),
+        )
+
+    def begin_command_audit(
+        self,
+        *,
+        audit_id: str,
+        timestamp: datetime,
+        owner_user_id: str,
+        vehicle_id: str,
+        tool_name: str,
+        redacted_parameters: JsonObject,
+        correlation_id: str,
+        source: str,
+    ) -> None:
+        """Persist a pending record before a write reaches Tesla."""
+        self.client.collection(COMMAND_AUDITS).document(audit_id).create(
+            {
+                "timestamp": timestamp,
+                "owner_user_id": owner_user_id,
+                "vehicle_id": vehicle_id,
+                "tool_name": tool_name,
+                "parameters": redacted_parameters,
+                "result": "attempted",
+                "error_category": None,
+                "correlation_id": correlation_id,
+                "source": source,
+                "created_at": firestore.SERVER_TIMESTAMP,
+            }
+        )
+
+    def complete_command_audit(
+        self,
+        *,
+        audit_id: str,
+        result: str,
+        error_category: str | None,
+    ) -> None:
+        """Finalize a pre-existing write attempt without storing response bodies."""
+        self.client.collection(COMMAND_AUDITS).document(audit_id).update(
+            {
+                "result": result,
+                "error_category": error_category,
+                "completed_at": firestore.SERVER_TIMESTAMP,
+            }
         )
 
     def _state(self, state: str):  # type: ignore[no-untyped-def]

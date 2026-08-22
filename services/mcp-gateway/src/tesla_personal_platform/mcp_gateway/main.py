@@ -58,7 +58,7 @@ class _TimeoutConnection(Protocol):
 
 def health_document() -> dict[str, str]:
     """Return a non-sensitive service health document."""
-    return {"phase": "tesla-onboarding", "service": SERVICE_NAME, "status": "ok"}
+    return {"phase": "typed-tesla-mcp", "service": SERVICE_NAME, "status": "ok"}
 
 
 def _decode_json_request(body: bytes) -> object:
@@ -156,7 +156,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             server = cast(_Server, self.server)
-            server.auth_boundary.authorize(self.headers.get("Authorization"), payload)
+            context = server.auth_boundary.authorize(self.headers.get("Authorization"), payload)
         except TimeoutError:
             self._send_json(HTTPStatus.REQUEST_TIMEOUT, {"error": "request_timeout"})
             return
@@ -180,10 +180,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json_request"})
             return
 
-        self._send_json(
-            HTTPStatus.NOT_IMPLEMENTED,
-            {"error": "mcp_behavior_deferred", "phase": "tesla-onboarding"},
-        )
+        runtime = cast(_Server, self.server).tesla_runtime
+        if runtime is None or runtime.mcp is None:
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"error": "tesla_mcp_not_configured"},
+            )
+            return
+        response = runtime.mcp.handle(context, payload)
+        if response is None:
+            self.send_response(HTTPStatus.ACCEPTED)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._send_json_document(HTTPStatus.OK, response)
 
     def _serve_tesla_public_key(self) -> None:
         runtime = cast(_Server, self.server).tesla_runtime

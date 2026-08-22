@@ -10,6 +10,7 @@ from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from tesla_personal_platform.tesla_client import (
+    LocalCommandProxyTransport,
     PartnerRegistrar,
     TeslaAPIError,
     TeslaAuthenticationError,
@@ -95,7 +96,7 @@ def test_authorization_url_has_required_state_nonce_and_scopes() -> None:
     assert query["show_keypair_step"] == ["true"]
     assert query["scope"] == [
         "openid offline_access vehicle_device_data vehicle_location vehicle_cmds "
-        "vehicle_charging_cmds"
+        "vehicle_charging_cmds user_data"
     ]
     assert "code_challenge" not in query
 
@@ -354,3 +355,16 @@ def test_production_transport_rejects_non_tesla_hosts_before_network() -> None:
             "https://attacker.example/collect",
             headers={"Authorization": "Bearer credential"},
         )
+
+
+def test_local_command_proxy_transport_rejects_non_loopback_and_non_command_requests() -> None:
+    with pytest.raises(ValueError, match="loopback"):
+        LocalCommandProxyTransport(proxy_origin="https://proxy.example", ca_file="missing")
+
+    transport = object.__new__(LocalCommandProxyTransport)
+    object.__setattr__(transport, "_origin", "https://localhost:4443")
+    object.__setattr__(transport, "_timeout_seconds", 1.0)
+    object.__setattr__(transport, "_opener", None)
+
+    with pytest.raises(ValueError, match="typed commands only"):
+        transport.request("GET", f"{NA_BASE}/api/1/vehicles/VIN1/vehicle_data")

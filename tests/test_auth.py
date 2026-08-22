@@ -78,7 +78,7 @@ def test_gateway_health_routes_are_unauthenticated(path: str) -> None:
         ) as response:
             assert response.status == 200
             assert json.load(response) == {
-                "phase": "tesla-onboarding",
+                "phase": "typed-tesla-mcp",
                 "service": "mcp-gateway",
                 "status": "ok",
             }

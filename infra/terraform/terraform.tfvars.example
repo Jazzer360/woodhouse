@@ -14,6 +14,11 @@ zone       = "us-central1-a"
 # tesla_app_domain         = "woodhouse.derekjass.com"
 # tesla_oauth_redirect_uri = "https://woodhouse.derekjass.com/oauth/callback"
 
+# Phase 6: enable only after adding command-proxy TLS secret versions. Resolve
+# the current official image digest out of band; never deploy a floating tag.
+# enable_tesla_command_proxy = true
+# tesla_command_proxy_image  = "tesla/vehicle-command@sha256:<reviewed-64-hex-digest>"
+
 # Use IAM member syntax. Keep empty until the operator identity is known.
 # admin_principals = ["user:operator@example.com"]
 

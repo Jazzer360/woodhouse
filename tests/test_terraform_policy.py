@@ -138,6 +138,23 @@ def test_tesla_onboarding_is_fail_closed_and_does_not_inject_private_key() -> No
     assert '"tesla_command_private_key"' not in gateway_access
 
 
+def test_command_proxy_is_digest_pinned_loopback_only_and_kept_off_telemetry_edge() -> None:
+    variables = (TERRAFORM_ROOT / "variables.tf").read_text(encoding="utf-8")
+    cloud_run = (TERRAFORM_ROOT / "cloud_run.tf").read_text(encoding="utf-8")
+    secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")
+    compute = (TERRAFORM_ROOT / "compute.tf").read_text(encoding="utf-8")
+
+    assert "enable_tesla_command_proxy" in variables
+    assert '"^tesla/vehicle-command@sha256:[0-9a-f]{64}$"' in variables
+    assert 'value = "127.0.0.1"' in cloud_run
+    assert 'value = "4443"' in cloud_run
+    assert 'name  = "tesla-command-proxy"' in cloud_run
+    assert 'name       = "tesla-command-key"' in cloud_run
+    assert 'name       = "command-proxy-ca"' in cloud_run
+    assert "var.enable_tesla_command_proxy ? toset" in secrets
+    assert "tesla-command-private-key" not in compute
+
+
 def test_abandoned_tesla_oauth_states_have_firestore_ttl() -> None:
     firestore = (TERRAFORM_ROOT / "firestore.tf").read_text(encoding="utf-8")
 

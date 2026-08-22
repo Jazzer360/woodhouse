@@ -6,10 +6,12 @@ from dataclasses import dataclass
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from google.cloud import firestore
+from tesla_personal_platform.mcp_gateway.mcp_tools import MCPProtocol, TeslaMCPService
 from tesla_personal_platform.mcp_gateway.tesla_firestore import FirestoreTeslaOnboardingStore
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import TeslaOnboardingService
 from tesla_personal_platform.mcp_gateway.token_crypto import TokenCipher
 from tesla_personal_platform.tesla_client import (
+    LocalCommandProxyTransport,
     TeslaFleetClient,
     TeslaIDTokenVerifier,
     TeslaOAuthClient,
@@ -24,6 +26,7 @@ class TeslaRuntime:
 
     onboarding: TeslaOnboardingService
     public_key_pem: bytes
+    mcp: MCPProtocol | None = None
 
 
 def build_tesla_runtime(project_id: str) -> TeslaRuntime | None:
@@ -61,11 +64,41 @@ def build_tesla_runtime(project_id: str) -> TeslaRuntime | None:
         firestore.Client(project=project_id),
         TokenCipher.from_base64(values["TESLA_TOKEN_ENCRYPTION_KEY"]),
     )
+    fleet = TeslaFleetClient(transport)
+    onboarding = TeslaOnboardingService(oauth, fleet, store, values["TESLA_APP_DOMAIN"])
+    mcp = _build_mcp_runtime(fleet, onboarding, store)
     return TeslaRuntime(
-        onboarding=TeslaOnboardingService(
-            oauth, TeslaFleetClient(transport), store, values["TESLA_APP_DOMAIN"]
-        ),
+        onboarding=onboarding,
         public_key_pem=public_key_pem,
+        mcp=mcp,
+    )
+
+
+def _build_mcp_runtime(
+    fleet: TeslaFleetClient,
+    onboarding: TeslaOnboardingService,
+    store: FirestoreTeslaOnboardingStore,
+) -> MCPProtocol | None:
+    enabled = os.environ.get("TESLA_COMMAND_PROXY_ENABLED", "false").strip().casefold()
+    if enabled not in {"true", "1"}:
+        return None
+    ca_file = os.environ.get("TESLA_COMMAND_PROXY_CA_FILE", "").strip()
+    if not ca_file:
+        raise RuntimeError("TESLA_COMMAND_PROXY_CA_FILE must be configured")
+    command_fleet = TeslaFleetClient(
+        LocalCommandProxyTransport(
+            proxy_origin=os.environ.get("TESLA_COMMAND_PROXY_ORIGIN", "https://localhost:4443"),
+            ca_file=ca_file,
+        )
+    )
+    return MCPProtocol(
+        TeslaMCPService(
+            fleet=fleet,
+            command_fleet=command_fleet,
+            credentials=onboarding,
+            store=store,
+            audit_store=store,
+        )
     )
 
 

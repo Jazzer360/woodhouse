@@ -56,6 +56,27 @@ variable "enable_tesla_onboarding" {
   default     = false
 }
 
+variable "enable_tesla_command_proxy" {
+  description = "Run the official Tesla Vehicle Command Proxy as a loopback-only mcp-gateway sidecar."
+  type        = bool
+  default     = false
+}
+
+variable "tesla_command_proxy_image" {
+  description = "Official tesla/vehicle-command image pinned by sha256 digest; required when the proxy is enabled."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.tesla_command_proxy_image == null ? true : can(regex(
+      "^tesla/vehicle-command@sha256:[0-9a-f]{64}$",
+      var.tesla_command_proxy_image
+    ))
+    error_message = "tesla_command_proxy_image must be the official image pinned by a full sha256 digest."
+  }
+}
+
 variable "tesla_client_id" {
   description = "Tesla developer application client ID; not a secret."
   type        = string
