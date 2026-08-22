@@ -27,9 +27,7 @@ PUBLIC_KEY_HEX = (
     "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"
 )
 PUBLIC_KEY = (
-    ec.EllipticCurvePublicKey.from_encoded_point(
-        ec.SECP256R1(), bytes.fromhex(PUBLIC_KEY_HEX)
-    )
+    ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), bytes.fromhex(PUBLIC_KEY_HEX))
     .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
     .decode("ascii")
 )
