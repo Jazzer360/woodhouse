@@ -15,11 +15,12 @@ required. `charging_sessions` remains business-fleet-only, and
 
 This document is a completeness contract for the typed Tesla client and MCP surface.
 
-**Implementation status:** Phase 5 implements and mocks every `Required` typed-client
-row, plus the three `Compatibility` rows directed by this matrix. Phase 6 remains
-responsible for Vehicle Command Proxy integration and intentional typed MCP exposure;
-Phase 8 remains responsible for applying broad Fleet Telemetry configuration. Typed
-support in this package does not make `Internal` or `Excluded` operations MCP-callable.
+**Implementation status:** Phase 5 implements and mocks every `Required`
+typed-client row, plus the three `Compatibility` rows directed by this matrix.
+Phase 6 maps every `MCP` row to an explicit typed tool, integrates the official
+Vehicle Command Proxy, and keeps `Internal`, `Excluded`, and compatibility-only
+operations off the MCP surface. Phase 8 remains responsible for applying broad
+Fleet Telemetry configuration.
 
 Before implementing or declaring Fleet API work complete, re-audit the current official pages:
 

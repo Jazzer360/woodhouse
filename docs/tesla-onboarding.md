@@ -62,9 +62,12 @@ vehicle_device_data
 vehicle_location
 vehicle_cmds
 vehicle_charging_cmds
+user_data
 ```
 
-Do not request `user_data` unless a concrete feature needs Tesla profile/contact/home-address data.
+Phase 6 requests `user_data` because the coverage contract exposes the typed
+`feature_config`, `me`, and `orders` account reads. The gateway does not expose
+or persist contact/home-address fields beyond an authorized tool response.
 
 Current Tesla scope notes:
 

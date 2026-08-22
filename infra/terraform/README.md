@@ -1,6 +1,9 @@
 # Terraform
 
-This root defines the shared GCP baseline for project `woodhouse-506215` in `us-central1`. Phase 4 adds fail-closed Tesla onboarding configuration, two additional secret containers, and a keyless partner-registration identity. Terraform still creates no per-user BigQuery datasets and no secret values.
+This root defines the shared GCP baseline for project `woodhouse-506215` in
+`us-central1`. Phase 6 adds optional loopback-only Vehicle Command Proxy sidecar
+configuration and two empty TLS secret containers. Terraform still creates no
+per-user BigQuery datasets and no secret values.
 
 Set `user_admin_principals` for operators who may impersonate
 `tpp-user-admin`. Set `oidc_audience` to the Google OAuth client ID, then set
@@ -12,6 +15,10 @@ Leave `enable_tesla_onboarding = false` until the documented Secret Manager
 versions exist. Then configure the non-secret Tesla client ID, application
 domain, and exact callback URI in the uncommitted tfvars file and enable it. See
 the [Phase 4 operator checkpoint](../../docs/tesla-onboarding.md#12-required-operator-checkpoint--first-real-tesla-onboarding).
+
+Enable `enable_tesla_command_proxy` only after adding the separate proxy TLS
+certificate/key secret versions and selecting the official proxy image by full
+digest. See [deployment notes](../../docs/deployment.md#phase-6-vehicle-command-proxy-deployment).
 
 ## State bootstrap
 

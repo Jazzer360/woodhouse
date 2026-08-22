@@ -238,6 +238,21 @@ MCP vehicle arguments may be optional only when the caller has exactly one eligi
                         datasets                  allowlist/state
 ```
 
+The Vehicle Command Proxy is a second container in the same Cloud Run revision,
+not an internet-facing service. It listens only on `127.0.0.1`, mounts the
+application EC private key and a separate loopback TLS key, and accepts only the
+typed command paths selected by the gateway. The Python container mounts only
+the TLS public certificate. Cloud Run's single revision service account is a
+known isolation limit; the sidecar mount boundary is the smallest supported
+private deployment for this personal platform.
+
+The live MCP surface is an explicit registry of typed tool names and schemas.
+It derives the platform user before dispatch, resolves only that user's vehicle
+records, and uses a vehicle only when selected by opaque internal ID or when
+exactly one eligible vehicle exists. Current-state tools call Fleet API, never
+BigQuery. See `docs/mcp-tool-catalog.md` for the complete mapping and safety
+metadata.
+
 ### Why Pub/Sub stays in the design
 
 The VM should not synchronously depend on BigQuery availability. Pub/Sub is a small, cheap durability boundary:
@@ -590,6 +605,12 @@ There is one developer application identity and one application EC key pair init
 - each vehicle that requires signed commands/telemetry must separately pair the public virtual key.
 
 A user's Tesla account may contain multiple vehicles; pairing and telemetry setup are per vehicle.
+
+Phase 6 mounts the private key only into the official Vehicle Command Proxy
+sidecar. It is absent from the Python gateway container environment and
+filesystem and remains absent from telemetry-edge. Its public half comes from
+the separate `tesla-command-public-key` secret solely for the public
+`.well-known` response.
 
 If this project ever becomes a broad commercial service, revisit whether one application/private signing key remains an acceptable blast radius. Do not add that complexity for a few manually approved friends.
 

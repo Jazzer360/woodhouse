@@ -1,6 +1,10 @@
 # Deployment
 
-**Status:** Phase 4 Tesla-onboarding baseline. The gateway retains the Phase 3 Google OIDC/allowlist boundary and adds fail-closed Tesla OAuth, encrypted token rotation, multi-vehicle discovery, and per-vehicle Virtual Key status. Broad commands and telemetry configuration remain unimplemented.
+**Status:** Phase 6 live MCP baseline. The gateway retains the Google
+OIDC/allowlist and per-user Tesla OAuth boundaries, exposes the coverage-matrix
+MCP surface, and routes signed commands through a loopback-only official Tesla
+Vehicle Command Proxy sidecar. Broad Fleet Telemetry configuration remains
+deferred.
 
 ## Fixed deployment choices
 
@@ -18,18 +22,29 @@ Python remains the smallest practical common stack for the planned MCP, GCP, and
 |---|---|---|
 | Artifact Registry | `tesla-personal-platform` | New immutable-tag Docker repository |
 | Build source staging | GCS `${project_id}-tpp-cloudbuild-source` | Private source objects expire after seven days; deployer receives bucket-scoped read access only |
-| MCP gateway | Cloud Run `mcp-gateway` | Health, authenticated `/mcp`, Tesla onboarding routes, and the public Tesla application-key path; Tesla behavior is separately opt-in |
+| MCP gateway | Cloud Run `mcp-gateway` | Health, authenticated stateless Streamable HTTP `/mcp`, Tesla onboarding routes, live Fleet reads, and the public Tesla application-key path |
+| Vehicle Command Proxy | `mcp-gateway` Cloud Run sidecar | Official digest-pinned image; loopback TLS only; signs typed vehicle commands |
 | Telemetry processor | Cloud Run `telemetry-processor` | Internal ingress, authenticated same-project Pub/Sub invoker only |
 | Telemetry edge | Compute Engine `tpp-telemetry-edge` | Idle shielded COS `e2-micro`; no receiver or container deployed yet |
 | Telemetry address | Regional static external IPv4 | Reserved for the future public receiver |
 | Raw transport | `tpp-raw-telemetry` topic and processor subscription | 31-day retention; authenticated push path |
 | Mutable state | Firestore Native `(default)` | Allowlist and atomic immutable OIDC identity bindings; regional database with delete protection |
-| Secret storage | Six Secret Manager containers | Terraform manages containers/IAM only; operators add secret versions out of band |
+| Secret storage | Eight Secret Manager containers | Terraform manages containers/IAM only; operators add secret versions out of band |
 | Quarantine | `tesla_system_quarantine.raw_unknown_telemetry` | Restricted, partitioned append destination for unmapped telemetry |
 | Monitoring | backlog alert, unknown-vehicle log metric, and OAuth callback request-log exclusion | No notification destination unless existing channel IDs are supplied; callback query URLs are excluded from Cloud Logging |
 | Network | custom VPC and `/28` subnet | No default ingress rules |
 
-The MCP gateway receives project-level BigQuery job permission but no project-level data access. Its Secret Manager access covers platform auth, the Tesla client secret, the public application key, and the token-encryption key. It deliberately cannot read the Tesla command private key before the Phase 6 signing runtime exists. The telemetry processor can write only the shared quarantine dataset until the user workflow grants it access to a newly created user's dataset.
+The MCP gateway receives project-level BigQuery job permission but no
+project-level data access. Its application container receives platform auth,
+the Tesla client secret, public application key, token-encryption key, and the
+proxy's public TLS certificate. Only the official proxy sidecar mounts the Tesla
+command private key and proxy TLS private key. Cloud Run assigns one service
+identity to the whole multi-container revision, so Secret Manager IAM cannot
+distinguish the sidecar from the application container; mount/environment
+isolation and the absence of Secret Manager client code in the application are
+the practical boundary. Revisit a separately identified signing service if the
+deployment becomes broadly multi-tenant. The telemetry processor and
+telemetry-edge receive none of the command-proxy secrets.
 
 The `tpp-user-admin` service account is keyless and used only through operator
 impersonation. It can write Firestore allowlist entities, create BigQuery
@@ -72,7 +87,7 @@ The Pub/Sub push subscription uses the complete processor handler URL, including
 
 | Identity | Granted access |
 |---|---|
-| `tpp-mcp-gateway` | Firestore user; BigQuery job user; accessor on MCP auth, Tesla client-secret, public-key, and token-encryption secret containers; no private command-key access yet |
+| `tpp-mcp-gateway` | Firestore user; BigQuery job user; runtime secret access for onboarding plus command/proxy key material mounted only into the command-proxy sidecar |
 | `tpp-telemetry-processor` | Firestore user; writer on the quarantine dataset |
 | `tpp-telemetry-edge` | Publisher on the raw topic; log and metric writer |
 | `tpp-pubsub-push` | Invoker on telemetry-processor only |
@@ -331,6 +346,78 @@ Terraform creates these empty containers:
 - `mcp-auth-signing-key`
 - `tesla-client-secret`
 - `tesla-command-private-key`
+- `tesla-command-proxy-tls-cert`
+- `tesla-command-proxy-tls-key`
+- `tesla-command-public-key`
+- `tesla-token-encryption-key`
 - `webhook-hmac-key`
 
-No secret version, key material, token, PIN, service-account key, or example value is committed. Later phases add values out-of-band and inject only the minimum runtime references.
+No secret version, key material, token, PIN, service-account key, or example
+value is committed. Operators add values out of band and inject only the
+minimum runtime references.
+
+## Phase 6 Vehicle Command Proxy deployment
+
+The supported private model is Tesla's official `tesla/vehicle-command` image
+as a sidecar in the `mcp-gateway` Cloud Run revision. It binds
+`127.0.0.1:4443`, has no Cloud Run ingress container port, and is reachable only
+through the shared loopback network namespace. The application connects over
+TLS and trusts only the mounted proxy certificate. Commands are never retried.
+
+Before planning the enabled revision:
+
+1. Apply the merged Terraform once with `enable_tesla_command_proxy = false`.
+   This creates the two empty TLS secret containers without mounting them or
+   granting access. Confirm the plan has no destroy actions.
+
+2. Resolve and review the current official image, then record its full digest;
+   never use `latest` as the deployed identity:
+
+   ```powershell
+   docker buildx imagetools inspect tesla/vehicle-command:latest
+   ```
+
+   Set `tesla_command_proxy_image` locally to
+   `tesla/vehicle-command@sha256:<reviewed-64-hex-digest>` and set
+   `enable_tesla_command_proxy = true`. Neither value is secret.
+
+3. Generate a dedicated loopback TLS certificate outside the repository. This
+   key is separate from Tesla's application EC command-signing key:
+
+   ```powershell
+   $proxyDir = Join-Path $env:TEMP "tpp-command-proxy-tls"
+   New-Item -ItemType Directory -Force $proxyDir | Out-Null
+   openssl req -x509 -newkey rsa:3072 -sha256 -days 365 -nodes `
+     -subj "/CN=localhost" `
+     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" `
+     -keyout (Join-Path $proxyDir "tls.key") `
+     -out (Join-Path $proxyDir "tls.crt")
+   ```
+
+4. Add the two TLS values through local `gcloud`; do not paste them into chat,
+   Terraform, tfvars, build substitutions, or Git:
+
+   ```powershell
+   gcloud secrets versions add tesla-command-proxy-tls-cert --project woodhouse-506215 --data-file (Join-Path $proxyDir "tls.crt")
+   gcloud secrets versions add tesla-command-proxy-tls-key --project woodhouse-506215 --data-file (Join-Path $proxyDir "tls.key")
+   ```
+
+   The existing `tesla-command-private-key` version remains the application EC
+   private key paired in Phase 4. Do not reuse either TLS key as that EC key.
+
+5. Plan/apply the Terraform change from merged `main` with the proxy enabled,
+   then deploy the gateway
+   application image by immutable commit SHA. A multi-container update must
+   target the named `application` container (for example, `gcloud run services
+   update mcp-gateway --container application --image <sha-image> ...`) so it
+   does not replace the proxy sidecar. Confirm the revision has two containers
+   and becomes healthy before directing MCP traffic to it.
+
+6. Existing Tesla connections predate the concrete `user_data` account-read
+   tools. Re-run the normal `/tesla/oauth/start` flow once and approve the newly
+   requested `user_data` scope before testing `tesla_me`,
+   `tesla_feature_config`, or `tesla_orders`. Vehicle tools continue to enforce
+   their narrower stored scopes.
+
+The full first-live-read, deliberate ambiguity, low-risk command, and Firestore
+audit verification is in [the MCP tool catalog](mcp-tool-catalog.md#first-live-mcp-operator-checkpoint).

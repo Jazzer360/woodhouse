@@ -26,6 +26,7 @@ DEFAULT_SCOPES = (
     "vehicle_location",
     "vehicle_cmds",
     "vehicle_charging_cmds",
+    "user_data",
 )
 
 

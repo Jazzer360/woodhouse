@@ -15,11 +15,14 @@ locals {
   }
 
   tesla_gateway_environment = {
-    TESLA_CLIENT_ID          = var.tesla_client_id
-    TESLA_APP_DOMAIN         = var.tesla_app_domain
-    TESLA_OAUTH_REDIRECT_URI = var.tesla_oauth_redirect_uri
-    TESLA_INITIAL_AUDIENCE   = var.tesla_initial_audience
-    TESLA_ONBOARDING_ENABLED = "true"
+    TESLA_CLIENT_ID             = var.tesla_client_id
+    TESLA_APP_DOMAIN            = var.tesla_app_domain
+    TESLA_OAUTH_REDIRECT_URI    = var.tesla_oauth_redirect_uri
+    TESLA_INITIAL_AUDIENCE      = var.tesla_initial_audience
+    TESLA_ONBOARDING_ENABLED    = "true"
+    TESLA_COMMAND_PROXY_ENABLED = var.enable_tesla_command_proxy ? "true" : "false"
+    TESLA_COMMAND_PROXY_ORIGIN  = "https://localhost:4443"
+    TESLA_COMMAND_PROXY_CA_FILE = "/var/run/tpp-proxy-ca/tls.crt"
   }
 
   tesla_gateway_secret_environment = {
@@ -48,7 +51,11 @@ resource "google_cloud_run_v2_service" "platform" {
     }
 
     containers {
+      name  = "application"
       image = var.cloud_run_placeholder_image
+      depends_on = each.key == "mcp_gateway" && var.enable_tesla_command_proxy ? [
+        "tesla-command-proxy"
+      ] : []
 
       ports {
         container_port = 8080
@@ -100,6 +107,138 @@ resource "google_cloud_run_v2_service" "platform" {
           }
         }
       }
+
+      dynamic "volume_mounts" {
+        for_each = each.key == "mcp_gateway" && var.enable_tesla_command_proxy ? [1] : []
+        content {
+          name       = "command-proxy-ca"
+          mount_path = "/var/run/tpp-proxy-ca"
+        }
+      }
+    }
+
+    dynamic "containers" {
+      for_each = each.key == "mcp_gateway" && var.enable_tesla_command_proxy ? [1] : []
+      content {
+        name  = "tesla-command-proxy"
+        image = var.tesla_command_proxy_image
+
+        resources {
+          cpu_idle = true
+          limits = {
+            cpu    = "1"
+            memory = "256Mi"
+          }
+        }
+
+        env {
+          name  = "TESLA_KEY_FILE"
+          value = "/var/run/tpp-command/key.pem"
+        }
+        env {
+          name  = "TESLA_HTTP_PROXY_TLS_CERT"
+          value = "/var/run/tpp-proxy-cert/tls.crt"
+        }
+        env {
+          name  = "TESLA_HTTP_PROXY_TLS_KEY"
+          value = "/var/run/tpp-proxy-key/tls.key"
+        }
+        env {
+          name  = "TESLA_HTTP_PROXY_HOST"
+          value = "127.0.0.1"
+        }
+        env {
+          name  = "TESLA_HTTP_PROXY_PORT"
+          value = "4443"
+        }
+        env {
+          name  = "TESLA_HTTP_PROXY_TIMEOUT"
+          value = "20s"
+        }
+
+        volume_mounts {
+          name       = "tesla-command-key"
+          mount_path = "/var/run/tpp-command"
+        }
+        volume_mounts {
+          name       = "command-proxy-cert"
+          mount_path = "/var/run/tpp-proxy-cert"
+        }
+        volume_mounts {
+          name       = "command-proxy-key"
+          mount_path = "/var/run/tpp-proxy-key"
+        }
+
+        startup_probe {
+          initial_delay_seconds = 0
+          timeout_seconds       = 1
+          period_seconds        = 2
+          failure_threshold     = 15
+          tcp_socket {
+            port = 4443
+          }
+        }
+      }
+    }
+
+    dynamic "volumes" {
+      for_each = each.key == "mcp_gateway" && var.enable_tesla_command_proxy ? [1] : []
+      content {
+        name = "tesla-command-key"
+        secret {
+          secret = google_secret_manager_secret.platform["tesla_command_private_key"].secret_id
+          items {
+            version = "latest"
+            path    = "key.pem"
+            mode    = 292 # 0444; volume is mounted only in the proxy container
+          }
+        }
+      }
+    }
+
+    dynamic "volumes" {
+      for_each = each.key == "mcp_gateway" && var.enable_tesla_command_proxy ? [1] : []
+      content {
+        name = "command-proxy-cert"
+        secret {
+          secret = google_secret_manager_secret.platform["tesla_command_proxy_tls_cert"].secret_id
+          items {
+            version = "latest"
+            path    = "tls.crt"
+            mode    = 292 # 0444
+          }
+        }
+      }
+    }
+
+    dynamic "volumes" {
+      for_each = each.key == "mcp_gateway" && var.enable_tesla_command_proxy ? [1] : []
+      content {
+        name = "command-proxy-key"
+        secret {
+          secret = google_secret_manager_secret.platform["tesla_command_proxy_tls_key"].secret_id
+          items {
+            version = "latest"
+            path    = "tls.key"
+            mode    = 292 # 0444; volume is mounted only in the proxy container
+          }
+        }
+      }
+    }
+
+    dynamic "volumes" {
+      for_each = each.key == "mcp_gateway" && var.enable_tesla_command_proxy ? [1] : []
+      content {
+        name = "command-proxy-ca"
+        secret {
+          secret = google_secret_manager_secret.platform["tesla_command_proxy_tls_cert"].secret_id
+          items {
+            version = "latest"
+            path    = "tls.crt"
+            mode    = 292 # 0444
+          }
+        }
+      }
     }
   }
 
@@ -128,6 +267,15 @@ resource "google_cloud_run_v2_service" "platform" {
         var.tesla_oauth_redirect_uri != null && startswith(var.tesla_oauth_redirect_uri, "https://"),
       ])
       error_message = "enable_tesla_onboarding requires tesla_client_id, tesla_app_domain, and an HTTPS tesla_oauth_redirect_uri."
+    }
+
+    precondition {
+      condition = !var.enable_tesla_command_proxy || (
+        each.key != "mcp_gateway" || (
+          var.enable_tesla_onboarding && var.tesla_command_proxy_image != null
+        )
+      )
+      error_message = "enable_tesla_command_proxy requires Tesla onboarding and a digest-pinned official proxy image."
     }
   }
 

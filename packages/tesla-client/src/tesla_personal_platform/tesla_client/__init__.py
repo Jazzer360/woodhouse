@@ -32,7 +32,10 @@ from tesla_personal_platform.tesla_client.session import (
     TeslaAccessContext,
     TeslaAccessProvider,
 )
-from tesla_personal_platform.tesla_client.transport import UrllibTransport
+from tesla_personal_platform.tesla_client.transport import (
+    LocalCommandProxyTransport,
+    UrllibTransport,
+)
 
 COMPONENT = "tesla-client"
 
@@ -42,6 +45,7 @@ __all__ = [
     "CommandResult",
     "FleetStatus",
     "ListResponse",
+    "LocalCommandProxyTransport",
     "ObjectResponse",
     "Pagination",
     "PartnerRegistrar",

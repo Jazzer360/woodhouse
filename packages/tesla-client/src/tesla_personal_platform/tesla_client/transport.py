@@ -1,11 +1,14 @@
 """Small injectable HTTPS transport for the Tesla onboarding API surface."""
 
 import json
+import ssl
 from dataclasses import dataclass, field
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+
+from tesla_personal_platform.tesla_client.coverage import COMMAND_NAMES
 
 _TESLA_API_HOSTS = frozenset(
     {
@@ -104,3 +107,82 @@ class UrllibTransport:
             from tesla_personal_platform.tesla_client.errors import TeslaTransportError
 
             raise TeslaTransportError("Tesla Fleet API transport failed") from None
+
+
+class LocalCommandProxyTransport:
+    """Send only typed vehicle-command requests to a pinned local TLS proxy."""
+
+    def __init__(
+        self,
+        *,
+        proxy_origin: str = "https://localhost:4443",
+        ca_file: str,
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        parsed = urlsplit(proxy_origin)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("Vehicle Command Proxy must use a loopback HTTPS origin")
+        context = ssl.create_default_context(cafile=ca_file)
+        self._origin = proxy_origin.rstrip("/")
+        self._timeout_seconds = timeout_seconds
+        self._opener = build_opener(_RejectRedirects, HTTPSHandler(context=context))
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        form: dict[str, str] | None = None,
+        json_body: object | None = None,
+    ) -> HttpResponse:
+        if form is not None:
+            raise ValueError("Vehicle Command Proxy does not accept form requests")
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or parsed.hostname not in _TESLA_API_HOSTS:
+            raise ValueError("Command source URL requires an approved Tesla HTTPS host")
+        path_parts = parsed.path.split("/")
+        if (
+            method != "POST"
+            or parsed.query
+            or len(path_parts) != 7
+            or path_parts[1:4] != ["api", "1", "vehicles"]
+            or path_parts[5] != "command"
+            or path_parts[6] not in COMMAND_NAMES
+        ):
+            raise ValueError("Vehicle Command Proxy transport accepts typed commands only")
+
+        request_headers = dict(headers or {})
+        data = json.dumps(json_body or {}, separators=(",", ":")).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+        request = Request(  # noqa: S310 - fixed loopback origin validated above
+            f"{self._origin}{parsed.path}",
+            data=data,
+            headers=request_headers,
+            method="POST",
+        )
+        try:
+            with self._opener.open(request, timeout=self._timeout_seconds) as response:
+                return HttpResponse(
+                    status=response.status,
+                    body=response.read(),
+                    content_type=response.headers.get("Content-Type"),
+                    headers={key.casefold(): value for key, value in response.headers.items()},
+                )
+        except HTTPError as error:
+            return HttpResponse(
+                status=error.code,
+                body=error.read(),
+                content_type=error.headers.get("Content-Type"),
+                headers={key.casefold(): value for key, value in error.headers.items()},
+            )
+        except (TimeoutError, URLError):
+            from tesla_personal_platform.tesla_client.errors import TeslaTransportError
+
+            raise TeslaTransportError("Local Vehicle Command Proxy transport failed") from None

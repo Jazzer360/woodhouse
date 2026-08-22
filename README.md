@@ -1,6 +1,11 @@
 # Tesla Personal Platform
 
-Personal-first Tesla platform monorepo for authenticated live vehicle access, permanent telemetry history, generic analytics, and optional semantic events. The repository Markdown is the implementation source of truth. Phase 4 adds the Tesla developer-app registration boundary, per-user OAuth, encrypted rotating credentials, multi-vehicle discovery, and vehicle-specific Virtual Key state. Broad Fleet API behavior, commands, and telemetry remain deferred.
+Personal-first Tesla platform monorepo for authenticated live vehicle access,
+permanent telemetry history, generic analytics, and optional semantic events.
+The repository Markdown is the implementation source of truth. Through Phase 6
+the platform includes per-user authentication/Tesla OAuth, complete typed Fleet
+API coverage, a loopback-only official Vehicle Command Proxy, and the approved
+typed live MCP surface. Fleet Telemetry remains the next phase.
 
 ## Source of truth
 
@@ -17,7 +22,11 @@ Personal-first Tesla platform monorepo for authenticated live vehicle access, pe
 
 ## Stack choice
 
-The platform uses Python 3.12 in a `uv` workspace, with Ruff, mypy, pytest, and pip-audit. Phase 4 retains the standard-library HTTP server, uses PyJWT for Tesla OIDC verification, `cryptography` for AES-GCM token protection and P-256 public-key validation, and the official Google clients for Firestore, BigQuery, and Secret Manager. No web framework is added.
+The platform uses Python 3.12 in a `uv` workspace, with Ruff, mypy, pytest, and
+pip-audit. The gateway retains the standard-library HTTP server and adds a small
+stateless MCP JSON-RPC boundary rather than another framework. Tesla command
+signing uses Tesla's official proxy image as a private sidecar; no second
+application language is maintained in this repository.
 
 `telemetry-edge` is only a health-checkable container placeholder. Phase 7 must re-evaluate its implementation against Tesla's current official Fleet Telemetry receiver; adopting the official receiver or a small Go adapter then is preferable to introducing a second language now.
 

@@ -88,6 +88,9 @@ Run the phases in order unless a phase is explicitly marked optional. Merge/revi
 
 **Goal:** Expose the approved live/current reads and controls through typed MCP tools with safe command signing.
 
+**Implementation status:** Complete in code; deployment and the documented
+first live MCP checkpoint remain operator actions after merge.
+
 **Prompt:** `docs/prompt-pack.md` → **Prompt 6 — Vehicle Command Proxy and complete live MCP surface**
 
 **Exit criteria:**
