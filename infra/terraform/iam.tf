@@ -36,10 +36,6 @@ locals {
       role   = "roles/datastore.user"
       member = "serviceAccount:${google_service_account.platform["user_admin"].email}"
     }
-    user_admin_bigquery_create = {
-      role   = "roles/bigquery.user"
-      member = "serviceAccount:${google_service_account.platform["user_admin"].email}"
-    }
   }
 }
 
@@ -117,9 +113,10 @@ resource "google_project_iam_custom_role" "user_dataset_provisioner" {
   project     = var.project_id
   role_id     = "tppUserDatasetProvisioner"
   title       = "TPP user dataset provisioner"
-  description = "Update metadata and ACLs on opaque per-user BigQuery datasets."
+  description = "Create opaque per-user BigQuery datasets and update their metadata and ACLs."
   stage       = "GA"
   permissions = [
+    "bigquery.datasets.create",
     "bigquery.datasets.get",
     "bigquery.datasets.update",
   ]

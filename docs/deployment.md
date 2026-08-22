@@ -33,8 +33,9 @@ The MCP gateway receives project-level BigQuery job permission but no project-le
 The `tpp-user-admin` service account is keyless and used only through operator
 impersonation. It can write Firestore allowlist entities, create BigQuery
 datasets, and update dataset metadata/ACLs through a custom role containing only
-`bigquery.datasets.get` and `bigquery.datasets.update`. It has no BigQuery table
-data, Secret Manager, Cloud Run deployment, or vehicle API access.
+`bigquery.datasets.create`, `bigquery.datasets.get`, and
+`bigquery.datasets.update`. It cannot run BigQuery jobs and has no BigQuery
+table-data, Secret Manager, Cloud Run deployment, or vehicle API access.
 
 Firestore IAM is database-wide and cannot scope `roles/datastore.user` to only
 the `allowed_users` collection. This is the principal Phase 3 IAM tradeoff: the
