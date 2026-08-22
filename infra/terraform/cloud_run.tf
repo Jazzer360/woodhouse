@@ -30,7 +30,6 @@ resource "google_cloud_run_v2_service" "platform" {
     max_instance_request_concurrency = 20
 
     scaling {
-      min_instance_count = 0
       max_instance_count = each.value.max_instances
     }
 
@@ -76,7 +75,15 @@ resource "google_cloud_run_v2_service" "platform" {
 
   lifecycle {
     # Application delivery owns the commit-addressed image after initial creation.
-    ignore_changes = [template[0].containers[0].image]
+    # The API also reports an unset service-level scaling block as explicit
+    # zero values. Ignore that computed normalization while continuing to
+    # manage revision scaling under template.scaling above.
+    ignore_changes = [
+      client,
+      client_version,
+      template[0].containers[0].image,
+      scaling,
+    ]
   }
 
   depends_on = [google_project_service.required]

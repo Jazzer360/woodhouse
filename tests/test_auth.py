@@ -1,6 +1,9 @@
 """Platform authentication, allowlist, and tenant-isolation tests."""
 
+import json
 from dataclasses import replace
+from threading import Thread
+from urllib.request import urlopen
 
 import pytest
 from tesla_personal_platform.auth import (
@@ -25,6 +28,7 @@ from tesla_personal_platform.mcp_gateway.main import (
     REQUEST_IDLE_TIMEOUT_SECONDS,
     _decode_json_request,
     _read_request_body,
+    _Server,
 )
 
 
@@ -52,6 +56,28 @@ def boundary_for(
     tokens: dict[str, VerifiedIdentity],
 ) -> GatewayAuthBoundary:
     return GatewayAuthBoundary(Authenticator(TokenMapVerifier(tokens), identities))
+
+
+@pytest.mark.parametrize("path", ["/health", "/healthz"])
+def test_gateway_health_routes_are_unauthenticated(path: str) -> None:
+    server = _Server(("127.0.0.1", 0), boundary_for(InMemoryIdentityStore(), {}))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        with urlopen(  # noqa: S310 - fixed loopback test server
+            f"http://127.0.0.1:{server.server_port}{path}", timeout=2
+        ) as response:
+            assert response.status == 200
+            assert json.load(response) == {
+                "phase": "platform-auth",
+                "service": "mcp-gateway",
+                "status": "ok",
+            }
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_non_allowlisted_login_is_rejected() -> None:

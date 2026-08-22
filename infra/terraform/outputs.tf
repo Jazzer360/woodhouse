@@ -60,6 +60,11 @@ output "user_admin_service_account" {
   value       = google_service_account.platform["user_admin"].email
 }
 
+output "dataset_owner_service_account" {
+  description = "Keyless, non-impersonatable identity holding BigQuery's mandatory direct dataset-owner entries."
+  value       = google_service_account.platform["dataset_owner"].email
+}
+
 output "secret_containers" {
   description = "Secret Manager container IDs; Terraform creates no secret versions."
   value       = { for key, secret in google_secret_manager_secret.platform : key => secret.secret_id }
