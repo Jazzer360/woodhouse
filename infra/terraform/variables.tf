@@ -16,14 +16,42 @@ variable "zone" {
 }
 
 variable "fleet_telemetry_port" {
-  description = "Public TCP port configured for the future Fleet Telemetry receiver."
+  description = "Public TCP port shared by the receiver, firewall, certificate validation, and vehicle configuration."
   type        = number
   default     = 443
 
   validation {
-    condition     = var.fleet_telemetry_port >= 1 && var.fleet_telemetry_port <= 65535
-    error_message = "fleet_telemetry_port must be a valid TCP port."
+    condition     = var.fleet_telemetry_port == 443
+    error_message = "The deployed Phase 7 receiver configuration requires fleet_telemetry_port=443."
   }
+}
+
+variable "fleet_telemetry_receiver_version" {
+  description = "Reviewed Tesla Fleet Telemetry receiver version embedded in the digest-pinned edge image."
+  type        = string
+  default     = "v0.9.4"
+
+  validation {
+    condition     = var.fleet_telemetry_receiver_version == "v0.9.4"
+    error_message = "fleet_telemetry_receiver_version must match the reviewed v0.9.4 image digest."
+  }
+}
+
+variable "telemetry_hostname" {
+  description = "Public DNS hostname whose certificate is mounted into telemetry-edge."
+  type        = string
+  default     = "telemetry.woodhouse.derekjass.com"
+
+  validation {
+    condition     = can(regex("^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$", var.telemetry_hostname))
+    error_message = "telemetry_hostname must be a lowercase DNS hostname."
+  }
+}
+
+variable "enable_telemetry_edge_delivery" {
+  description = "Enable edge TLS access and the post-merge exact-digest VM delivery trigger after the operator checkpoint."
+  type        = bool
+  default     = false
 }
 
 variable "cloud_run_placeholder_image" {

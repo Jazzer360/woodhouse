@@ -3,7 +3,11 @@ name = "tesla-personal-platform"
 version = "0.0.0"
 description = "Personal Tesla platform monorepo"
 requires-python = ">=3.12,<3.13"
-dependencies = ["tpp-auth[admin]", "tpp-tesla-client[admin]"]
+dependencies = [
+  "tpp-auth[admin]",
+  "tpp-telemetry-processor[admin]",
+  "tpp-tesla-client[admin]",
+]
 
 [dependency-groups]
 dev = [
@@ -19,6 +23,7 @@ package = false
 
 [tool.uv.sources]
 tpp-auth = { workspace = true }
+tpp-telemetry-processor = { workspace = true }
 tpp-tesla-client = { workspace = true }
 
 [tool.uv.workspace]

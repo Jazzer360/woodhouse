@@ -15,11 +15,11 @@ def test_pr_build_never_deploys_production() -> None:
 def test_terraform_owns_repository_triggers_without_the_github_connection() -> None:
     source = (ROOT / "infra" / "terraform" / "cloud_build.tf").read_text(encoding="utf-8")
 
-    assert source.count('resource "google_cloudbuild_trigger"') == 3
+    assert source.count('resource "google_cloudbuild_trigger"') == 4
     assert 'resource "google_cloudbuildv2_connection"' not in source
     assert 'resource "google_cloudbuildv2_repository"' not in source
     assert 'platform["cloud_build_validator"].id' in source
-    assert source.count('platform["cloud_build_deployer"].id') == 2
+    assert source.count('platform["cloud_build_deployer"].id') == 3
     assert "COMMENTS_ENABLED_FOR_EXTERNAL_CONTRIBUTORS_ONLY" in source
 
 
@@ -32,13 +32,16 @@ def test_main_delivery_uses_commit_tags_and_resolved_digests() -> None:
     assert ":latest" not in source
 
 
-def test_main_delivery_allowlists_only_current_cloud_run_services() -> None:
+def test_main_delivery_allowlists_cloud_run_and_digest_pinned_edge() -> None:
     source = (ROOT / "cloudbuild.main.yaml").read_text(encoding="utf-8")
 
     assert source.count("Unsupported deploy service") == 2
     assert "mcp-gateway)" in source
     assert "telemetry-processor)" in source
-    assert "telemetry-edge)" not in source
+    assert "telemetry-edge)" in source
+    assert "compute instances add-metadata" in source
+    assert "compute instances reset" in source
+    assert "get-guest-attributes" in source
     assert "terraform apply" not in source
 
 

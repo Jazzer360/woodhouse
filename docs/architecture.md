@@ -269,6 +269,14 @@ vehicle -> VM -> Pub/Sub -> BigQuery processor
 
 The Pub/Sub hop is **not** a filtering layer. It exists so temporary downstream failures do not cause telemetry loss.
 
+The implemented edge is Tesla's official Fleet Telemetry `v0.9.4` receiver,
+pinned by image digest and configured to use its native Google Pub/Sub
+dispatcher. Tesla record types are published to the receiver-defined topics
+`tpp-raw-telemetry_V`, `_alerts`, `_connectivity`, and `_errors`; all four feed
+the same authenticated persistence handler. The original
+`tpp-raw-telemetry` topic is reserved for guarded non-vehicle operator fixtures
+and never receives permission from the edge identity.
+
 ---
 
 ## 6. Repository layout
@@ -384,6 +392,12 @@ Owns:
 - deliver webhooks.
 
 Raw BigQuery persistence is the highest-priority responsibility. Event derivation must not cause raw events to be discarded.
+
+The Phase 7 handler returns success to Pub/Sub only after BigQuery accepts the
+append. It deliberately supplies no BigQuery insert ID, so redeliveries remain
+visible as distinct raw rows with their Tesla and Pub/Sub provenance. Before
+event derivation is added, it remains a persistence-only boundary; future event
+work must not be inserted before or into its acknowledgement decision.
 
 ---
 
@@ -674,7 +688,8 @@ Core resources:
 - Cloud Run: `telemetry-processor`;
 - Compute Engine: tiny `e2-micro` telemetry VM;
 - static external IPv4 for telemetry endpoint;
-- Pub/Sub raw telemetry topic/subscription;
+- four official-receiver Pub/Sub topics/subscriptions plus one isolated
+  synthetic verification topic/subscription;
 - Firestore;
 - BigQuery user datasets;
 - Secret Manager;

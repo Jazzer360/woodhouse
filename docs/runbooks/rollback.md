@@ -1,6 +1,6 @@
 # Rollback
 
-**Status:** Phase 2 infrastructure baseline; complete application and telemetry-edge procedures during their implementation phases and verify during Phase 11.
+**Status:** Phase 7 application and telemetry-edge procedure; re-verify during Phase 11.
 
 ## Shared-infrastructure rollback
 
@@ -12,4 +12,25 @@
 
 Cloud Run images are owned by the application delivery flow rather than Terraform. When commit-addressed application images exist, redeploy the last known-good commit image and do not use `latest`. Verify `/health` for revisions that expose it. For an older Phase 3 image, verify Cloud Run reports the revision Ready and that an unauthenticated `POST /mcp` returns the application's JSON `401`; the public Google Front End reserves `/healthz`, so its `404` is not an application health result.
 
-Telemetry-edge has no receiver container in Phase 2. Phase 7 must extend this runbook with exact image-digest rollback, certificate validation, restart health checks, and proof that buffered/raw telemetry is not discarded during recovery.
+## Telemetry-edge rollback
+
+Every delivery writes the requested commit and exact Artifact Registry digest
+to VM metadata. The startup script retains the previously deployed digest. If
+the new receiver fails local `/status`, it removes the failed container,
+restarts the previous digest, and reports
+`failed:<requested-commit>:rolled-back` through guest attributes. Cloud Build
+then fails even though service was restored.
+
+For an explicit rollback, revert the faulty merged commit and run the edge
+trigger from `main`. Do not type a floating tag or manually edit the VM. Verify:
+
+- deployed metadata contains an Artifact Registry `@sha256:` image;
+- guest status names the requested commit as successful;
+- local `/status` and Prometheus endpoints answer through IAP;
+- the public certificate validates for the telemetry hostname;
+- all raw subscription backlogs begin draining;
+- the guarded synthetic proof reaches BigQuery.
+
+Do not purge Pub/Sub during rollback. Buffered vehicle and Pub/Sub deliveries
+may produce duplicates; preserving those rows is the intended at-least-once
+contract.

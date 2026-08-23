@@ -47,6 +47,57 @@ resource "google_project_iam_member" "platform" {
   member  = each.value.member
 }
 
+resource "google_project_iam_custom_role" "telemetry_edge_topic_inspector" {
+  project     = var.project_id
+  role_id     = "tppTelemetryEdgeTopicInspector"
+  title       = "TPP telemetry edge topic inspector"
+  description = "Allow the official receiver to confirm Terraform-owned Pub/Sub topics exist."
+  stage       = "GA"
+  permissions = ["pubsub.topics.get"]
+}
+
+resource "google_project_iam_member" "telemetry_edge_topic_inspector" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.telemetry_edge_topic_inspector.id
+  member  = "serviceAccount:${google_service_account.platform["telemetry_edge"].email}"
+}
+
+resource "google_artifact_registry_repository_iam_member" "telemetry_edge_reader" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.platform.location
+  repository = google_artifact_registry_repository.platform.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_service_account.platform["telemetry_edge"].email}"
+}
+
+resource "google_project_iam_custom_role" "telemetry_edge_deployer" {
+  project     = var.project_id
+  role_id     = "tppTelemetryEdgeDeployer"
+  title       = "TPP telemetry edge deployer"
+  description = "Set an exact edge image, restart its VM, and read guest deployment status."
+  stage       = "GA"
+  permissions = [
+    "compute.instances.get",
+    "compute.instances.getGuestAttributes",
+    "compute.instances.reset",
+    "compute.instances.setMetadata",
+  ]
+}
+
+resource "google_project_iam_member" "telemetry_edge_deployer" {
+  count = var.enable_telemetry_edge_delivery ? 1 : 0
+
+  project = var.project_id
+  role    = google_project_iam_custom_role.telemetry_edge_deployer.id
+  member  = "serviceAccount:${google_service_account.platform["cloud_build_deployer"].email}"
+
+  condition {
+    title       = "telemetry-edge-instance-only"
+    description = "Restrict VM delivery to the single telemetry edge instance."
+    expression  = "resource.name == 'projects/${var.project_id}/zones/${var.zone}/instances/${google_compute_instance.telemetry_edge.name}'"
+  }
+}
+
 resource "google_service_account_iam_member" "deployer_runtime_user" {
   for_each = toset(["mcp_gateway", "telemetry_processor"])
 
@@ -87,6 +138,14 @@ resource "google_project_iam_member" "admin_compute_viewer" {
   member  = each.value
 }
 
+resource "google_project_iam_member" "admin_bigquery_job_user" {
+  for_each = var.admin_principals
+
+  project = var.project_id
+  role    = "roles/bigquery.jobUser"
+  member  = each.value
+}
+
 resource "google_service_account_iam_member" "admin_edge_service_account_user" {
   for_each = var.admin_principals
 
@@ -113,12 +172,15 @@ resource "google_project_iam_custom_role" "user_dataset_provisioner" {
   project     = var.project_id
   role_id     = "tppUserDatasetProvisioner"
   title       = "TPP user dataset provisioner"
-  description = "Create opaque per-user BigQuery datasets and update their metadata and ACLs."
+  description = "Create opaque per-user BigQuery datasets, raw tables, metadata, and ACLs."
   stage       = "GA"
   permissions = [
     "bigquery.datasets.create",
     "bigquery.datasets.get",
     "bigquery.datasets.update",
+    "bigquery.tables.create",
+    "bigquery.tables.get",
+    "bigquery.tables.update",
   ]
 }
 

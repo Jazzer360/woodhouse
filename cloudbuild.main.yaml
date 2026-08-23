@@ -1,6 +1,7 @@
 substitutions:
   _REGION: us-central1
   _REPOSITORY: tesla-personal-platform
+  _ZONE: us-central1-a
   # Main-branch triggers must override this with one of the allowlisted services.
   _SERVICE: unset
 
@@ -17,6 +18,9 @@ steps:
             ;;
           telemetry-processor)
             dockerfile="services/telemetry-processor/Dockerfile"
+            ;;
+          telemetry-edge)
+            dockerfile="services/telemetry-edge/Dockerfile"
             ;;
           *)
             echo "Unsupported deploy service: ${_SERVICE}" >&2
@@ -47,6 +51,55 @@ steps:
             ;;
         esac
         digest_image="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}@$$digest"
+
+        if test "${_SERVICE}" = "telemetry-edge"; then
+          instance="tpp-telemetry-edge"
+          gcloud compute instances add-metadata "$$instance" \
+            --project="$PROJECT_ID" \
+            --zone="${_ZONE}" \
+            --metadata="telemetry-edge-image=$$digest_image,telemetry-edge-commit=$COMMIT_SHA" \
+            --async
+          # The asynchronous metadata mutation can briefly leave the instance
+          # busy. Retry the asynchronous reset until Compute accepts it; the
+          # startup script then validates the exact metadata digest and commit.
+          sleep 5
+          reset_attempt=0
+          until gcloud compute instances reset "$$instance" \
+            --project="$PROJECT_ID" \
+            --zone="${_ZONE}" \
+            --async --quiet; do
+            reset_attempt="$$(($$reset_attempt + 1))"
+            if test "$$reset_attempt" -ge 12; then
+              echo "Could not reset telemetry edge after metadata update" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+          attempt=0
+          status=""
+          while test "$$attempt" -lt 60; do
+            status="$$(gcloud compute instances get-guest-attributes "$$instance" \
+              --project="$PROJECT_ID" \
+              --zone="${_ZONE}" \
+              --query-path="telemetry-edge/status" \
+              --format='value(value)' 2>/dev/null || true)"
+            case "$$status" in
+              "success:$COMMIT_SHA")
+                echo "deployed_service=telemetry-edge commit=$COMMIT_SHA digest=$$digest"
+                exit 0
+                ;;
+              "failed:$COMMIT_SHA"*)
+                echo "Telemetry edge deployment failed: $$status" >&2
+                exit 1
+                ;;
+            esac
+            attempt="$$(($$attempt + 1))"
+            sleep 10
+          done
+          echo "Timed out waiting for telemetry edge guest health status; last_status=$$status" >&2
+          exit 1
+        fi
 
         case "${_SERVICE}" in
           mcp-gateway)

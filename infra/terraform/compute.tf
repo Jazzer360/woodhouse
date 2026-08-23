@@ -33,11 +33,21 @@ resource "google_compute_instance" "telemetry_edge" {
   }
 
   metadata = {
-    block-project-ssh-keys    = "TRUE"
-    enable-oslogin            = "TRUE"
-    google-logging-enabled    = "true"
-    google-monitoring-enabled = "true"
+    block-project-ssh-keys         = "TRUE"
+    enable-guest-attributes        = "TRUE"
+    enable-oslogin                 = "TRUE"
+    google-logging-enabled         = "true"
+    google-monitoring-enabled      = "true"
+    telemetry-edge-commit          = ""
+    telemetry-edge-image           = ""
+    telemetry-edge-project-id      = var.project_id
+    telemetry-edge-region          = var.region
+    telemetry-edge-repository      = google_artifact_registry_repository.platform.repository_id
+    telemetry-edge-tls-cert-secret = google_secret_manager_secret.platform["telemetry_edge_tls_cert"].secret_id
+    telemetry-edge-tls-key-secret  = google_secret_manager_secret.platform["telemetry_edge_tls_key"].secret_id
   }
+
+  metadata_startup_script = file("${path.module}/scripts/telemetry-edge-startup.sh")
 
   service_account {
     email = google_service_account.platform["telemetry_edge"].email
@@ -53,6 +63,13 @@ resource "google_compute_instance" "telemetry_edge" {
     on_host_maintenance = "MIGRATE"
     preemptible         = false
     provisioning_model  = "STANDARD"
+  }
+
+  lifecycle {
+    ignore_changes = [
+      metadata["telemetry-edge-commit"],
+      metadata["telemetry-edge-image"],
+    ]
   }
 
   shielded_instance_config {

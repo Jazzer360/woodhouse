@@ -1,10 +1,11 @@
 # Deployment
 
-**Status:** Phase 6 live MCP baseline. The gateway retains the Google
+**Status:** Phase 7 implementation complete; operator checkpoint pending. The gateway retains the Google
 OIDC/allowlist and per-user Tesla OAuth boundaries, exposes the coverage-matrix
 MCP surface, and routes signed commands through an instance-local official Tesla
-Vehicle Command Proxy sidecar. Broad Fleet Telemetry configuration remains
-deferred.
+Vehicle Command Proxy sidecar. The official telemetry receiver and permanent
+raw-history path are ready to deploy, while broad real-vehicle Fleet Telemetry
+configuration remains deferred to Phase 8.
 
 ## Fixed deployment choices
 
@@ -14,7 +15,12 @@ deferred.
 - implementation runtime: Python 3.12 with a `uv` workspace
 - shared infrastructure: Terraform with a GCS backend
 
-Python remains the smallest practical common stack for the planned MCP, GCP, and analytics components. The telemetry-edge Python image remains a placeholder: Phase 7 must compare it with Tesla's then-current official receiver and may adopt the official/native implementation.
+Python remains the smallest practical common stack for the MCP, GCP, and
+analytics components. Telemetry-edge is Tesla's official `v0.9.4` receiver
+image, pinned to
+`sha256:28c8b9e244b842a3d7443567cfa385b4db20cf533b8dee3411ce6fe540eb67e2`.
+Its native Pub/Sub dispatcher is used directly; no custom Tesla protocol
+adapter or second application-language codebase is maintained.
 
 ## Resource map
 
@@ -24,13 +30,15 @@ Python remains the smallest practical common stack for the planned MCP, GCP, and
 | Build source staging | GCS `${project_id}-tpp-cloudbuild-source` | Private source objects expire after seven days; deployer receives bucket-scoped read access only |
 | MCP gateway | Cloud Run `mcp-gateway` | Health, authenticated stateless Streamable HTTP `/mcp`, Tesla onboarding routes, live Fleet reads, and the public Tesla application-key path |
 | Vehicle Command Proxy | `mcp-gateway` Cloud Run sidecar | Official digest-pinned image; loopback TLS only; signs typed vehicle commands |
-| Telemetry processor | Cloud Run `telemetry-processor` | Internal ingress, authenticated same-project Pub/Sub invoker only |
-| Telemetry edge | Compute Engine `tpp-telemetry-edge` | Idle shielded COS `e2-micro`; no receiver or container deployed yet |
-| Telemetry address | Regional static external IPv4 | Reserved for the future public receiver |
-| Raw transport | `tpp-raw-telemetry` topic and processor subscription | 31-day retention; authenticated push path |
+| Telemetry processor | Cloud Run `telemetry-processor` | Authenticated Pub/Sub push; trusted VIN routing; append-only per-user BigQuery writes |
+| Telemetry edge | Compute Engine `tpp-telemetry-edge` | Shielded COS `e2-micro`; exact-digest official receiver; local health/Prometheus endpoints; automatic rollback |
+| Telemetry address | Regional static external IPv4 | DNS target for `telemetry.woodhouse.derekjass.com` |
+| Raw transport | `tpp-raw-telemetry_{V,alerts,connectivity,errors}` | Official receiver topics, 31-day retention, authenticated processor push |
+| Synthetic transport | `tpp-raw-telemetry` | Operator-only non-vehicle Phase 7 verification; edge cannot publish |
 | Mutable state | Firestore Native `(default)` | Allowlist and atomic immutable OIDC identity bindings; regional database with delete protection |
-| Secret storage | Eight Secret Manager containers | Terraform manages containers/IAM only; operators add secret versions out of band |
-| Quarantine | `tesla_system_quarantine.raw_unknown_telemetry` | Restricted, partitioned append destination for unmapped telemetry |
+| Secret storage | Eleven Secret Manager containers | Terraform manages containers/IAM only; operators add secret versions out of band |
+| Quarantine | `tesla_system_quarantine.raw_unknown_telemetry` | Restricted, partitioned append destination for unmapped/invalid telemetry |
+| Synthetic evidence | `tesla_system_quarantine.raw_synthetic_telemetry` | Restricted non-vehicle duplicate/retry path evidence |
 | Monitoring | backlog alert, unknown-vehicle log metric, and OAuth callback request-log exclusion | No notification destination unless existing channel IDs are supplied; callback query URLs are excluded from Cloud Logging |
 | Network | custom VPC and `/28` subnet | No default ingress rules |
 
@@ -49,9 +57,10 @@ telemetry-edge receive none of the command-proxy secrets.
 The `tpp-user-admin` service account is keyless and used only through operator
 impersonation. It can write Firestore allowlist entities, create BigQuery
 datasets, and update dataset metadata/ACLs through a custom role containing only
-`bigquery.datasets.create`, `bigquery.datasets.get`, and
-`bigquery.datasets.update`. It cannot run BigQuery jobs and has no BigQuery
-table-data, Secret Manager, Cloud Run deployment, or vehicle API access.
+`bigquery.datasets.create`, `bigquery.datasets.get`,
+`bigquery.datasets.update`, `bigquery.tables.create`, `bigquery.tables.get`,
+and `bigquery.tables.update`. It cannot run BigQuery jobs, delete tables, read
+table data, access Secret Manager, deploy Cloud Run, or call vehicle APIs.
 
 The keyless `tpp-dataset-owner` service account has no project-level roles, keys,
 or operator impersonation binding. BigQuery requires every dataset policy to
@@ -73,27 +82,45 @@ The telemetry VM has exactly two ingress rules:
 - TCP `443` from the public internet to the telemetry-edge service account;
 - TCP `22` only from Google's IAP TCP-forwarding range `35.235.240.0/20`.
 
-Tesla's current Fleet Telemetry overview requires a publicly reachable server but does not prescribe a port on that page or publish stable source CIDRs that can safely replace `0.0.0.0/0`. Port `443` is the documented platform default and is configurable through `fleet_telemetry_port`; Phase 7 must make the vehicle configuration, receiver listener, certificate, and firewall agree. The rule targets only the telemetry-edge service account and that single TCP port. No process listens on that port yet. If Tesla later publishes an authoritative sender range, restrict the rule in the same reviewed change that verifies receiver delivery.
+Tesla's current Fleet Telemetry overview requires a publicly reachable server
+but does not publish stable source CIDRs that can safely replace `0.0.0.0/0`.
+Port `443` is fixed across the receiver, firewall, certificate validation, and
+future vehicle configuration. The rule targets only the telemetry-edge service
+account and that single TCP port. If Tesla later publishes an authoritative
+sender range, restrict the rule in the same reviewed change that verifies
+receiver delivery.
 
 Firewall logging remains enabled for IAP administration but is disabled on the public Fleet Telemetry allow rule. Unauthenticated internet scanning would otherwise create unbounded log volume and cost; Phase 7 receiver health, application logs, and metrics provide useful operational visibility once a listener exists.
 
-Project SSH keys are blocked, OS Login is required, and no direct public SSH rule exists. The VM service account can publish to the raw topic and write logs/metrics. It has no Tesla OAuth, command-key, Secret Manager, Firestore, or BigQuery access.
+Project SSH keys are blocked, OS Login is required, and no direct public SSH
+rule exists. The VM service account can inspect and publish only the four
+official receiver topics, pull only from the platform Artifact Registry
+repository, read only the two telemetry TLS secrets after delivery is enabled,
+and write logs/metrics. It has no Tesla OAuth, command-key, Firestore, BigQuery,
+or synthetic-topic access.
 
 [Cloud Run recognizes same-project Pub/Sub subscriptions as an allowed source for internal ingress](https://cloud.google.com/run/docs/securing/ingress#available_network_ingress_settings), so the telemetry processor does not need public ingress for push delivery. [Compute Engine recommends the `cloud-platform` OAuth scope with access controlled through IAM roles](https://cloud.google.com/compute/docs/access/service-accounts#authorization); that scope is used on the VM, with effective authorization restricted by the service account's narrow IAM roles. Legacy granular OAuth scopes do not grant permissions and do not cover every authentication protocol.
 
-The Pub/Sub push subscription uses the complete processor handler URL, including `/pubsub/push`, as both its delivery endpoint and OIDC audience. Phase 7 token validation must require that exact audience rather than accepting the broader service-root URI.
+The Pub/Sub push subscription delivers to the complete generated Cloud Run
+handler URL, including `/pubsub/push`. Its token uses the stable path-scoped
+custom audience
+`https://telemetry-processor.woodhouse.derekjass.com/pubsub/push`, which Cloud
+Run explicitly accepts and the application verifies exactly along with the
+`tpp-pubsub-push` email and `email_verified` claim. This avoids accepting a
+broader service-root token while keeping Terraform free of a Cloud Run
+self-reference cycle.
 
 ## Service accounts and IAM intent
 
 | Identity | Granted access |
 |---|---|
 | `tpp-mcp-gateway` | Firestore user; BigQuery job user; runtime secret access for onboarding plus command/proxy key material mounted only into the command-proxy sidecar |
-| `tpp-telemetry-processor` | Firestore user; writer on the quarantine dataset |
-| `tpp-telemetry-edge` | Publisher on the raw topic; log and metric writer |
+| `tpp-telemetry-processor` | Firestore user; writer on the quarantine/system dataset and each user dataset through dataset ACLs |
+| `tpp-telemetry-edge` | Four-topic publisher/inspector; platform-repository reader; gated TLS-secret reader; log and metric writer |
 | `tpp-pubsub-push` | Invoker on telemetry-processor only |
 | `tpp-build-validator` | Log writer only; no deploy, secret, or data permission |
-| `tpp-build-deployer` | Artifact Registry writer on this repository, Cloud Run developer, `actAs` only on the two Cloud Run runtime accounts, and object viewer only on the dedicated short-lived build-source bucket |
-| `tpp-user-admin` | Firestore user; BigQuery dataset creator; update metadata/ACLs on datasets; no table-data access |
+| `tpp-build-deployer` | Artifact Registry writer, Cloud Run developer, `actAs` on Cloud Run runtimes, and—when enabled—metadata/reset/health access only for `tpp-telemetry-edge` |
+| `tpp-user-admin` | Firestore user; BigQuery dataset/raw-table creator and metadata updater; no table-data access |
 | `tpp-partner-admin` | Secret accessor only for Tesla client-secret and public-key containers; no project role or runtime impersonation |
 | `tpp-dataset-owner` | Required direct owner on per-user datasets; no project roles, keys, or impersonation binding |
 
@@ -113,6 +140,12 @@ The idempotent `add-user` workflow—not shared Terraform—will create `tesla_u
 - `OWNER` on that dataset to the dormant, non-impersonatable `tpp-dataset-owner` identity, as required by BigQuery;
 - `roles/bigquery.dataEditor` on that dataset to `tpp-telemetry-processor`;
 - `roles/bigquery.dataViewer` on that dataset to `tpp-mcp-gateway`.
+
+It also creates `raw_telemetry_events`, partitions it daily by
+`source_timestamp`, clusters it by `vehicle_id, record_type`, and configures no
+table expiration. Re-run `add-user` once for each existing approved user after
+Phase 7 infrastructure IAM is applied; the operation is idempotent and does not
+alter or delete existing data.
 
 The gateway already has project-level `roles/bigquery.jobUser` so it can run scoped queries. No caller supplies a dataset ID, and no shared project-level data-reader/writer role is granted.
 
@@ -497,19 +530,22 @@ PR validation uses `cloudbuild.pr.yaml` with the validator identity. It runs Pyt
 The interactive GitHub App authorization and regional Cloud Build v2 repository
 connection are one-time external bootstrap concerns. Set the resulting full
 repository resource name in the ignored `terraform.tfvars` as
-`cloud_build_repository`. Terraform then owns all three triggers so their event
+`cloud_build_repository`. Terraform then owns all application triggers so their event
 filters, build identities, and configuration paths cannot drift. The regional
 `tpp-pr-validation` trigger uses `tpp-build-validator` and `cloudbuild.pr.yaml`
 for pull requests targeting `main`.
 
-Two push triggers use `tpp-build-deployer` and the shared
+Three push triggers use `tpp-build-deployer` and the shared
 `cloudbuild.main.yaml` delivery contract:
 
 - `tpp-main-mcp-gateway` selects gateway, package, workspace-lock, and delivery
   configuration changes and substitutes `_SERVICE=mcp-gateway`;
 - `tpp-main-telemetry-processor` selects processor, package, workspace-lock,
   and delivery configuration changes and substitutes
-  `_SERVICE=telemetry-processor`.
+  `_SERVICE=telemetry-processor`;
+- `tpp-main-telemetry-edge`, enabled only after the TLS operator prerequisites,
+  selects official receiver/config changes and substitutes
+  `_SERVICE=telemetry-edge` plus the exact VM zone.
 
 The initial adoption of an existing environment is an import, not a recreate.
 After this configuration is merged, import the three existing regional triggers
@@ -545,13 +581,16 @@ checkpoint is Cloud Run revision readiness and digest identity; Phase 7 adds a
 real synthetic Pub/Sub ingestion check without exposing an unauthenticated
 health route.
 
-The main delivery allowlist intentionally excludes `telemetry-edge`. Phase 7
-must first replace its placeholder with the reviewed Fleet Telemetry receiver,
-then add exact-digest VM pull/restart, health checking, and rollback before a
-main trigger may deploy it. Terraform ignores delivery-owned Cloud Run image
-fields and revision labels, so a later infrastructure plan cannot roll
-application containers back to the Phase 2 placeholder or erase the recorded
-deployment commit.
+For telemetry-edge, the build resolves the commit-tagged image to a digest,
+writes only that digest and the 40-character commit to VM metadata, and resets
+the VM. The startup script validates both values, retrieves TLS material into a
+root-owned persistent directory, pulls from Artifact Registry, starts the
+receiver with a read-only filesystem and dropped capabilities, and polls the
+receiver's local `/status`. A failed image is removed and the previously
+healthy digest is restarted. Cloud Build reads a guest attribute and succeeds
+only for the requested commit. Terraform ignores only the two
+delivery-owned metadata keys so an infrastructure apply cannot roll back the
+application image.
 
 For an operator-initiated deployment, submit source through the dedicated
 `${project_id}-tpp-cloudbuild-source` bucket by passing
@@ -562,19 +601,197 @@ access to the Terraform state bucket. Source objects expire after seven days.
 
 Terraform apply remains an explicit reviewed operation from merged `main`. Automating it requires a separately reviewed apply identity/approval gate; the application deployer intentionally cannot change IAM, networks, secrets, Firestore, BigQuery, Pub/Sub, or Compute Engine.
 
-Telemetry-edge delivery is deferred to Phase 7, when the VM will pull an exact image digest, health-check it, and support rollback. Production must never identify a service image as `latest`.
+Production must never identify a service image as `latest`.
+
+## Phase 7 operator checkpoint
+
+Stop here until the Phase 7 PR is merged. Do not call Tesla's
+`fleet_telemetry_config` endpoint during this checkpoint.
+
+### 1. Apply the durable path with edge delivery disabled
+
+From an up-to-date `main`, confirm the ignored `terraform.tfvars` contains the
+real operator in `admin_principals` and keeps:
+
+```hcl
+telemetry_hostname             = "telemetry.woodhouse.derekjass.com"
+enable_telemetry_edge_delivery = false
+```
+
+Run and review an authoritative plan, then apply it:
+
+```bash
+terraform -chdir=infra/terraform plan -var-file=terraform.tfvars -out=phase7.tfplan
+terraform -chdir=infra/terraform apply phase7.tfplan
+```
+
+The merge-triggered processor image is rollout-safe: before this apply it stays
+healthy but returns `503` for all pushes. It cannot acknowledge an observation
+until the required authenticated-push and storage configuration exists.
+
+Re-run `add-user` once for every existing approved account to create/repair its
+permanent raw table. This is idempotent:
+
+```bash
+gcloud auth application-default login \
+  --impersonate-service-account=tpp-user-admin@woodhouse-506215.iam.gserviceaccount.com
+uv run python scripts/admin/add-user \
+  --project-id woodhouse-506215 \
+  --email APPROVED_EMAIL
+```
+
+### 2. Create and verify public DNS
+
+Create exactly this record in the authoritative DNS zone:
+
+```text
+name:  telemetry.woodhouse.derekjass.com
+type:  A
+value: 34.46.67.52
+TTL:   300 (or provider default)
+```
+
+Confirm the reserved address still matches before changing DNS:
+
+```bash
+terraform -chdir=infra/terraform output -raw telemetry_edge_public_ip
+```
+
+It must print `34.46.67.52`. Verify authoritative and public propagation before
+requesting a certificate:
+
+```bash
+dig +short telemetry.woodhouse.derekjass.com A
+dig +short @1.1.1.1 telemetry.woodhouse.derekjass.com A
+```
+
+Both must equal the Terraform output. Do not use a proxied/CDN DNS mode; Tesla
+must establish mTLS directly with the receiver.
+
+### 3. Issue, validate, and upload the TLS certificate
+
+Use a certificate from a commonly trusted public CA. A manual Let's Encrypt
+DNS-01 issuance is suitable for the first checkpoint and avoids exposing an
+HTTP challenge port:
+
+```bash
+certbot certonly --manual --preferred-challenges dns \
+  --agree-tos --no-eff-email \
+  --email OPERATOR_EMAIL \
+  --domain telemetry.woodhouse.derekjass.com
+```
+
+Certbot prints the exact `_acme-challenge.telemetry.woodhouse.derekjass.com`
+TXT value. Add it, confirm it with `dig TXT`, then continue Certbot. Validate the
+result before upload:
+
+```bash
+openssl x509 -in /path/to/fullchain.pem -noout -checkend 2592000
+openssl x509 -in /path/to/fullchain.pem -noout -subject -issuer -dates -ext subjectAltName
+openssl x509 -in /path/to/fullchain.pem -pubkey -noout \
+  | openssl pkey -pubin -outform DER | openssl sha256
+openssl pkey -in /path/to/privkey.pem -pubout -outform DER | openssl sha256
+```
+
+The two SHA-256 outputs must match, the SAN must contain the exact hostname,
+and the certificate must remain valid for at least 30 days. Add versions without
+copying PEM material into Git, Terraform, logs, or command arguments:
+
+```bash
+gcloud secrets versions add telemetry-edge-tls-cert \
+  --project=woodhouse-506215 --data-file=/path/to/fullchain.pem
+gcloud secrets versions add telemetry-edge-tls-key \
+  --project=woodhouse-506215 --data-file=/path/to/privkey.pem
+```
+
+### 4. Enable exact-digest delivery and deploy once
+
+Set `enable_telemetry_edge_delivery = true`, plan, and apply again. This grants
+the edge access only to its TLS secrets and creates its exact-digest main
+trigger. Then start the first deployment from merged `main`:
+
+```bash
+gcloud builds triggers run tpp-main-telemetry-edge \
+  --project=woodhouse-506215 \
+  --region=us-central1 \
+  --branch=main
+```
+
+The build must report `deployed_service=telemetry-edge`, the merged commit, and
+a `sha256` digest. Verify the VM guest deployment status, local receiver health,
+metrics, and service identity:
+
+```bash
+gcloud compute instances get-guest-attributes tpp-telemetry-edge \
+  --project=woodhouse-506215 --zone=us-central1-a \
+  --query-path=telemetry-edge/status
+gcloud compute ssh tpp-telemetry-edge \
+  --project=woodhouse-506215 --zone=us-central1-a --tunnel-through-iap \
+  --command='curl -fsS http://127.0.0.1:8080/status && curl -fsS http://127.0.0.1:9090/metrics | head'
+gcloud compute ssh tpp-telemetry-edge \
+  --project=woodhouse-506215 --zone=us-central1-a --tunnel-through-iap \
+  --command='curl -fsS -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email'
+```
+
+The identity must be
+`tpp-telemetry-edge@woodhouse-506215.iam.gserviceaccount.com`. Validate the
+public certificate/chain with Tesla's pinned-version `check_server_cert.sh` and
+an independent handshake:
+
+```bash
+git clone --depth 1 --branch v0.9.4 \
+  https://github.com/teslamotors/fleet-telemetry.git /tmp/fleet-telemetry-v0.9.4
+jq -n \
+  --arg hostname telemetry.woodhouse.derekjass.com \
+  --arg ca "$(cat /path/to/fullchain.pem)" \
+  '{hostname:$hostname,port:443,ca:$ca}' >/tmp/validate-telemetry-server.json
+/tmp/fleet-telemetry-v0.9.4/tools/check_server_cert.sh \
+  /tmp/validate-telemetry-server.json
+openssl s_client -connect telemetry.woodhouse.derekjass.com:443 \
+  -servername telemetry.woodhouse.derekjass.com -verify_return_error </dev/null
+```
+
+No normal HTTP response is expected on public port 443; it is Tesla's mTLS
+telemetry protocol endpoint.
+
+### 5. Run the isolated synthetic end-to-end proof
+
+Use the operator identity listed in `admin_principals`. The script can publish
+only to the synthetic topic and read only the restricted system dataset:
+
+```bash
+gcloud auth application-default login
+uv run python scripts/admin/verify-telemetry-pipeline \
+  --project-id woodhouse-506215 \
+  --confirm-non-vehicle-fixtures
+```
+
+Success proves, without fabricating a user or vehicle identity:
+
+- two identical fixture observations remain as two raw rows;
+- a deliberate first persistence failure is negatively acknowledged, retried,
+  and then durably stored;
+- a marked unknown VIN lands in restricted quarantine and never a user dataset;
+- the authenticated Pub/Sub-to-Cloud Run-to-BigQuery path is live.
+
+After these checks, report the checkpoint evidence and stop. Phase 8 separately
+requires an exact desired/current config diff and explicit approval for each
+real vehicle before making any Tesla telemetry configuration call.
 
 ## Secret handling
 
 Terraform creates these empty containers:
 
 - `mcp-auth-signing-key`
+- `platform-oidc-client-secret`
 - `tesla-client-secret`
 - `tesla-command-private-key`
 - `tesla-command-proxy-tls-cert`
 - `tesla-command-proxy-tls-key`
 - `tesla-command-public-key`
 - `tesla-token-encryption-key`
+- `telemetry-edge-tls-cert`
+- `telemetry-edge-tls-key`
 - `webhook-hmac-key`
 
 No secret version, key material, token, PIN, service-account key, or example

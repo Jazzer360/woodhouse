@@ -36,6 +36,8 @@ class RecordingBigQueryClient:
     def __init__(self, current: bigquery.Dataset) -> None:
         self.current = current
         self.updated_fields: list[str] = []
+        self.created_tables: list[bigquery.Table] = []
+        self.updated_table_fields: list[str] = []
 
     def create_dataset(
         self,
@@ -62,6 +64,32 @@ class RecordingBigQueryClient:
         self.current = dataset
         self.updated_fields = fields
         return dataset
+
+    def create_table(
+        self,
+        table: bigquery.Table,
+        *,
+        exists_ok: bool,
+        timeout: int,
+    ) -> bigquery.Table:
+        del exists_ok, timeout
+        self.created_tables.append(table)
+        return table
+
+    def get_table(self, reference: object, *, timeout: int) -> bigquery.Table:
+        del reference, timeout
+        return self.created_tables[0]
+
+    def update_table(
+        self,
+        table: bigquery.Table,
+        fields: list[str],
+        *,
+        timeout: int,
+    ) -> bigquery.Table:
+        del timeout
+        self.updated_table_fields = fields
+        return table
 
 
 def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
@@ -111,5 +139,23 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
         "default_partition_expiration_ms",
         "default_table_expiration_ms",
         "description",
+        "labels",
+    }
+    table = client.created_tables[0]
+    assert table.table_id == "raw_telemetry_events"
+    assert table.expires is None
+    assert table.time_partitioning.field == "source_timestamp"
+    assert table.clustering_fields == ["vehicle_id", "record_type"]
+    assert {field.name for field in table.schema} >= {
+        "source_timestamp",
+        "ingested_at",
+        "vehicle_id",
+        "record_type",
+        "payload",
+        "pubsub_message_id",
+    }
+    assert set(client.updated_table_fields) == {
+        "description",
+        "expires",
         "labels",
     }

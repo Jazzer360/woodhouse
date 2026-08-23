@@ -111,3 +111,31 @@ resource "google_cloudbuild_trigger" "main_telemetry_processor" {
     }
   }
 }
+
+resource "google_cloudbuild_trigger" "main_telemetry_edge" {
+  count = var.cloud_build_repository != null && var.enable_telemetry_edge_delivery ? 1 : 0
+
+  project            = var.project_id
+  location           = var.region
+  name               = "tpp-main-telemetry-edge"
+  description        = "Deploy the affected official telemetry receiver by exact digest after a main merge"
+  filename           = "cloudbuild.main.yaml"
+  service_account    = google_service_account.platform["cloud_build_deployer"].id
+  include_build_logs = "INCLUDE_BUILD_LOGS_WITH_STATUS"
+  included_files = [
+    "cloudbuild.main.yaml",
+    "services/telemetry-edge/**",
+  ]
+  substitutions = {
+    _SERVICE = "telemetry-edge"
+    _ZONE    = var.zone
+  }
+
+  repository_event_config {
+    repository = var.cloud_build_repository
+
+    push {
+      branch = "main$"
+    }
+  }
+}

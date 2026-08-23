@@ -1,12 +1,24 @@
 [project]
 name = "tpp-telemetry-processor"
 version = "0.0.0"
-description = "Telemetry processor service scaffold"
+description = "Authenticated permanent raw Fleet Telemetry processor"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+  "google-auth>=2.38,<3",
+  "google-cloud-bigquery>=3.30,<4",
+  "google-cloud-firestore>=2.20,<3",
+  "tpp-shared-models",
+]
+
+[project.optional-dependencies]
+admin = ["google-cloud-pubsub>=2.29,<3"]
+
+[tool.uv.sources]
+tpp-shared-models = { workspace = true }
 
 [project.scripts]
 telemetry-processor = "tesla_personal_platform.telemetry_processor.main:main"
+verify-telemetry-pipeline = "tesla_personal_platform.telemetry_processor.operator_check:main"
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

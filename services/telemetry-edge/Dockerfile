@@ -1,20 +1,10 @@
-FROM python:3.12-slim-bookworm
+# Tesla's official Fleet Telemetry v0.9.4 multi-platform image, resolved
+# 2026-08-23. The application image is immutable and contains no custom wire
+# protocol or telemetry processing code.
+FROM tesla/fleet-telemetry@sha256:28c8b9e244b842a3d7443567cfa385b4db20cf533b8dee3411ce6fe540eb67e2
 
-RUN groupadd --system app && useradd --system --gid app --home-dir /app app
-WORKDIR /app
+COPY services/telemetry-edge/config.json /etc/fleet-telemetry/config.json
 
-COPY services/telemetry-edge/src /app/src
+EXPOSE 443 8080 9090
 
-ENV HOST=0.0.0.0 \
-    PORT=8080 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app/src \
-    PYTHONUNBUFFERED=1
-
-USER app
-EXPOSE 8080
-
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD ["python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
-
-CMD ["python", "-m", "tesla_personal_platform.telemetry_edge.main"]
+CMD ["/fleet-telemetry", "-config", "/etc/fleet-telemetry/config.json"]

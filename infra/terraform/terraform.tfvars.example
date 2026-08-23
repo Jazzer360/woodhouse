@@ -1,4 +1,10 @@
 project_id = "woodhouse-506215"
+
+# Enable only after the Phase 7 DNS/TLS operator checkpoint is complete. The
+# first deployment is submitted manually; later main merges auto-deploy edge
+# changes by exact image digest.
+enable_telemetry_edge_delivery = false
+telemetry_hostname             = "telemetry.woodhouse.derekjass.com"
 region     = "us-central1"
 zone       = "us-central1-a"
 

@@ -257,7 +257,14 @@ both pairing lists as unknown rather than guessing its state.
 
 ## 9. Fleet Telemetry configuration per vehicle
 
-Prerequisites currently include supported firmware, application Virtual Key paired, required scopes, and public telemetry server.
+Official documentation re-audited **2026-08-23**. Prerequisites currently
+include firmware `2024.26+` for supported vehicles (`2025.20+` for legacy
+Intel-based Model S/X), application Virtual Key pairing, required scopes, and a
+public receiver using a certificate issued by a commonly trusted CA. The
+receiver implements Fleet Telemetry protocol v1.3.0 and vehicles can buffer up
+to 5,000 messages while disconnected. Re-check Tesla's official documentation
+before Phase 8 changes any vehicle because these values are protocol facts, not
+permanent architecture assumptions.
 
 Use Tesla's recommended signed configuration path through Vehicle Command Proxy.
 
@@ -271,6 +278,10 @@ For every eligible vehicle:
 6. record config hash/version in platform state.
 
 Do not let one vehicle's pairing/config failure prevent other vehicles on the account from working.
+
+Phase 7 deploys and proves the receiver/storage path only. Phase 8 owns the
+desired-versus-current per-vehicle config diff and the explicit operator
+approval before calling `fleet_telemetry_config`.
 
 ---
 

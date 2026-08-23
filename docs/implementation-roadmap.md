@@ -127,6 +127,9 @@ remain operator checkpoint actions.
 
 **Goal:** Receive Fleet Telemetry and permanently retain every valid received observation.
 
+**Status:** Implementation complete; operator deployment/TLS/synthetic checkpoint pending.
+No real vehicle Fleet Telemetry configuration is applied in this phase.
+
 **Prompt:** `docs/prompt-pack.md` → **Prompt 7 — Fleet Telemetry edge and permanent raw BigQuery history**
 
 **Exit criteria:**

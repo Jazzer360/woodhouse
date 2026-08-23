@@ -1,4 +1,4 @@
-"""Health-only process for the Phase 1 telemetry edge container."""
+"""Local metadata helper; production runs Tesla's official receiver image."""
 
 import json
 import os
@@ -13,8 +13,8 @@ DEFAULT_PORT: Final = 8080
 
 
 def health_document() -> dict[str, str]:
-    """Return the non-production scaffold health document."""
-    return {"phase": "scaffold", "service": SERVICE_NAME, "status": "ok"}
+    """Describe the production edge implementation for repository checks."""
+    return {"phase": "fleet-telemetry", "service": SERVICE_NAME, "status": "ok"}
 
 
 class _Handler(BaseHTTPRequestHandler):

@@ -4,12 +4,18 @@ from collections.abc import Iterable
 
 from google.cloud import bigquery
 from tesla_personal_platform.auth.models import AllowedUser
+from tesla_personal_platform.shared_models import RAW_TELEMETRY_SCHEMA, RAW_TELEMETRY_TABLE
 
 DATA_VIEWER_ACCESS_ROLE = "READER"
 DATA_EDITOR_ACCESS_ROLE = "WRITER"
 SERVICE_ACCOUNT_ENTITY_TYPE = "userByEmail"
 DATASET_DESCRIPTION = "Isolated Tesla history for one approved platform user."
 DATASET_LABELS = {
+    "application": "tesla-personal-platform",
+    "data_class": "restricted-user-telemetry",
+    "managed_by": "add-user",
+}
+RAW_TABLE_LABELS = {
     "application": "tesla-personal-platform",
     "data_class": "restricted-user-telemetry",
     "managed_by": "add-user",
@@ -63,7 +69,7 @@ class BigQueryDatasetProvisioner:
         self._processor_service_account = processor_service_account
 
     def provision(self, user: AllowedUser) -> None:
-        """Idempotently enforce location, indefinite retention, labels, and access."""
+        """Idempotently enforce the dataset and append-only raw table contract."""
         dataset = bigquery.Dataset(f"{self._project_id}.{user.dataset_id}")
         dataset.location = self._location
         dataset.description = DATASET_DESCRIPTION
@@ -102,5 +108,56 @@ class BigQueryDatasetProvisioner:
                 "description",
                 "labels",
             ],
+            timeout=30,
+        )
+        table = bigquery.Table(
+            f"{self._project_id}.{user.dataset_id}.{RAW_TELEMETRY_TABLE}",
+            schema=[
+                bigquery.SchemaField(
+                    field.name,
+                    field.field_type,
+                    mode=field.mode,
+                    description=field.description,
+                )
+                for field in RAW_TELEMETRY_SCHEMA
+            ],
+        )
+        table.description = "Permanent append-only Fleet Telemetry observations."
+        table.time_partitioning = bigquery.TimePartitioning(
+            type_=bigquery.TimePartitioningType.DAY,
+            field="source_timestamp",
+        )
+        table.clustering_fields = ["vehicle_id", "record_type"]
+        table.labels = RAW_TABLE_LABELS.copy()
+        table.expires = None
+        self._client.create_table(table, exists_ok=True, timeout=30)
+
+        current_table = self._client.get_table(table.reference, timeout=30)
+        current_partitioning = current_table.time_partitioning
+        if (
+            current_partitioning is None
+            or current_partitioning.field != "source_timestamp"
+            or current_partitioning.type_ != bigquery.TimePartitioningType.DAY
+            or current_table.clustering_fields != ["vehicle_id", "record_type"]
+        ):
+            raise ValueError(
+                f"Existing table {user.dataset_id}.{RAW_TELEMETRY_TABLE} has an "
+                "incompatible partition or clustering layout"
+            )
+        expected_schema = [(field.name, field.field_type, field.mode) for field in table.schema]
+        actual_schema = [
+            (field.name, field.field_type, field.mode) for field in current_table.schema
+        ]
+        if actual_schema != expected_schema:
+            raise ValueError(
+                f"Existing table {user.dataset_id}.{RAW_TELEMETRY_TABLE} has an "
+                "incompatible schema; migrate it explicitly before ingestion"
+            )
+        current_table.description = table.description
+        current_table.labels = RAW_TABLE_LABELS.copy()
+        current_table.expires = None
+        self._client.update_table(
+            current_table,
+            ["description", "expires", "labels"],
             timeout=30,
         )

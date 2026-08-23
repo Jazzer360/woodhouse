@@ -55,14 +55,21 @@ Recommended baseline:
 raw_telemetry_events
   source_timestamp TIMESTAMP
   ingested_at TIMESTAMP
+  processed_at TIMESTAMP
   vehicle_id STRING
   vin STRING
   tesla_vehicle_id STRING
   record_type STRING
-  payload JSON / typed nested structure
+  payload JSON
   telemetry_config_version STRING
+  telemetry_config_hash STRING
   transport_message_id STRING
+  pubsub_message_id STRING
+  pubsub_publish_time TIMESTAMP
+  pubsub_delivery_attempt INTEGER
   telemetry_client_version STRING
+  telemetry_receiver_version STRING
+  receiver_record_version INTEGER
 ```
 
 Partition by:
@@ -78,6 +85,12 @@ vehicle_id, record_type
 ```
 
 Preserve the complete decoded event payload.
+
+`source_timestamp`, `ingested_at`, and `processed_at` are separate clocks.
+`transport_message_id` is Tesla's transaction ID when present;
+`pubsub_message_id` identifies the Google transport delivery. The receiver and
+client version fields make protocol changes diagnosable. Configuration
+version/hash come only from trusted registry state, never from a publisher.
 
 Do not throw away fields after promoting commonly queried values to typed columns/views.
 
@@ -95,6 +108,12 @@ Do not discard an event because:
 - storage is expected to grow.
 
 Exact transport redeliveries may appear more than once in the raw table. Preserve message IDs so analytical views may de-duplicate retry deliveries without losing original provenance.
+
+The processor uses BigQuery streaming inserts with no insert ID. A successful
+insert response is the durable-acceptance boundary; only then does the
+authenticated push handler return `204`. BigQuery or registry-transient
+failures return a non-2xx response so Pub/Sub redelivers. This is deliberately
+at-least-once, not exactly-once.
 
 ---
 
@@ -221,6 +240,10 @@ If no owner mapping exists:
 - do not write to a user's dataset;
 - preserve the record in a restricted system/quarantine path;
 - log/alert for repair.
+
+The restricted system dataset also contains `raw_synthetic_telemetry`, used
+only by the guarded Phase 7 operator check. Its explicit fixture marker cannot
+claim a user or vehicle and never writes to a per-user dataset.
 
 ---
 

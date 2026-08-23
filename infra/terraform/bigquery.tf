@@ -39,9 +39,41 @@ resource "google_bigquery_table" "quarantine_raw_telemetry" {
   }
 }
 
+resource "google_bigquery_table" "synthetic_raw_telemetry" {
+  project                  = var.project_id
+  dataset_id               = google_bigquery_dataset.quarantine.dataset_id
+  table_id                 = "raw_synthetic_telemetry"
+  description              = "Non-vehicle Phase 7 fixtures used to verify the real ingestion path safely."
+  deletion_protection      = true
+  require_partition_filter = true
+  schema                   = file("${path.module}/schemas/synthetic_raw_telemetry.json")
+
+  time_partitioning {
+    type  = "DAY"
+    field = "source_timestamp"
+  }
+
+  clustering = ["record_type", "fixture_id"]
+
+  labels = {
+    application = "tesla-personal-platform"
+    data_class  = "restricted-synthetic-telemetry"
+    managed_by  = "terraform"
+  }
+}
+
 resource "google_bigquery_dataset_iam_member" "quarantine_writer" {
   project    = var.project_id
   dataset_id = google_bigquery_dataset.quarantine.dataset_id
   role       = "roles/bigquery.dataEditor"
   member     = "serviceAccount:${google_service_account.platform["telemetry_processor"].email}"
+}
+
+resource "google_bigquery_dataset_iam_member" "telemetry_operator_reader" {
+  for_each = var.admin_principals
+
+  project    = var.project_id
+  dataset_id = google_bigquery_dataset.quarantine.dataset_id
+  role       = "roles/bigquery.dataViewer"
+  member     = each.value
 }

@@ -8,8 +8,22 @@ locals {
     tesla_command_proxy_tls_key  = "tesla-command-proxy-tls-key"
     tesla_command_public_key     = "tesla-command-public-key"
     tesla_token_encryption_key   = "tesla-token-encryption-key"
+    telemetry_edge_tls_cert      = "telemetry-edge-tls-cert"
+    telemetry_edge_tls_key       = "telemetry-edge-tls-key"
     webhook_hmac_key             = "webhook-hmac-key"
   }
+}
+
+resource "google_secret_manager_secret_iam_member" "telemetry_edge_tls_accessor" {
+  for_each = var.enable_telemetry_edge_delivery ? toset([
+    "telemetry_edge_tls_cert",
+    "telemetry_edge_tls_key",
+  ]) : toset([])
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.platform[each.value].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.platform["telemetry_edge"].email}"
 }
 
 resource "google_secret_manager_secret" "platform" {
