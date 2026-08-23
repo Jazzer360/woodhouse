@@ -18,7 +18,7 @@ from tesla_personal_platform.tesla_client import (
 )
 
 NA_BASE = "https://fleet-api.prd.na.vn.cloud.tesla.com"
-VIN = "5YJ3E1EA7KF000001"
+VIN = "TESTCAR0000000001"
 LOGGER_NAME = "tesla_personal_platform.tesla_client.api_calls"
 
 
@@ -66,6 +66,7 @@ def test_direct_transport_logs_start_and_redacted_http_result(
 ) -> None:
     access_token = "secret-access-token"
     response_token = "response-secret-token"
+    destination = "123 Test Street"
     transport = UrllibTransport()
     transport._opener = FakeOpener(  # type: ignore[assignment]
         [
@@ -74,8 +75,9 @@ def test_direct_transport_logs_start_and_redacted_http_result(
                 {
                     "error": "command not implemented",
                     "error_description": (
-                        f"vehicle {VIN} owner@example.com at 44.9778; "
-                        f"token {response_token}; https://example.invalid/private"
+                        f"vehicle {VIN} owner@example.com at 44.9; "
+                        f"access_token={response_token}; destination {destination}; "
+                        "https://example.invalid/private"
                     ),
                 },
             )
@@ -95,7 +97,12 @@ def test_direct_transport_logs_start_and_redacted_http_result(
             "POST",
             f"{NA_BASE}/api/1/vehicles/{VIN}/command/remote_boombox",
             headers={"Authorization": f"Bearer {access_token}"},
-            json_body={"sound": 0, "vin": VIN, "lat": 44.9778},
+            json_body={
+                "sound": 0,
+                "vin": VIN,
+                "lat": 44.9,
+                "navigation": {"value": destination},
+            },
         )
 
     assert response.status == 400
@@ -106,7 +113,7 @@ def test_direct_transport_logs_start_and_redacted_http_result(
     assert started["operation"] == "remote_boombox"
     assert started["destination"] == "tesla_fleet_api"
     assert started["region"] == "na"
-    assert started["request_fields"] == ["lat", "sound", "vin"]
+    assert started["request_fields"] == ["lat", "navigation", "sound", "vin"]
     assert started["correlation_id"] == "corr_test"
     assert started["vehicle_id"] == "veh_internal"
     assert completed["status_code"] == 400
@@ -114,15 +121,17 @@ def test_direct_transport_logs_start_and_redacted_http_result(
     assert completed["response_summary"] == {
         "error": "command not implemented",
         "error_description": (
-            "vehicle [REDACTED] [REDACTED_EMAIL] at [REDACTED]; token [REDACTED]; [REDACTED_URL]"
+            "vehicle [REDACTED] [REDACTED_EMAIL] at [REDACTED]; "
+            "[REDACTED_CREDENTIAL]; destination [REDACTED]; [REDACTED_URL]"
         ),
     }
     serialized = "\n".join(record.message for record in caplog.records)
     assert VIN not in serialized
     assert access_token not in serialized
-    assert "44.9778" not in serialized
+    assert "44.9" not in serialized
     assert "owner@example.com" not in serialized
     assert response_token not in serialized
+    assert destination not in serialized
 
 
 def test_local_proxy_logs_command_result_without_body_or_credentials(
@@ -153,6 +162,77 @@ def test_local_proxy_logs_command_result_without_body_or_credentials(
     assert VIN not in serialized
     assert "private-token" not in serialized
     assert '"percent":80' not in serialized
+
+
+def test_successful_read_skips_diagnostic_response_parsing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transport = UrllibTransport()
+    transport._opener = FakeOpener(  # type: ignore[assignment]
+        [FakeResponse(200, {"message": "large read response must not be summarized"})]
+    )
+
+    with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+        response = transport.request(
+            "GET",
+            f"{NA_BASE}/api/1/vehicles/{VIN}/vehicle_data",
+            headers={"Authorization": "Bearer private-token"},
+        )
+
+    assert response.status == 200
+    completed = _events(caplog)[1]
+    assert "response_summary" not in completed
+
+
+def test_diagnostic_summary_redacts_common_credential_syntax(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    credential_values = ("alpha-value", "beta-value", "gamma-value", "delta-value")
+    transport = UrllibTransport()
+    transport._opener = FakeOpener(  # type: ignore[assignment]
+        [
+            _http_error(
+                401,
+                {
+                    "error_description": (
+                        f"access_token={credential_values[0]} token: {credential_values[1]} "
+                        f'"client_secret":"{credential_values[2]}" '
+                        f"Bearer {credential_values[3]}"
+                    )
+                },
+            )
+        ]
+    )
+
+    with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+        transport.request("GET", f"{NA_BASE}/api/1/vehicles/{VIN}")
+
+    completed = _events(caplog)[1]
+    assert completed["response_summary"] == {
+        "error_description": " ".join(["[REDACTED_CREDENTIAL]"] * 4)
+    }
+    serialized = "\n".join(record.message for record in caplog.records)
+    assert all(value not in serialized for value in credential_values)
+
+
+def test_oversized_error_body_skips_diagnostic_response_parsing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transport = UrllibTransport()
+    transport._opener = FakeOpener(  # type: ignore[assignment]
+        [_http_error(500, {"error_description": "x" * (64 * 1024)})]
+    )
+
+    with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+        response = transport.request(
+            "GET",
+            f"{NA_BASE}/api/1/vehicles/{VIN}",
+            headers={"Authorization": "Bearer private-token"},
+        )
+
+    assert response.status == 500
+    completed = _events(caplog)[1]
+    assert "response_summary" not in completed
 
 
 def test_transport_failure_logs_safe_terminal_event(caplog: pytest.LogCaptureFixture) -> None:

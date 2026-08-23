@@ -90,9 +90,16 @@ _RESPONSE_SECRET_KEYS = frozenset(
 class MCPToolError(Exception):
     """Safe failure returned to an MCP client."""
 
-    def __init__(self, category: str, message: str) -> None:
+    def __init__(
+        self,
+        category: str,
+        message: str,
+        *,
+        correlation_id: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.category = category
+        self.correlation_id = correlation_id
 
 
 class CommandAuditStore(Protocol):
@@ -510,6 +517,22 @@ class TeslaMCPService:
         return [spec.mcp_document(oauth_protected=self._oauth_protected) for spec in MCP_TOOL_SPECS]
 
     def call(self, context: UserContext, name: str, arguments: object) -> Document:
+        correlation_id = f"corr_{secrets.token_hex(16)}"
+        try:
+            return self._call(context, name, arguments, correlation_id=correlation_id)
+        except (MCPToolError, TeslaAPIError) as error:
+            if error.correlation_id is None:
+                error.correlation_id = correlation_id
+            raise
+
+    def _call(
+        self,
+        context: UserContext,
+        name: str,
+        arguments: object,
+        *,
+        correlation_id: str,
+    ) -> Document:
         spec = MCP_TOOLS_BY_NAME.get(name)
         if spec is None:
             raise MCPToolError("unknown_tool", "Unknown Tesla MCP tool")
@@ -559,8 +582,13 @@ class TeslaMCPService:
         if spec.write:
             if vehicle is None:
                 raise MCPToolError("vehicle_required", "A write operation requires a vehicle")
-            return self._execute_audited(context, spec, vehicle, values)
-        correlation_id = f"corr_{secrets.token_hex(16)}"
+            return self._execute_audited(
+                context,
+                spec,
+                vehicle,
+                values,
+                correlation_id=correlation_id,
+            )
         with tesla_api_log_context(
             correlation_id=correlation_id,
             vehicle_id=vehicle.vehicle_id if vehicle is not None else None,
@@ -605,9 +633,10 @@ class TeslaMCPService:
         spec: ToolSpec,
         vehicle: VehicleRecord,
         values: dict[str, object],
+        *,
+        correlation_id: str,
     ) -> Document:
         audit_id = f"audit_{secrets.token_hex(16)}"
-        correlation_id = f"corr_{secrets.token_hex(16)}"
         try:
             self._audit_store.begin_command_audit(
                 audit_id=audit_id,
@@ -907,15 +936,21 @@ class MCPProtocol:
                     params.get("arguments", {}),
                 )
             except MCPToolError as error:
+                document: Document = {"error": error.category, "message": str(error)}
+                if error.correlation_id is not None:
+                    document["correlation_id"] = error.correlation_id
                 return _tool_result(
                     request_id,
-                    {"error": error.category, "message": str(error)},
+                    document,
                     True,
                 )
             except TeslaAPIError as error:
+                document = {"error": error.category, "message": "Tesla Fleet API request failed"}
+                if error.correlation_id is not None:
+                    document["correlation_id"] = error.correlation_id
                 return _tool_result(
                     request_id,
-                    {"error": error.category, "message": "Tesla Fleet API request failed"},
+                    document,
                     True,
                 )
             except Exception:

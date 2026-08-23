@@ -312,10 +312,12 @@ Transport logging never records raw URLs, query values, HTTP headers, bearer
 tokens, request bodies, response bodies, VINs, invitation/invoice IDs, PINs,
 passwords, OAuth codes, client secrets, token values, calendar contents, or
 coordinates. Diagnostic summaries may contain only the top-level Tesla
-`error`, `error_description`, or `message`, plus command `result`/`reason`;
-strings are length-bounded and scrubbed for request secrets, VINs, emails,
-URLs, coordinates, JWTs, and labeled credentials. OAuth success payloads are
-therefore visible only as status/size metadata, never as credentials.
+`error`, `error_description`, or `message`, plus command `result`/`reason`.
+Summaries are parsed only for bounded error bodies and bounded command results,
+not successful read bodies. Strings are length-bounded and scrubbed for every
+scalar request-body echo, request secrets, VINs, emails, URLs, coordinates,
+JWTs, and labeled credentials. OAuth success payloads are therefore visible
+only as status/size metadata, never as credentials.
 
 Firestore command audit remains the durable authorization/safety record for
 writes. Cloud Logging is the operational trace of network attempts, including

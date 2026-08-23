@@ -387,10 +387,11 @@ def test_failed_command_keeps_attempt_and_records_safe_error_category() -> None:
     store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
     instance, _, proxy = service(store, proxy=FakeFleet(fail=True))
 
-    with pytest.raises(TeslaAPIError):
+    with pytest.raises(TeslaAPIError) as caught:
         instance.call(CONTEXT, "tesla_door_lock", {"vehicle_id": "veh-one"})
 
     assert len(proxy.calls) == 1
+    assert caught.value.correlation_id == store.started[0]["correlation_id"]
     assert store.started[0]["source"] == "chatgpt-mcp"
     assert store.completed[0]["result"] == "failure"
     assert store.completed[0]["error_category"] == "upstream_failure"
@@ -557,7 +558,35 @@ def test_protocol_lists_typed_tools_and_reports_tool_errors_without_secrets() ->
     )
     assert failed["result"]["isError"] is True
     assert failed["result"]["structuredContent"]["error"] == "vehicle_ambiguous"
+    assert failed["result"]["structuredContent"]["correlation_id"].startswith("corr_")
     assert "secret" not in str(failed)
+
+
+def test_protocol_tesla_failure_includes_transport_correlation() -> None:
+    instance, _, _ = service(
+        FakeStore([vehicle("veh-one", "user-a", "VIN1")]),
+        direct=FakeFleet(fail=True),
+    )
+    protocol = MCPProtocol(instance)
+
+    failed = protocol.handle(
+        CONTEXT,
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "tesla_vehicle",
+                "arguments": {"vehicle_id": "veh-one"},
+            },
+        },
+    )
+
+    assert failed is not None
+    content = failed["result"]["structuredContent"]
+    assert failed["result"]["isError"] is True
+    assert content["error"] == "upstream_failure"
+    assert content["correlation_id"].startswith("corr_")
 
 
 def test_legacy_mcp_listing_does_not_advertise_unavailable_oauth_flow() -> None:

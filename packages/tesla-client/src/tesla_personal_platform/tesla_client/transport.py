@@ -55,9 +55,26 @@ _EMAIL_PATTERN = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b")
 _JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
 _VIN_PATTERN = re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b", re.IGNORECASE)
 _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
-_COORDINATE_PATTERN = re.compile(r"(?<!\w)-?\d{1,3}\.\d{4,}(?!\w)")
-_LABELED_SECRET_PATTERN = re.compile(r"(?i)\b(token|secret|authorization|bearer)\s+([^\s,;]+)")
+_PRECISE_COORDINATE_PATTERN = re.compile(r"(?<!\w)-?\d{1,3}\.\d{4,}(?!\w)")
+_LABELED_COORDINATE_PATTERN = re.compile(
+    r"(?i)\b(?:lat(?:itude)?|lon(?:gitude)?|location|coordinates?)\b"
+    r"(?:\s*(?:=|:|at))?\s*-?\d{1,3}(?:\.\d+)?"
+)
+_COORDINATE_PAIR_PATTERN = re.compile(
+    r"(?<![\w.])-?\d{1,3}(?:\.\d+)?\s*[,/]\s*-?\d{1,3}(?:\.\d+)?(?![\w.])"
+)
+_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)(?:"
+    r"[\"']?(?:access[_ -]?token|refresh[_ -]?token|id[_ -]?token|client[_ -]?secret|"
+    r"api[_ -]?key|session[_ -]?(?:id|token)|token|secret|credential|authorization|"
+    r"bearer|password|passcode|pin|code)[\"']?\s*(?::|=)\s*"
+    r"[\"']?[^\"'\s,;&}]+[\"']?"
+    r"|\b(?:token|secret|credential|authorization|bearer|password|passcode|pin|code)"
+    r"\s+[^\s,;&}]+"
+    r")"
+)
 _SAFE_DIAGNOSTIC_KEYS = ("error", "error_description", "message")
+_MAX_DIAGNOSTIC_BODY_BYTES = 64 * 1024
 
 
 class _RejectRedirects(HTTPRedirectHandler):
@@ -334,9 +351,10 @@ class _TeslaRequestLog:
         content_type = _safe_content_type(response.content_type)
         if content_type is not None:
             fields["response_content_type"] = content_type
-        summary = _diagnostic_summary(response, self.secret_values)
-        if summary:
-            fields["response_summary"] = summary
+        if _should_summarize_response(response, self.fields):
+            summary = _diagnostic_summary(response, self.secret_values)
+            if summary:
+                fields["response_summary"] = summary
         _log_event(fields)
 
     def failed(self, category: str) -> None:
@@ -466,10 +484,19 @@ def _collect_sensitive_values(value: object, output: set[str], *, key: str | Non
         for nested in value:
             _collect_sensitive_values(nested, output, key=key)
         return
-    if key in _SENSITIVE_REQUEST_KEYS and isinstance(value, (str, int, float)):
+    if isinstance(value, str) and (len(value) >= 4 or key in _SENSITIVE_REQUEST_KEYS):
+        output.add(value)
+        return
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
         encoded = str(value)
-        if len(encoded) >= 4:
+        if len(encoded) >= 4 or key in _SENSITIVE_REQUEST_KEYS:
             output.add(encoded)
+
+
+def _should_summarize_response(response: HttpResponse, fields: dict[str, object]) -> bool:
+    if len(response.body) > _MAX_DIAGNOSTIC_BODY_BYTES:
+        return False
+    return not 200 <= response.status < 300 or fields.get("operation") in COMMAND_NAMES
 
 
 def _diagnostic_summary(
@@ -509,8 +536,10 @@ def _safe_diagnostic_value(value: object, secret_values: tuple[str, ...]) -> obj
     safe = _JWT_PATTERN.sub("[REDACTED_TOKEN]", safe)
     safe = _VIN_PATTERN.sub("[REDACTED_VIN]", safe)
     safe = _URL_PATTERN.sub("[REDACTED_URL]", safe)
-    safe = _COORDINATE_PATTERN.sub("[REDACTED_COORDINATE]", safe)
-    safe = _LABELED_SECRET_PATTERN.sub(r"\1 [REDACTED]", safe)
+    safe = _COORDINATE_PAIR_PATTERN.sub("[REDACTED_COORDINATE]", safe)
+    safe = _LABELED_COORDINATE_PATTERN.sub("[REDACTED_COORDINATE]", safe)
+    safe = _PRECISE_COORDINATE_PATTERN.sub("[REDACTED_COORDINATE]", safe)
+    safe = _CREDENTIAL_PATTERN.sub("[REDACTED_CREDENTIAL]", safe)
     return safe[:256]
 
 

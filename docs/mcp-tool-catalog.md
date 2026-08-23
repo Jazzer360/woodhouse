@@ -79,7 +79,8 @@ tools:
 - never audit PINs, passwords, location coordinates, tokens, VINs, calendar
   payloads, or response bodies.
 
-Every MCP read result and command result includes a generated `correlation_id`.
+Every MCP read result and command result, including expected validation and
+Tesla failure results, includes a generated `correlation_id`.
 The gateway propagates that ID into structured `tesla_api_call` transport events
 for each associated direct Tesla or command-proxy network attempt. Automatic
 wake calls use their separate `wake_correlation_id`; preflight checks remain
