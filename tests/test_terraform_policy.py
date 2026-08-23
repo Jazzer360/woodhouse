@@ -238,6 +238,7 @@ def test_certificate_renewal_is_isolated_scheduled_and_fail_closed() -> None:
     )
     assert 'resource "google_cloud_run_v2_job" "telemetry_certificate_renewer"' in renewal
     assert 'resource "google_cloud_scheduler_job" "telemetry_certificate_renewal"' in renewal
+    assert "Twice-daily unattended ACME check" in renewal
     assert "paused           = var.telemetry_certificate_schedule_paused" in renewal
     assert "length(var.monitoring_notification_channels) > 0" in renewal
     assert (
