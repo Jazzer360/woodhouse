@@ -17,6 +17,7 @@ SYNTHETIC_TABLE = "raw_synthetic_telemetry"
 QUARANTINE_TABLE = "raw_unknown_telemetry"
 UNKNOWN_VIN = "SYNTHETIC-NON-VEHICLE-UNKNOWN-VIN"
 PROJECT_ID = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+MAX_BYTES_BILLED = 10 * 1024 * 1024
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -124,7 +125,7 @@ def _count_fixture(
                 ScalarQueryParameter("earliest", "TIMESTAMP", earliest),
                 ScalarQueryParameter("value", "STRING", value),
             ],
-            maximum_bytes_billed=10_000_000,
+            maximum_bytes_billed=MAX_BYTES_BILLED,
             use_query_cache=False,
         ),
     )
@@ -153,7 +154,7 @@ def _count_retry_proof(
                 ScalarQueryParameter("earliest", "TIMESTAMP", earliest),
                 ScalarQueryParameter("fixture_id", "STRING", fixture_id),
             ],
-            maximum_bytes_billed=10_000_000,
+            maximum_bytes_billed=MAX_BYTES_BILLED,
             use_query_cache=False,
         ),
     )

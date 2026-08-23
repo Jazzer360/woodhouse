@@ -1,6 +1,7 @@
 """Narrow Google Cloud adapters for telemetry ingestion."""
 
 import re
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from hashlib import sha256
 
@@ -21,6 +22,7 @@ VEHICLES = "vehicles"
 ALLOWED_USERS = "allowed_users"
 FIXTURE_RETRIES = "telemetry_pipeline_fixtures"
 DATASET_ID = re.compile(r"^tesla_u_[a-z0-9_]{1,80}$")
+BIGQUERY_DIAGNOSTIC = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 
 
 class GooglePushTokenVerifier:
@@ -148,7 +150,7 @@ class BigQueryTelemetrySink:
         except Exception as exc:
             raise RetryableProcessingError("bigquery_append_failed") from exc
         if errors:
-            raise RetryableProcessingError("bigquery_append_rejected")
+            raise RetryableProcessingError(_bigquery_rejection_category(errors))
 
 
 class FirestoreFixtureRetryGate:
@@ -177,3 +179,25 @@ class FirestoreFixtureRetryGate:
 
 def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _bigquery_rejection_category(errors: Sequence[Mapping[str, object]]) -> str:
+    """Return safe schema/reason codes without logging rejected row values."""
+    diagnostics: set[str] = set()
+    for row_error in errors:
+        details = row_error.get("errors")
+        if not isinstance(details, list):
+            continue
+        for detail in details:
+            if not isinstance(detail, dict):
+                continue
+            reason = detail.get("reason")
+            location = detail.get("location")
+            if not isinstance(reason, str) or BIGQUERY_DIAGNOSTIC.fullmatch(reason) is None:
+                continue
+            diagnostic = reason
+            if isinstance(location, str) and BIGQUERY_DIAGNOSTIC.fullmatch(location) is not None:
+                diagnostic = f"{reason}@{location}"
+            diagnostics.add(diagnostic)
+    suffix = ",".join(sorted(diagnostics)) or "unknown"
+    return f"bigquery_append_rejected:{suffix}"

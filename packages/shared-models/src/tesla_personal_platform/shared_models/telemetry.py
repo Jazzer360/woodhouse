@@ -1,5 +1,6 @@
 """Shared append-only telemetry schema and transport models."""
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
@@ -118,7 +119,9 @@ class RawTelemetryEvent:
             "vin": self.vin,
             "tesla_vehicle_id": self.tesla_vehicle_id,
             "record_type": self.record_type,
-            "payload": self.payload,
+            # BigQuery's legacy streaming insert path expects a native JSON
+            # column as serialized JSON text rather than a nested record.
+            "payload": json.dumps(self.payload, separators=(",", ":"), sort_keys=True),
             "telemetry_config_version": self.telemetry_config_version,
             "telemetry_config_hash": self.telemetry_config_hash,
             "transport_message_id": self.transport_message_id,
