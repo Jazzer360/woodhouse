@@ -18,7 +18,9 @@ def test_edge_uses_pinned_official_receiver_and_no_custom_protocol() -> None:
 
 
 def test_edge_publishes_every_receiver_record_type_without_rate_filtering() -> None:
-    config = json.loads((ROOT / "services" / "telemetry-edge" / "config.json").read_text())
+    config = json.loads(
+        (ROOT / "infra" / "terraform" / "files" / "telemetry-edge-config.json").read_text()
+    )
 
     assert config["transmit_decoded_records"] is True
     assert config["rate_limit"]["enabled"] is False

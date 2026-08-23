@@ -41,7 +41,7 @@ resource "google_compute_instance" "telemetry_edge" {
     telemetry-edge-commit     = ""
     telemetry-edge-image      = ""
     telemetry-edge-config = jsonencode(merge(
-      jsondecode(file("${path.module}/../../services/telemetry-edge/config.json")),
+      jsondecode(file("${path.module}/files/telemetry-edge-config.json")),
       { pubsub = { gcp_project_id = var.project_id } }
     ))
     telemetry-edge-project-id      = var.project_id
