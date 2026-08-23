@@ -289,6 +289,20 @@ def test_unknown_subscription_is_never_treated_as_vehicle_authenticated() -> Non
     assert decoded.source_authentication == "untrusted_subscription"
 
 
+def test_untrusted_subscription_reason_survives_later_payload_validation() -> None:
+    body = push_body(
+        {"createdAt": "2026-08-20T01:02:03Z", "vin": "SPOOFED", "data": []},
+        {"vin": "VIN-A", "receivedat": "1787486400000"},
+        subscription="projects/test/subscriptions/untrusted",
+    )
+
+    decoded = decode_pubsub_push(body, now=NOW, source_policy=SOURCE_POLICY)
+
+    assert decoded.record_type == "unknown"
+    assert decoded.validation_error == "untrusted_pubsub_subscription"
+    assert decoded.source_authentication == "untrusted_subscription"
+
+
 class FakeBigQueryClient:
     def __init__(self, errors: list[dict[str, object]] | None = None) -> None:
         self.calls: list[tuple[str, list[dict[str, object]], list[None], int]] = []

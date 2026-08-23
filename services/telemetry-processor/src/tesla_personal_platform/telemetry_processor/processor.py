@@ -279,7 +279,7 @@ def decode_pubsub_push(
         source_authentication = "untrusted_subscription"
         validation_error = "untrusted_pubsub_subscription"
     if synthetic_fixture_id is None and record_type not in ALLOWED_RECORD_TYPES:
-        validation_error = "invalid_record_type"
+        validation_error = validation_error or "invalid_record_type"
 
     payload_vin = payload.get("vin")
     if (
@@ -289,7 +289,7 @@ def decode_pubsub_push(
         and payload_vin
         and payload_vin != vin
     ):
-        validation_error = "payload_vin_mismatch"
+        validation_error = validation_error or "payload_vin_mismatch"
 
     source_timestamp = _optional_timestamp(payload.get("createdAt"))
     if source_timestamp is None:

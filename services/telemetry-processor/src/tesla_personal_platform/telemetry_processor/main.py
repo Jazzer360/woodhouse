@@ -241,7 +241,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         processor, verifier, source_policy = build_runtime()
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         LOGGER.warning(
             json.dumps(
                 {

@@ -5,7 +5,10 @@ import json
 import threading
 from datetime import UTC, datetime
 from http.client import HTTPConnection
+from typing import Any
 
+import pytest
+from tesla_personal_platform.telemetry_processor import main as telemetry_main
 from tesla_personal_platform.telemetry_processor.main import (
     MAX_PUSH_BODY_BYTES,
     TelemetryHTTPServer,
@@ -137,3 +140,31 @@ def test_authenticated_delivery_without_content_length_is_acknowledged() -> None
 
     assert post(service, b"", omit_content_length=True) == 204
     assert service.calls == 0
+
+
+def test_invalid_source_policy_starts_in_retryable_awaiting_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def invalid_runtime() -> None:
+        raise ValueError("telemetry subscription policy is invalid")
+
+    class CapturingServer:
+        def __init__(self, address: object, processor: object, *args: object) -> None:
+            captured["address"] = address
+            captured["processor"] = processor
+
+        def serve_forever(self) -> None:
+            captured["served"] = True
+
+    monkeypatch.setattr(telemetry_main, "build_runtime", invalid_runtime)
+    monkeypatch.setattr(telemetry_main, "TelemetryHTTPServer", CapturingServer)
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    monkeypatch.setenv("PORT", "8080")
+
+    telemetry_main.main()
+
+    assert captured["address"] == ("127.0.0.1", 8080)
+    assert isinstance(captured["processor"], telemetry_main.AwaitingInfrastructureProcessor)
+    assert captured["served"] is True
