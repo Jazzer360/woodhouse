@@ -57,10 +57,9 @@ steps:
           gcloud compute instances add-metadata "$$instance" \
             --project="$PROJECT_ID" \
             --zone="${_ZONE}" \
-            --metadata="telemetry-edge-image=$$digest_image,telemetry-edge-commit=$COMMIT_SHA" \
-            --async
-          # The asynchronous metadata mutation can briefly leave the instance
-          # busy. Retry the asynchronous reset until Compute accepts it; the
+            --metadata="telemetry-edge-image=$$digest_image,telemetry-edge-commit=$COMMIT_SHA"
+          # The metadata mutation is synchronous. Retry the asynchronous reset
+          # if the instance is briefly busy; the
           # startup script then validates the exact metadata digest and commit.
           sleep 5
           reset_attempt=0

@@ -42,6 +42,9 @@ def test_main_delivery_allowlists_cloud_run_and_digest_pinned_edge() -> None:
     assert "compute instances add-metadata" in source
     assert "compute instances reset" in source
     assert "get-guest-attributes" in source
+    add_metadata_start = source.index("gcloud compute instances add-metadata")
+    add_metadata_end = source.index("# The metadata mutation is synchronous", add_metadata_start)
+    assert "--async" not in source[add_metadata_start:add_metadata_end]
     assert "terraform apply" not in source
 
 
