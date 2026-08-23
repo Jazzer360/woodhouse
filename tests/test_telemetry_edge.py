@@ -33,6 +33,7 @@ def test_edge_publishes_every_receiver_record_type_without_rate_filtering() -> N
         "alerts": "pubsub",
         "errors": "pubsub",
     }
+    assert "pubsub" not in config
     assert config["monitoring"]["prometheus_metrics_port"] == 9090
 
 
@@ -63,3 +64,14 @@ def test_vm_delivery_requires_digest_health_check_and_rollback() -> None:
     assert 'report_status "success:$DESIRED_COMMIT"' in script
     assert "--read-only" in script
     assert "--cap-drop=ALL" in script
+    assert "metadata telemetry-edge-config" in script
+    assert "src=$CONFIG_FILE,dst=/etc/fleet-telemetry/config.json,readonly" in script
+
+
+def test_terraform_injects_the_deployment_project_into_receiver_config() -> None:
+    compute = (ROOT / "infra" / "terraform" / "compute.tf").read_text()
+    dockerfile = (ROOT / "services" / "telemetry-edge" / "Dockerfile").read_text()
+
+    assert "telemetry-edge-config = jsonencode(merge(" in compute
+    assert "gcp_project_id = var.project_id" in compute
+    assert "COPY services/telemetry-edge/config.json" not in dockerfile

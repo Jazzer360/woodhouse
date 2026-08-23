@@ -11,9 +11,6 @@
     "alerts": "pubsub",
     "errors": "pubsub"
   },
-  "pubsub": {
-    "gcp_project_id": "woodhouse-506215"
-  },
   "monitoring": {
     "prometheus_metrics_host": "0.0.0.0",
     "prometheus_metrics_port": 9090

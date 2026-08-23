@@ -33,13 +33,17 @@ resource "google_compute_instance" "telemetry_edge" {
   }
 
   metadata = {
-    block-project-ssh-keys         = "TRUE"
-    enable-guest-attributes        = "TRUE"
-    enable-oslogin                 = "TRUE"
-    google-logging-enabled         = "true"
-    google-monitoring-enabled      = "true"
-    telemetry-edge-commit          = ""
-    telemetry-edge-image           = ""
+    block-project-ssh-keys    = "TRUE"
+    enable-guest-attributes   = "TRUE"
+    enable-oslogin            = "TRUE"
+    google-logging-enabled    = "true"
+    google-monitoring-enabled = "true"
+    telemetry-edge-commit     = ""
+    telemetry-edge-image      = ""
+    telemetry-edge-config = jsonencode(merge(
+      jsondecode(file("${path.module}/../../services/telemetry-edge/config.json")),
+      { pubsub = { gcp_project_id = var.project_id } }
+    ))
     telemetry-edge-project-id      = var.project_id
     telemetry-edge-region          = var.region
     telemetry-edge-repository      = google_artifact_registry_repository.platform.repository_id

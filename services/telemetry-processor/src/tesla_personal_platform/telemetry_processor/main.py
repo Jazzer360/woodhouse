@@ -126,7 +126,12 @@ class TelemetryHandler(BaseHTTPRequestHandler):
         except ValueError:
             length = -1
         if length < 1 or length > MAX_PUSH_BODY_BYTES:
-            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "invalid_size"})
+            # Authentication has already succeeded, so this is an invalid
+            # Pub/Sub envelope rather than an untrusted request. Acknowledge it
+            # as poison to prevent a permanent retry backlog.
+            self._event("pubsub_push_rejected", outcome="invalid", category="invalid_size")
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.end_headers()
             return None
         return length
 

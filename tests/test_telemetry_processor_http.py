@@ -6,7 +6,10 @@ import threading
 from datetime import UTC, datetime
 from http.client import HTTPConnection
 
-from tesla_personal_platform.telemetry_processor.main import TelemetryHTTPServer
+from tesla_personal_platform.telemetry_processor.main import (
+    MAX_PUSH_BODY_BYTES,
+    TelemetryHTTPServer,
+)
 from tesla_personal_platform.telemetry_processor.processor import (
     IncomingTelemetry,
     ProcessingResult,
@@ -54,7 +57,13 @@ def valid_push() -> bytes:
     ).encode()
 
 
-def post(processor: StubProcessor, body: bytes) -> int:
+def post(
+    processor: StubProcessor,
+    body: bytes,
+    *,
+    content_length: int | None = None,
+    omit_content_length: bool = False,
+) -> int:
     server = TelemetryHTTPServer(
         ("127.0.0.1", 0),
         processor,  # type: ignore[arg-type]
@@ -64,15 +73,19 @@ def post(processor: StubProcessor, body: bytes) -> int:
     thread.start()
     try:
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
-        connection.request(
-            "POST",
-            "/pubsub/push",
-            body=body,
-            headers={
-                "Authorization": "Bearer signed-token",
-                "Content-Type": "application/json",
-            },
-        )
+        headers = {
+            "Authorization": "Bearer signed-token",
+            "Content-Type": "application/json",
+        }
+        if omit_content_length:
+            connection.putrequest("POST", "/pubsub/push")
+            for name, value in headers.items():
+                connection.putheader(name, value)
+            connection.endheaders()
+        else:
+            if content_length is not None:
+                headers["Content-Length"] = str(content_length)
+            connection.request("POST", "/pubsub/push", body=body, headers=headers)
         response = connection.getresponse()
         response.read()
         return response.status
@@ -100,4 +113,18 @@ def test_authenticated_malformed_poison_wrapper_is_logged_and_acknowledged() -> 
     service = StubProcessor()
 
     assert post(service, b"not-json") == 204
+    assert service.calls == 0
+
+
+def test_authenticated_oversized_poison_delivery_is_acknowledged() -> None:
+    service = StubProcessor()
+
+    assert post(service, b"x", content_length=MAX_PUSH_BODY_BYTES + 1) == 204
+    assert service.calls == 0
+
+
+def test_authenticated_delivery_without_content_length_is_acknowledged() -> None:
+    service = StubProcessor()
+
+    assert post(service, b"", omit_content_length=True) == 204
     assert service.calls == 0

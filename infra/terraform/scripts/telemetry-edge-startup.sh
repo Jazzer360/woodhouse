@@ -5,6 +5,8 @@ METADATA_ROOT="http://metadata.google.internal/computeMetadata/v1"
 METADATA_HEADER="Metadata-Flavor: Google"
 STATE_DIR="/var/lib/telemetry-edge"
 TLS_DIR="$STATE_DIR/tls"
+CONFIG_DIR="$STATE_DIR/config"
+CONFIG_FILE="$CONFIG_DIR/config.json"
 CONTAINER_NAME="telemetry-edge"
 STATUS_REPORTED="false"
 
@@ -69,6 +71,7 @@ run_receiver() {
     --publish 0.0.0.0:443:443 \
     --publish 127.0.0.1:8080:8080 \
     --publish 127.0.0.1:9090:9090 \
+    --mount "type=bind,src=$CONFIG_FILE,dst=/etc/fleet-telemetry/config.json,readonly" \
     --mount "type=bind,src=$TLS_DIR,dst=/etc/fleet-telemetry/tls,readonly" \
     --label "tpp.component=telemetry-edge" \
     "$image" >/dev/null
@@ -86,8 +89,8 @@ wait_for_health() {
   done
 }
 
-mkdir -p "$TLS_DIR"
-chmod 0750 "$STATE_DIR" "$TLS_DIR"
+mkdir -p "$TLS_DIR" "$CONFIG_DIR"
+chmod 0750 "$STATE_DIR" "$TLS_DIR" "$CONFIG_DIR"
 
 PROJECT_ID="$(metadata telemetry-edge-project-id)"
 REGION="$(metadata telemetry-edge-region)"
@@ -116,6 +119,15 @@ if [ "${#DESIRED_COMMIT}" -ne 40 ] || printf '%s' "$DESIRED_COMMIT" | grep -q '[
   report_status "failed:invalid-commit"
   exit 1
 fi
+
+temporary_config="$CONFIG_FILE.new"
+umask 077
+metadata telemetry-edge-config >"$temporary_config"
+test -s "$temporary_config"
+grep -F "\"gcp_project_id\":\"$PROJECT_ID\"" "$temporary_config" >/dev/null
+chown 65532:65532 "$temporary_config"
+chmod 0440 "$temporary_config"
+mv -f "$temporary_config" "$CONFIG_FILE"
 
 TOKEN="$(access_token)"
 test -n "$TOKEN"

@@ -54,6 +54,12 @@ the practical boundary. Revisit a separately identified signing service if the
 deployment becomes broadly multi-tenant. The telemetry processor and
 telemetry-edge receive none of the command-proxy secrets.
 
+Terraform derives the telemetry receiver's runtime JSON from the checked-in
+base configuration, injects the active `project_id`, and passes it through
+trusted instance metadata. The VM writes and mounts that generated file
+read-only. The digest-pinned container therefore cannot retain a hard-coded
+Pub/Sub project that differs from the infrastructure receiving its records.
+
 The `tpp-user-admin` service account is keyless and used only through operator
 impersonation. It can write Firestore allowlist entities, create BigQuery
 datasets, and update dataset metadata/ACLs through a custom role containing only
