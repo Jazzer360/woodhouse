@@ -7,6 +7,7 @@ STATE_DIR="/var/lib/telemetry-edge"
 TLS_DIR="$STATE_DIR/tls"
 CONFIG_DIR="$STATE_DIR/config"
 CONFIG_FILE="$CONFIG_DIR/config.json"
+DOCKER_CONFIG_DIR="/run/telemetry-edge-docker"
 CONTAINER_NAME="telemetry-edge"
 STATUS_REPORTED="false"
 
@@ -26,8 +27,14 @@ report_status() {
   STATUS_REPORTED="true"
 }
 
+cleanup() {
+  rm -f "$DOCKER_CONFIG_DIR/config.json"
+  rmdir "$DOCKER_CONFIG_DIR" 2>/dev/null || true
+}
+
 report_unhandled_failure() {
   exit_code="$?"
+  cleanup
   if [ "$exit_code" -ne 0 ] && [ "$STATUS_REPORTED" != "true" ]; then
     guest_status "failed:${DESIRED_COMMIT:-unknown}:startup-error" || true
   fi
@@ -134,10 +141,14 @@ test -n "$TOKEN"
 secret_to_file "$TLS_CERT_SECRET" "$TLS_DIR/fullchain.pem" "$TOKEN"
 secret_to_file "$TLS_KEY_SECRET" "$TLS_DIR/privkey.pem" "$TOKEN"
 
+mkdir -p "$DOCKER_CONFIG_DIR"
+chmod 0700 "$DOCKER_CONFIG_DIR"
+export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
 printf '%s' "$TOKEN" | docker login --username oauth2accesstoken --password-stdin \
   "https://$REGION-docker.pkg.dev" >/dev/null
 unset TOKEN
 docker pull "$DESIRED_IMAGE" >/dev/null
+cleanup
 
 PREVIOUS_IMAGE=""
 if docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
