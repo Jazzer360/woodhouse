@@ -72,7 +72,7 @@ def test_vm_delivery_requires_digest_health_check_and_rollback() -> None:
     assert 'export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"' in script
     assert 'rm -f "$DOCKER_CONFIG_DIR/config.json"' in script
     assert "/root/.docker" not in script
-    assert '$STATE_DIR/docker' not in script
+    assert "$STATE_DIR/docker" not in script
 
 
 def test_terraform_injects_the_deployment_project_into_receiver_config() -> None:
