@@ -58,7 +58,7 @@ steps:
             --project="$PROJECT_ID" \
             --zone="${_ZONE}" \
             --metadata="telemetry-edge-image=$$digest_image,telemetry-edge-commit=$COMMIT_SHA"
-          # The metadata mutation is synchronous. Retry the asynchronous reset
+          # The metadata mutation and reset are synchronous. Retry the reset
           # if the instance is briefly busy; the
           # startup script then validates the exact metadata digest and commit.
           sleep 5
@@ -66,7 +66,7 @@ steps:
           until gcloud compute instances reset "$$instance" \
             --project="$PROJECT_ID" \
             --zone="${_ZONE}" \
-            --async --quiet; do
+            --quiet; do
             reset_attempt="$$(($$reset_attempt + 1))"
             if test "$$reset_attempt" -ge 12; then
               echo "Could not reset telemetry edge after metadata update" >&2
