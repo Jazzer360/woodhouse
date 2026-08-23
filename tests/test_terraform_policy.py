@@ -205,6 +205,17 @@ def test_telemetry_edge_has_only_receiver_topics_and_gated_tls_secrets() -> None
     assert '"telemetry_edge_tls_key"' in edge_secret_binding
     assert "tesla_client_secret" not in edge_secret_binding
     assert 'permissions = ["pubsub.topics.get"]' in iam
+    edge_act_as_start = iam.index(
+        'resource "google_service_account_iam_member" "deployer_edge_runtime_user"'
+    )
+    edge_act_as_end = iam.index(
+        'resource "google_service_account_iam_member" "cloud_build_identity_token_creator"'
+    )
+    edge_act_as = iam[edge_act_as_start:edge_act_as_end]
+    assert "var.enable_telemetry_edge_delivery ? 1 : 0" in edge_act_as
+    assert 'platform["telemetry_edge"]' in edge_act_as
+    assert 'role               = "roles/iam.serviceAccountUser"' in edge_act_as
+    assert 'platform["cloud_build_deployer"]' in edge_act_as
 
 
 def test_abandoned_oauth_states_and_sessions_have_firestore_ttl() -> None:

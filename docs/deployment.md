@@ -128,7 +128,7 @@ self-reference cycle.
 | `tpp-telemetry-edge` | Four-topic publisher/inspector; platform-repository reader; gated TLS-secret reader; log and metric writer |
 | `tpp-pubsub-push` | Invoker on telemetry-processor only |
 | `tpp-build-validator` | Log writer only; no deploy, secret, or data permission |
-| `tpp-build-deployer` | Artifact Registry writer, Cloud Run developer, `actAs` on Cloud Run runtimes, and—when enabled—metadata/reset/health access only for `tpp-telemetry-edge` |
+| `tpp-build-deployer` | Artifact Registry writer, Cloud Run developer, `actAs` on Cloud Run runtimes, and—when enabled—`actAs` plus metadata/reset/health access only for `tpp-telemetry-edge` |
 | `tpp-user-admin` | Firestore user; BigQuery dataset/raw-table creator and metadata updater; no table-data access |
 | `tpp-partner-admin` | Secret accessor only for Tesla client-secret and public-key containers; no project role or runtime impersonation |
 | `tpp-dataset-owner` | Required direct owner on per-user datasets; no project roles, keys, or impersonation binding |
