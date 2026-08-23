@@ -13,6 +13,7 @@ from tesla_personal_platform.telemetry_processor.gcp import (
     BigQueryTelemetrySink,
     FirestoreVehicleRegistry,
 )
+from tesla_personal_platform.telemetry_processor.operator_check import MAX_BYTES_BILLED
 from tesla_personal_platform.telemetry_processor.processor import (
     IncomingTelemetry,
     RetryableProcessingError,
@@ -22,6 +23,10 @@ from tesla_personal_platform.telemetry_processor.processor import (
 )
 
 NOW = datetime(2026, 8, 23, 12, tzinfo=UTC)
+
+
+def test_operator_proof_uses_bigquery_minimum_bytes_guardrail() -> None:
+    assert MAX_BYTES_BILLED == 10_485_760
 
 
 class FakeRegistry:
