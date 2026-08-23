@@ -113,7 +113,7 @@ steps:
           deployed_image="$$(gcloud run jobs describe "$$job" \
             --project="$PROJECT_ID" \
             --region="${_REGION}" \
-            --format='value(template.template.containers[0].image)')"
+            --format='value(spec.template.spec.template.spec.containers[0].image)')"
           test "$$deployed_image" = "$$digest_image"
           echo "deployed_service=certificate-renewer commit=$COMMIT_SHA digest=$$digest"
           exit 0
