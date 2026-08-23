@@ -221,15 +221,22 @@ class LocalCommandProxyTransport:
         if parsed.scheme != "https" or parsed.hostname not in _TESLA_API_HOSTS:
             raise ValueError("Command source URL requires an approved Tesla HTTPS host")
         path_parts = parsed.path.split("/")
+        typed_vehicle_command = (
+            len(path_parts) == 7
+            and path_parts[1:4] == ["api", "1", "vehicles"]
+            and path_parts[5] == "command"
+            and path_parts[6] in COMMAND_NAMES
+        )
+        signed_telemetry_config = parsed.path == "/api/1/vehicles/fleet_telemetry_config"
         if (
             method != "POST"
             or parsed.query
-            or len(path_parts) != 7
-            or path_parts[1:4] != ["api", "1", "vehicles"]
-            or path_parts[5] != "command"
-            or path_parts[6] not in COMMAND_NAMES
+            or not (typed_vehicle_command or signed_telemetry_config)
         ):
-            raise ValueError("Vehicle Command Proxy transport accepts typed commands only")
+            raise ValueError(
+                "Vehicle Command Proxy transport accepts typed commands and signed telemetry "
+                "configuration only"
+            )
 
         request_headers = dict(headers or {})
         data = json.dumps(json_body or {}, separators=(",", ":")).encode("utf-8")

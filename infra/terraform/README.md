@@ -21,6 +21,20 @@ Enable `enable_tesla_command_proxy` only after adding the separate proxy TLS
 certificate/key secret versions and selecting the official proxy image by full
 digest. See [deployment notes](../../docs/deployment.md#phase-6-vehicle-command-proxy-deployment).
 
+Phase 8 also creates the empty `telemetry-server-ca-profile` and
+`telemetry-trust-readiness` containers.
+Populate it with CA-only PEM using
+`scripts/admin/prepare-telemetry-trust-profile` before enabling
+`enable_fleet_telemetry_control`, and set the matching public
+`telemetry_trust_profile_id`. The certificate renewer validates every candidate
+against these exact bytes; the gateway uses the same profile in the
+per-vehicle desired configuration.
+The readiness value is a non-secret, hash-bound server-cutover gate; it must
+not be marked ready for a later CA/hostname migration until every required,
+explicitly opted-in vehicle has synchronized. Bootstrap with the certificate
+renewal schedule paused, populate both secret containers, run one manual
+renewal, and only then unpause the schedule.
+
 Set `cloud_build_repository` to the existing regional Cloud Build v2 repository
 resource. Terraform manages the PR and main-branch triggers but deliberately
 does not own the interactive GitHub App authorization/connection. Import live

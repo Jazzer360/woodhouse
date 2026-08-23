@@ -150,6 +150,15 @@ No real vehicle Fleet Telemetry configuration is applied in this phase.
 
 ## Phase 8 — Broad Fleet Telemetry configuration
 
+Implementation status: `broad-v1` is implemented from the 239-field documented
+schema with 225 passenger-vehicle fields, numeric/location deltas,
+per-vehicle capability projection, safe exact diff, signed
+apply/verify/repair/remove, error inspection, audit, separate trust hashes, and
+a canary-first opted-in transport reconciler. The first real vehicle remains
+behind the required operator checkpoint in
+[`fleet-telemetry-configuration.md`](fleet-telemetry-configuration.md); CI never
+applies configuration.
+
 **Goal:** Configure each vehicle to send a broad, useful telemetry set at rational source intervals.
 
 **Prompt:** `docs/prompt-pack.md` → **Prompt 8 — Broad Fleet Telemetry configuration**

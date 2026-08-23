@@ -82,6 +82,9 @@ def settings() -> renewal.Settings:
         key_secret="key",
         state_secret="state",
         release_secret="release",
+        trust_profile_secret="trust",
+        trust_profile_id="lets-encrypt-2026",
+        trust_readiness_secret="trust-readiness",
     )
 
 
@@ -128,6 +131,22 @@ def certificate_material(tmp_path: Path, hostname: str = HOSTNAME) -> renewal.Ce
     return renewal._load_and_validate_material(tmp_path, hostname, minimum_days=45)
 
 
+def trust_pem(material: renewal.CertificateMaterial) -> bytes:
+    return bytes(renewal.PEM_CERTIFICATE.findall(material.fullchain)[-1])
+
+
+def trust_readiness(material: renewal.CertificateMaterial) -> bytes:
+    profile = renewal._load_trust_profile(settings().trust_profile_id, trust_pem(material))
+    return json.dumps(
+        {
+            "ready": True,
+            "required_vehicle_count": 0,
+            "trust_profile_id": profile.profile_id,
+            "trust_profile_sha256": profile.sha256,
+        }
+    ).encode()
+
+
 def test_certificate_validation_requires_hostname_chain_and_matching_key(tmp_path: Path) -> None:
     material = certificate_material(tmp_path)
 
@@ -154,7 +173,12 @@ def test_new_release_is_published_only_after_pair_and_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     material = certificate_material(tmp_path / "certificate")
-    secrets = FakeSecrets()
+    secrets = FakeSecrets(
+        {
+            "trust": [trust_pem(material)],
+            "trust-readiness": [trust_readiness(material)],
+        }
+    )
     deployed: list[tuple[str, str]] = []
     monkeypatch.setattr(renewal, "_run_certbot", lambda *args, **kwargs: None)
     monkeypatch.setattr(renewal, "_load_and_validate_material", lambda *args, **kwargs: material)
@@ -167,7 +191,14 @@ def test_new_release_is_published_only_after_pair_and_state(
         ),
     )
 
-    outcome = renewal.renew_certificate(settings(), secrets, UnusedSession())
+    outcome = renewal.renew_certificate(
+        settings(),
+        secrets,
+        UnusedSession(),
+        runner=lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"", stderr=b""
+        ),
+    )
 
     assert outcome == "renewed"
     assert secrets.added == ["cert", "key", "state", "release"]
@@ -176,6 +207,8 @@ def test_new_release_is_published_only_after_pair_and_state(
     assert manifest["key_version"] == "1"
     assert manifest["state_version"] == "1"
     assert manifest["leaf_sha256"] == material.leaf_sha256
+    assert manifest["trust_profile_id"] == "lets-encrypt-2026"
+    assert len(manifest["trust_profile_sha256"]) == 64
     assert deployed == [("1", material.leaf_sha256)]
 
 
@@ -191,10 +224,13 @@ def test_unchanged_certificate_does_not_create_secret_versions(
             cert_version="7",
             key_version="9",
             state_version="4",
+            trust_profile=renewal._load_trust_profile(
+                configured.trust_profile_id, trust_pem(material)
+            ),
         ),
         "3",
     )
-    secrets = FakeSecrets({"release": [active.data]})
+    secrets = FakeSecrets({"release": [active.data], "trust": [trust_pem(material)]})
     deployed: list[str] = []
     monkeypatch.setattr(renewal, "_run_certbot", lambda *args, **kwargs: None)
     monkeypatch.setattr(renewal, "_load_and_validate_material", lambda *args, **kwargs: material)
@@ -204,11 +240,39 @@ def test_unchanged_certificate_does_not_create_secret_versions(
         lambda session, configured, *, release_version, **kwargs: deployed.append(release_version),
     )
 
-    outcome = renewal.renew_certificate(configured, secrets, UnusedSession())
+    outcome = renewal.renew_certificate(
+        configured,
+        secrets,
+        UnusedSession(),
+        runner=lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"", stderr=b""
+        ),
+    )
 
     assert outcome == "healthy"
     assert secrets.added == []
     assert deployed == ["1"]
+
+
+def test_changed_trust_profile_cannot_cut_over_without_matching_readiness(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    material = certificate_material(tmp_path / "certificate")
+    secrets = FakeSecrets({"trust": [trust_pem(material)]})
+    monkeypatch.setattr(renewal, "_run_certbot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(renewal, "_load_and_validate_material", lambda *args, **kwargs: material)
+
+    with pytest.raises(ValueError, match="cutover is not approved"):
+        renewal.renew_certificate(
+            settings(),
+            secrets,
+            UnusedSession(),
+            runner=lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"", stderr=b""
+            ),
+        )
+
+    assert secrets.added == []
 
 
 def test_reported_release_still_requires_public_certificate_match(

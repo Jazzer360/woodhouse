@@ -15,21 +15,27 @@ locals {
   }
 
   tesla_gateway_environment = {
-    TESLA_CLIENT_ID             = var.tesla_client_id
-    TESLA_APP_DOMAIN            = var.tesla_app_domain
-    TESLA_OAUTH_REDIRECT_URI    = var.tesla_oauth_redirect_uri
-    TESLA_INITIAL_AUDIENCE      = var.tesla_initial_audience
-    TESLA_ONBOARDING_ENABLED    = "true"
-    TESLA_COMMAND_PROXY_ENABLED = var.enable_tesla_command_proxy ? "true" : "false"
-    TESLA_COMMAND_PROXY_ORIGIN  = "https://localhost:4443"
-    TESLA_COMMAND_PROXY_CA_FILE = "/var/run/tpp-proxy-ca/tls.crt"
+    TESLA_CLIENT_ID                 = var.tesla_client_id
+    TESLA_APP_DOMAIN                = var.tesla_app_domain
+    TESLA_OAUTH_REDIRECT_URI        = var.tesla_oauth_redirect_uri
+    TESLA_INITIAL_AUDIENCE          = var.tesla_initial_audience
+    TESLA_ONBOARDING_ENABLED        = "true"
+    TESLA_COMMAND_PROXY_ENABLED     = var.enable_tesla_command_proxy ? "true" : "false"
+    TESLA_COMMAND_PROXY_ORIGIN      = "https://localhost:4443"
+    TESLA_COMMAND_PROXY_CA_FILE     = "/var/run/tpp-proxy-ca/tls.crt"
+    FLEET_TELEMETRY_CONTROL_ENABLED = var.enable_fleet_telemetry_control ? "true" : "false"
+    TELEMETRY_HOSTNAME              = var.telemetry_hostname
+    TELEMETRY_PORT                  = tostring(var.fleet_telemetry_port)
+    TELEMETRY_TRUST_PROFILE_ID      = coalesce(var.telemetry_trust_profile_id, "disabled")
   }
 
-  tesla_gateway_secret_environment = {
+  tesla_gateway_secret_environment = merge({
     TESLA_CLIENT_SECRET        = "tesla_client_secret"
     TESLA_PUBLIC_KEY_PEM       = "tesla_command_public_key"
     TESLA_TOKEN_ENCRYPTION_KEY = "tesla_token_encryption_key"
-  }
+    }, var.enable_fleet_telemetry_control ? {
+    TELEMETRY_SERVER_CA_PEM = "telemetry_server_ca_profile"
+  } : {})
 
   platform_oidc_environment = {
     PLATFORM_OIDC_ISSUER = (
@@ -353,6 +359,15 @@ resource "google_cloud_run_v2_service" "platform" {
         )
       )
       error_message = "enable_tesla_command_proxy requires Tesla onboarding and a digest-pinned official proxy image."
+    }
+
+    precondition {
+      condition = !var.enable_fleet_telemetry_control || (
+        var.enable_tesla_command_proxy &&
+        var.enable_telemetry_edge_delivery &&
+        var.telemetry_trust_profile_id != null
+      )
+      error_message = "Fleet Telemetry control requires the command proxy, deployed edge, and a trust profile ID."
     }
   }
 

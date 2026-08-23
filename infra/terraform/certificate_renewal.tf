@@ -70,6 +70,18 @@ resource "google_cloud_run_v2_job" "telemetry_certificate_renewer" {
           value = google_secret_manager_secret.platform["telemetry_edge_tls_release"].secret_id
         }
         env {
+          name  = "TELEMETRY_TRUST_PROFILE_SECRET"
+          value = google_secret_manager_secret.platform["telemetry_server_ca_profile"].secret_id
+        }
+        env {
+          name  = "TELEMETRY_TRUST_PROFILE_ID"
+          value = var.telemetry_trust_profile_id
+        }
+        env {
+          name  = "TELEMETRY_TRUST_READINESS_SECRET"
+          value = google_secret_manager_secret.platform["telemetry_trust_readiness"].secret_id
+        }
+        env {
           name = "CLOUDFLARE_API_TOKEN"
           value_source {
             secret_key_ref {
@@ -95,8 +107,9 @@ resource "google_cloud_run_v2_job" "telemetry_certificate_renewer" {
         var.enable_telemetry_edge_delivery &&
         var.telemetry_certificate_acme_email != null &&
         length(trimspace(var.telemetry_certificate_acme_email)) > 0
+        && var.telemetry_trust_profile_id != null
       )
-      error_message = "Certificate automation requires enabled telemetry-edge delivery and telemetry_certificate_acme_email."
+      error_message = "Certificate automation requires edge delivery, ACME email, and a trust profile ID."
     }
   }
 

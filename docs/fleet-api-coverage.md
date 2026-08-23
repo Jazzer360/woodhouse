@@ -1,9 +1,10 @@
 # Tesla Fleet API Coverage Contract
 
-**Audit date:** 2026-08-22
+**Audit date:** 2026-08-23
 **Vehicle command count on Tesla's current page:** 72
 
-**Phase 5 full audit:** 2026-08-22. The current official Vehicle Endpoints,
+**Phase 5 full audit:** 2026-08-22. **Phase 8 telemetry re-audit:**
+2026-08-23. The current official Vehicle Endpoints,
 Vehicle Commands, User Endpoints, Partner Endpoints, and Charging Endpoints
 pages and their published endpoint schema were compared with every row below.
 The documented surface remains 22 vehicle endpoint operations, 4 user
@@ -22,8 +23,10 @@ This document is a completeness contract for the typed Tesla client and MCP surf
 typed-client row, plus the three `Compatibility` rows directed by this matrix.
 Phase 6 maps every `MCP` row to an explicit typed tool, integrates the official
 Vehicle Command Proxy, and keeps `Internal`, `Excluded`, and compatibility-only
-operations off the MCP surface. Phase 8 remains responsible for applying broad
-Fleet Telemetry configuration.
+operations off the MCP surface. Phase 8 implements authenticated per-vehicle
+inspection, exact diff, signed apply/repair, verification, error inspection,
+removal, and transport-trust reconciliation. These administrative writes remain
+off the MCP tool surface and are never invoked by CI.
 
 Before implementing or declaring Fleet API work complete, re-audit the current official pages:
 

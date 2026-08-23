@@ -220,6 +220,23 @@ then requires the exact Terraform-owned fleet subscription associated with the
 record type. The operator fixture subscription requires its bounded synthetic
 marker and can never enter a user dataset as vehicle telemetry.
 
+Phase 8 keeps telemetry configuration writes in the authenticated control
+plane. The browser session supplies only an internal vehicle selector and an
+exact, expiring-by-drift configuration hash; Firestore re-resolves ownership,
+Tesla OAuth scopes, active status, Virtual Key pairing, and reported Fleet
+Telemetry client capability before any call. Each apply contains exactly one
+server-resolved VIN, is signed through the official Vehicle Command Proxy, and
+is audited before the Tesla write. A successful state is persisted only after
+Tesla reports `synced=true`, the read-back configuration matches exactly, and
+no current relevant telemetry errors are present.
+
+Vehicle trust contains only a public CA bundle. The expiring server leaf and
+all private keys are excluded from `telemetry-server-ca-profile`. The gateway
+may read that public trust profile but the certificate-renewal job receives no
+Tesla OAuth credentials or vehicle-command key. A separate non-secret readiness
+manifest gates a real CA/hostname migration; ordinary compatible leaf renewal
+cannot trigger a Tesla configuration call.
+
 Internet scanners and arbitrary clients can reach the public TCP socket, but a
 client with no Tesla-issued certificate, an invalid chain, or no verified leaf
 identity fails during the mTLS handshake before a telemetry record can be

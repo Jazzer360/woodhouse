@@ -12,6 +12,8 @@ locals {
     telemetry_edge_tls_key       = "telemetry-edge-tls-key"
     telemetry_edge_tls_release   = "telemetry-edge-tls-release"
     telemetry_acme_state         = "telemetry-acme-state"
+    telemetry_server_ca_profile  = "telemetry-server-ca-profile"
+    telemetry_trust_readiness    = "telemetry-trust-readiness"
     cloudflare_dns_api_token     = "cloudflare-dns-api-token"
     webhook_hmac_key             = "webhook-hmac-key"
   }
@@ -35,6 +37,8 @@ resource "google_secret_manager_secret_iam_member" "certificate_renewer_accessor
     "cloudflare_dns_api_token",
     "telemetry_acme_state",
     "telemetry_edge_tls_release",
+    "telemetry_server_ca_profile",
+    "telemetry_trust_readiness",
   ]) : toset([])
 
   project   = var.project_id
@@ -82,7 +86,8 @@ resource "google_secret_manager_secret_iam_member" "mcp_gateway_accessor" {
     "tesla_client_secret",
     "tesla_command_public_key",
     "tesla_token_encryption_key",
-  ], var.enable_platform_oidc ? ["platform_oidc_client_secret"] : []))
+    ], var.enable_platform_oidc ? ["platform_oidc_client_secret"] : [],
+  var.enable_fleet_telemetry_control ? ["telemetry_server_ca_profile"] : []))
 
   project   = var.project_id
   secret_id = google_secret_manager_secret.platform[each.value].secret_id

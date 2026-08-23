@@ -32,7 +32,7 @@ class FleetTelemetryConfig(_DataclassPayload):
     ca: str = field(repr=False)
     fields: dict[str, FleetTelemetryField] = field(repr=False)
     port: int = 443
-    alert_types: tuple[Literal["service", "service-fix"], ...] = ()
+    alert_types: tuple[Literal["service", "customer", "service-fix"], ...] = ()
     exp: int | None = None
     delivery_policy: str | None = None
 

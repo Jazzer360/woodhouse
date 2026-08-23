@@ -181,6 +181,32 @@ def test_command_proxy_is_digest_pinned_non_ingress_and_kept_off_telemetry_edge(
     assert "tesla-command-private-key" not in compute
 
 
+def test_telemetry_trust_profile_is_shared_without_giving_renewer_tesla_secrets() -> None:
+    variables = (TERRAFORM_ROOT / "variables.tf").read_text(encoding="utf-8")
+    cloud_run = (TERRAFORM_ROOT / "cloud_run.tf").read_text(encoding="utf-8")
+    renewal = (TERRAFORM_ROOT / "certificate_renewal.tf").read_text(encoding="utf-8")
+    secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")
+
+    assert "enable_fleet_telemetry_control" in variables
+    assert "telemetry_trust_profile_id" in variables
+    assert 'telemetry_server_ca_profile  = "telemetry-server-ca-profile"' in secrets
+    assert 'telemetry_trust_readiness    = "telemetry-trust-readiness"' in secrets
+    assert 'TELEMETRY_SERVER_CA_PEM = "telemetry_server_ca_profile"' in cloud_run
+    assert 'name  = "TELEMETRY_TRUST_PROFILE_SECRET"' in renewal
+    assert 'name  = "TELEMETRY_TRUST_READINESS_SECRET"' in renewal
+    renewer_start = secrets.index(
+        'resource "google_secret_manager_secret_iam_member" "certificate_renewer_accessor"'
+    )
+    renewer_end = secrets.index(
+        'resource "google_secret_manager_secret_iam_member" "certificate_renewer_version_adder"'
+    )
+    renewer_access = secrets[renewer_start:renewer_end]
+    assert "telemetry_server_ca_profile" in renewer_access
+    assert "telemetry_trust_readiness" in renewer_access
+    assert "tesla_client_secret" not in renewer_access
+    assert "tesla_command_private_key" not in renewer_access
+
+
 def test_telemetry_edge_has_only_receiver_topics_and_gated_tls_secrets() -> None:
     pubsub = (TERRAFORM_ROOT / "pubsub.tf").read_text(encoding="utf-8")
     secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")

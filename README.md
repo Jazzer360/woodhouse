@@ -2,14 +2,15 @@
 
 Personal-first Tesla platform monorepo for authenticated live vehicle access,
 permanent telemetry history, generic analytics, and optional semantic events.
-The repository Markdown is the implementation source of truth. Through Phase 7
+The repository Markdown is the implementation source of truth. Through Phase 8
 the platform includes per-user authentication/Tesla OAuth, complete typed Fleet
 API coverage, a loopback-only official Vehicle Command Proxy, and the approved
 typed live MCP surface. The official Tesla Fleet Telemetry receiver and
-permanent, isolated raw-history pipeline are implemented; deployment is paused
-after the Phase 7 receiver/storage checkpoint and before any real vehicle
-configuration. Unattended public-certificate renewal has its own fail-closed
-enablement checkpoint.
+permanent, isolated raw-history pipeline and broad versioned per-vehicle
+configuration control plane are implemented. The first real vehicle remains
+paused at an explicit exact-diff operator checkpoint. Unattended
+public-certificate renewal is gated by the same stable CA trust profile used by
+vehicles.
 
 ## Source of truth
 
@@ -18,6 +19,7 @@ enablement checkpoint.
 - [Security model](docs/security-model.md)
 - [Tesla onboarding](docs/tesla-onboarding.md)
 - [Data and analytics](docs/data-and-analytics.md)
+- [Fleet Telemetry configuration](docs/fleet-telemetry-configuration.md)
 - [Fleet API coverage contract](docs/fleet-api-coverage.md)
 - [Events and webhooks](docs/event-and-webhooks.md)
 - [Implementation roadmap](docs/implementation-roadmap.md)

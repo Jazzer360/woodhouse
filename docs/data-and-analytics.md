@@ -57,6 +57,13 @@ This allows questions such as:
 
 ## 4. Raw telemetry table
 
+The trusted vehicle registry receives `telemetry_config_version` and
+`telemetry_config_hash` only after Tesla reports the exact per-vehicle desired
+configuration as `synced=true` with no relevant telemetry errors. The field
+selection hash and server trust-profile ID/hash are stored separately so a
+compatible leaf renewal cannot masquerade as a field/frequency change. See
+[`fleet-telemetry-configuration.md`](fleet-telemetry-configuration.md).
+
 Recommended baseline:
 
 ```text

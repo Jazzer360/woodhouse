@@ -357,7 +357,7 @@ def test_production_transport_rejects_non_tesla_hosts_before_network() -> None:
         )
 
 
-def test_local_command_proxy_transport_rejects_non_loopback_and_non_command_requests() -> None:
+def test_local_command_proxy_transport_rejects_non_loopback_and_unapproved_requests() -> None:
     with pytest.raises(ValueError, match="loopback"):
         LocalCommandProxyTransport(proxy_origin="https://proxy.example", ca_file="missing")
 
@@ -366,10 +366,10 @@ def test_local_command_proxy_transport_rejects_non_loopback_and_non_command_requ
     object.__setattr__(transport, "_timeout_seconds", 1.0)
     object.__setattr__(transport, "_opener", None)
 
-    with pytest.raises(ValueError, match="typed commands only"):
+    with pytest.raises(ValueError, match="signed telemetry configuration only"):
         transport.request("GET", f"{NA_BASE}/api/1/vehicles/VIN1/vehicle_data")
 
-    with pytest.raises(ValueError, match="typed commands only"):
+    with pytest.raises(ValueError, match="signed telemetry configuration only"):
         transport.request(
             "POST",
             f"{NA_BASE}/api/1/vehicles/VIN1/command/not_a_typed_command",

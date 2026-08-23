@@ -1337,6 +1337,7 @@ name = "tpp-tesla-client"
 version = "0.0.0"
 source = { editable = "packages/tesla-client" }
 dependencies = [
+    { name = "cryptography" },
     { name = "pyjwt", extra = ["crypto"] },
 ]
 
@@ -1347,6 +1348,7 @@ admin = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=50,<51" },
     { name = "google-cloud-secret-manager", marker = "extra == 'admin'", specifier = ">=2.23,<3" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
 ]

@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Prepare a CA-only trust profile without exposing the active leaf as vehicle trust."""
+
+from tesla_personal_platform.tesla_client.trust_admin import prepare_trust_profile_main
+
+raise SystemExit(prepare_trust_profile_main())
