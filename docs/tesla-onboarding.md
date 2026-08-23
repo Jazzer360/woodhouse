@@ -268,9 +268,10 @@ permanent architecture assumptions.
 
 Do not configure a real vehicle until the unattended certificate-renewal job in
 `docs/runbooks/telemetry-cert-renewal.md` has completed one successful manual
-execution and its daily schedule is enabled. The official receiver must retain
-the mTLS boundary: it verifies a Tesla client certificate, derives the VIN from
-that verified certificate, and overwrites payload VIN fields before publishing.
+execution and its twice-daily schedule is enabled. The official receiver must
+retain the mTLS boundary: it verifies a Tesla client certificate, derives the
+VIN from that verified certificate, and overwrites payload VIN fields before
+publishing.
 
 ### 9.1 Server-certificate renewal and vehicle configuration
 

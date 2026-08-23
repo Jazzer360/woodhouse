@@ -223,6 +223,7 @@ def test_telemetry_edge_has_only_receiver_topics_and_gated_tls_secrets() -> None
 def test_certificate_renewal_is_isolated_scheduled_and_fail_closed() -> None:
     variables = (TERRAFORM_ROOT / "variables.tf").read_text(encoding="utf-8")
     renewal = (TERRAFORM_ROOT / "certificate_renewal.tf").read_text(encoding="utf-8")
+    monitoring = (TERRAFORM_ROOT / "monitoring.tf").read_text(encoding="utf-8")
     secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")
     iam = (TERRAFORM_ROOT / "iam.tf").read_text(encoding="utf-8")
 
@@ -231,6 +232,9 @@ def test_certificate_renewal_is_isolated_scheduled_and_fail_closed() -> None:
     )
     assert "default     = true" in variable_block(
         variables, "telemetry_certificate_schedule_paused"
+    )
+    assert 'default     = "17 5,17 * * *"' in variable_block(
+        variables, "telemetry_certificate_renewal_schedule"
     )
     assert 'resource "google_cloud_run_v2_job" "telemetry_certificate_renewer"' in renewal
     assert 'resource "google_cloud_scheduler_job" "telemetry_certificate_renewal"' in renewal
@@ -255,6 +259,24 @@ def test_certificate_renewal_is_isolated_scheduled_and_fail_closed() -> None:
             )
         ]
     )
+    success_metric = monitoring[
+        monitoring.index(
+            'resource "google_logging_metric" "telemetry_certificate_check_success"'
+        ) : monitoring.index(
+            'resource "google_logging_metric" "telemetry_certificate_check_failure"'
+        )
+    ]
+    failure_metric = monitoring[
+        monitoring.index(
+            'resource "google_logging_metric" "telemetry_certificate_check_failure"'
+        ) : monitoring.index(
+            'resource "google_monitoring_alert_policy" "telemetry_certificate_check_missing"'
+        )
+    ]
+    assert "count =" not in success_metric
+    assert "count =" not in failure_metric
+    assert 'duration = "82800s"' in monitoring
+    assert 'duration = "172800s"' not in monitoring
 
 
 def test_abandoned_oauth_states_and_sessions_have_firestore_ttl() -> None:

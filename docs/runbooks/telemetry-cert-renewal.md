@@ -9,7 +9,8 @@ Let's Encrypt DNS-01; there is no recurring manual TXT-record workflow.
 
 ## Steady-state contract
 
-- Cloud Scheduler invokes `tpp-telemetry-cert-renewer` daily at 05:17 UTC.
+- Cloud Scheduler invokes `tpp-telemetry-cert-renewer` twice daily at 05:17
+  and 17:17 UTC.
 - Certbot renews only inside its normal renewal window.
 - A Cloudflare API token has `Zone:DNS:Edit` for the `derekjass.com` zone only.
   Never use a Global API Key.
@@ -27,8 +28,10 @@ Let's Encrypt DNS-01; there is no recurring manual TXT-record workflow.
 - The VM retains the previous pair and restores it if the receiver cannot
   become healthy. Vehicles may reconnect during the short reset; reliable
   acknowledgements and vehicle buffering protect the raw stream.
-- Monitoring alerts on any failed execution and on 48 hours without a
-  successful check. Configure at least one resource in
+- Monitoring alerts on any failed execution and on 23 hours without a
+  successful check. The absence threshold represents roughly two missed
+  scheduled checks and stays within Cloud Monitoring's maximum 23-hour-30-minute
+  metric-absence window. Configure at least one resource in
   `monitoring_notification_channels`; an alert with no notification channel is
   visible in Cloud Monitoring but cannot wake an operator.
 
