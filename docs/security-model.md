@@ -298,6 +298,34 @@ An automatic pre-command wake is a separate audited `tesla_wake_up` attempt,
 linked operationally by its `automatic_for` tool name. The requested command is
 still sent at most once and receives its own audit record.
 
+Every actual outbound Tesla HTTPS attempt also emits structured operational
+events to Cloud Logging at the transport boundary. One `started` event is
+followed by exactly one `completed` or `failed` event when the process remains
+alive. Events contain a random API call ID, MCP correlation ID when available,
+internal vehicle ID when available, source/flow phase, attempt number, HTTP
+method, templated route, typed operation, destination (`tesla_fleet_api`,
+`tesla_oauth`, or the local `vehicle_command_proxy`), Tesla region,
+request/query field names, byte counts,
+duration, HTTP status/outcome, and a narrowly selected diagnostic summary.
+
+Transport logging never records raw URLs, query values, HTTP headers, bearer
+tokens, request bodies, response bodies, VINs, invitation/invoice IDs, PINs,
+passwords, OAuth codes, client secrets, token values, calendar contents, or
+coordinates. Diagnostic summaries may contain only the top-level Tesla
+`error`, `error_description`, or `message`, plus command `result`/`reason`.
+Summaries are parsed only for bounded error bodies and bounded command results,
+not successful read bodies. Strings are length-bounded and scrubbed for every
+scalar request-body echo, request secrets, VINs, emails, URLs, coordinates,
+JWTs, and labeled credentials. OAuth success payloads are therefore visible
+only as status/size metadata, never as credentials.
+
+Firestore command audit remains the durable authorization/safety record for
+writes. Cloud Logging is the operational trace of network attempts, including
+reads, OAuth/token calls, retries, wake polling, local proxy calls, and partner
+administration. A `started` event without a terminal event indicates process
+termination or interruption and must not be treated as proof that a command did
+or did not execute.
+
 The official Vehicle Command Proxy is an instance-local, non-ingress Cloud Run
 sidecar. It listens on the shared container network only so Cloud Run can run
 the sidecar startup probe; public service ingress remains assigned solely to

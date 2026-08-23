@@ -25,6 +25,7 @@ from tesla_personal_platform.tesla_client.models import (
     VehicleData,
     json_object,
 )
+from tesla_personal_platform.tesla_client.observability import tesla_api_log_context
 from tesla_personal_platform.tesla_client.requests import (
     ActuateTrunkRequest,
     AdjustVolumeRequest,
@@ -905,12 +906,13 @@ class TeslaFleetClient:
         url = f"{normalize_base_url(base_url)}{path}"
         for attempt in range(self._max_read_retries + 1):
             try:
-                response = self._transport.request(
-                    method,
-                    url,
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    json_body=json_body,
-                )
+                with tesla_api_log_context(attempt=attempt + 1):
+                    response = self._transport.request(
+                        method,
+                        url,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        json_body=json_body,
+                    )
             except TeslaTransportError:
                 if not retry_safe or attempt >= self._max_read_retries:
                     raise

@@ -79,6 +79,16 @@ tools:
 - never audit PINs, passwords, location coordinates, tokens, VINs, calendar
   payloads, or response bodies.
 
+Every MCP read result and command result, including expected validation and
+Tesla failure results, includes a generated `correlation_id`.
+The gateway propagates that ID into structured `tesla_api_call` transport events
+for each associated direct Tesla or command-proxy network attempt. Automatic
+wake calls use their separate `wake_correlation_id`; preflight checks remain
+linked to the requested command correlation, while wake and wake-poll calls use
+the wake correlation. See `docs/deployment.md` for Cloud Logging queries. Logs
+contain only route templates, field names, sizes, status/outcome, timing, and
+sanitized diagnostic fields—not request/response payloads or vehicle secrets.
+
 Charging command scope `vehicle_charging_cmds` applies to:
 
 ```text

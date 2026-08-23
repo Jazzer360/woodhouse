@@ -320,6 +320,49 @@ field so it cannot roll the application back to the original placeholder.
 Follow the ordered live procedure in
 [`docs/tesla-onboarding.md`](tesla-onboarding.md#12-required-operator-checkpoint--first-real-tesla-onboarding).
 
+## Tesla API call visibility
+
+The gateway writes a structured `tesla_api_call` event before and after every
+actual HTTPS attempt made by the production Tesla transports. This includes
+Fleet API reads/writes, OAuth token exchanges and refreshes, partner calls,
+safe-read retries, command wake preflight/polling, and calls to the instance-local
+Vehicle Command Proxy. In Logs Explorer, start with:
+
+```text
+resource.type="cloud_run_revision"
+resource.labels.service_name="mcp-gateway"
+jsonPayload.event="tesla_api_call"
+```
+
+Trace everything associated with one MCP result or command audit:
+
+```text
+resource.type="cloud_run_revision"
+resource.labels.service_name="mcp-gateway"
+jsonPayload.event="tesla_api_call"
+jsonPayload.correlation_id="corr_REPLACE_ME"
+```
+
+Show non-successful terminal events:
+
+```text
+resource.type="cloud_run_revision"
+resource.labels.service_name="mcp-gateway"
+jsonPayload.event="tesla_api_call"
+(jsonPayload.phase="failed" OR jsonPayload.outcome!="success")
+```
+
+Use `call_id` to pair each `started` event with its `completed` or `failed`
+event. `flow_phase` distinguishes `read`, `command_preflight`, `automatic_wake`,
+`wake_poll`, and `command`. `destination=vehicle_command_proxy` proves the
+gateway reached the local signer; only its successful downstream behavior proves
+that the proxy reached Tesla. Logs intentionally expose route templates and
+request/query field names, never raw URLs, query values, headers, bodies,
+credentials, VINs, exact locations, or other sensitive payloads. Firestore
+`tesla_command_audits` remains the durable write audit rather than Cloud Logging.
+The `tesla-register-partner` operator command emits the same JSON events to
+standard error for its Tesla OAuth and Partner API attempts.
+
 ## Manual add Homer workflow
 
 After the reviewed Terraform configuration has created `tpp-user-admin` and the

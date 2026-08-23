@@ -26,6 +26,10 @@ from tesla_personal_platform.tesla_client.oauth import (
     TeslaOAuthClient,
     TeslaOAuthConfig,
 )
+from tesla_personal_platform.tesla_client.observability import (
+    configure_json_logging,
+    tesla_api_log_context,
+)
 from tesla_personal_platform.tesla_client.partner import PartnerRegistrar, TeslaPartnerClient
 from tesla_personal_platform.tesla_client.session import (
     PerUserTeslaClient,
@@ -51,6 +55,8 @@ __all__ = [
     "PartnerRegistrar",
     "PerUserTeslaClient",
     "TeslaAPIError",
+    "configure_json_logging",
+    "tesla_api_log_context",
     "TeslaAccessContext",
     "TeslaAccessProvider",
     "TeslaAuthenticationError",
