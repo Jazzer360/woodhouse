@@ -87,5 +87,7 @@ def test_main_delivery_waits_for_readiness_and_smoke_checks_gateway() -> None:
     assert 'item["type"] == "Ready"' in source
     assert 'item["name"] == "application"' in source
     assert 'test "$$deployed_image" = "$$digest_image"' in source
+    assert "value(spec.template.spec.template.spec.containers[0].image)" in source
+    assert "value(template.template.containers[0].image)" not in source
     assert '"$$service_url/health"' in source
     assert "deployed_service=${_SERVICE}" in source
