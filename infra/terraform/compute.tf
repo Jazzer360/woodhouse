@@ -38,6 +38,7 @@ resource "google_compute_instance" "telemetry_edge" {
     enable-oslogin            = "TRUE"
     google-logging-enabled    = "true"
     google-monitoring-enabled = "true"
+    startup-script            = file("${path.module}/scripts/telemetry-edge-startup.sh")
     telemetry-edge-commit     = ""
     telemetry-edge-image      = ""
     telemetry-edge-config = jsonencode(merge(
@@ -50,8 +51,6 @@ resource "google_compute_instance" "telemetry_edge" {
     telemetry-edge-tls-cert-secret = google_secret_manager_secret.platform["telemetry_edge_tls_cert"].secret_id
     telemetry-edge-tls-key-secret  = google_secret_manager_secret.platform["telemetry_edge_tls_key"].secret_id
   }
-
-  metadata_startup_script = file("${path.module}/scripts/telemetry-edge-startup.sh")
 
   service_account {
     email = google_service_account.platform["telemetry_edge"].email

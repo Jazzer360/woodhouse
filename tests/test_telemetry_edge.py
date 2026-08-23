@@ -76,4 +76,7 @@ def test_terraform_injects_the_deployment_project_into_receiver_config() -> None
 
     assert "telemetry-edge-config = jsonencode(merge(" in compute
     assert "gcp_project_id = var.project_id" in compute
+    assert "startup-script" in compute
+    assert 'file("${path.module}/scripts/telemetry-edge-startup.sh")' in compute
+    assert "metadata_startup_script" not in compute
     assert "COPY services/telemetry-edge/config.json" not in dockerfile

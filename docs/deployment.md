@@ -59,6 +59,9 @@ base configuration, injects the active `project_id`, and passes it through
 trusted instance metadata. The VM writes and mounts that generated file
 read-only. The digest-pinned container therefore cannot retain a hard-coded
 Pub/Sub project that differs from the infrastructure receiving its records.
+The startup script uses the ordinary Compute Engine `startup-script` metadata
+key so an existing deletion-protected edge VM can receive the configuration
+in place; the exact-digest delivery reset executes it before health polling.
 
 The `tpp-user-admin` service account is keyless and used only through operator
 impersonation. It can write Firestore allowlist entities, create BigQuery
