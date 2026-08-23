@@ -237,8 +237,9 @@ def test_official_receiver_payload_and_transport_metadata_are_preserved() -> Non
 
 
 class FakeBigQueryClient:
-    def __init__(self) -> None:
+    def __init__(self, errors: list[dict[str, object]] | None = None) -> None:
         self.calls: list[tuple[str, list[dict[str, object]], list[None], int]] = []
+        self.errors = errors or []
 
     def insert_rows_json(
         self,
@@ -247,9 +248,9 @@ class FakeBigQueryClient:
         *,
         row_ids: list[None],
         timeout: int,
-    ) -> list[object]:
+    ) -> list[dict[str, object]]:
         self.calls.append((table, rows, row_ids, timeout))
-        return []
+        return self.errors
 
 
 def test_bigquery_sink_explicitly_disables_insert_id_deduplication() -> None:
@@ -268,6 +269,39 @@ def test_bigquery_sink_explicitly_disables_insert_id_deduplication() -> None:
 
     assert client.calls[0][0] == "project.tesla_u_a.raw_telemetry_events"
     assert client.calls[0][2] == [None]
+    assert json.loads(str(client.calls[0][1][0]["payload"])) == event.payload
+
+
+def test_bigquery_sink_reports_only_safe_rejection_codes() -> None:
+    client = FakeBigQueryClient(
+        [
+            {
+                "index": 0,
+                "errors": [
+                    {
+                        "reason": "invalid",
+                        "location": "payload",
+                        "message": "must never be logged: sensitive value",
+                    }
+                ],
+            }
+        ]
+    )
+    event = TelemetryProcessor(
+        FakeRegistry({}), RecordingSink(), FakeRetryGate(), receiver_version="v0.9.4"
+    )._event(incoming(), now=NOW)
+    sink = BigQueryTelemetrySink(
+        client,  # type: ignore[arg-type]
+        "project",
+        "project.system.quarantine",
+        "project.system.synthetic",
+    )
+
+    with pytest.raises(RetryableProcessingError) as captured:
+        sink.append_synthetic(event, "phase7_fixture", first_failure_recorded=False)
+
+    assert str(captured.value) == "bigquery_append_rejected:invalid@payload"
+    assert "sensitive value" not in str(captured.value)
 
 
 class FakeSnapshot:
