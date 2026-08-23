@@ -61,6 +61,14 @@ output "telemetry_hostname" {
   value       = var.telemetry_hostname
 }
 
+output "telemetry_certificate_renewal_job" {
+  description = "Scheduled certificate-renewal job, or null while the automation checkpoint is disabled."
+  value = (
+    var.enable_telemetry_certificate_automation ?
+    google_cloud_run_v2_job.telemetry_certificate_renewer[0].name : null
+  )
+}
+
 output "runtime_service_accounts" {
   description = "Service-account emails used by later application phases and per-user dataset grants."
   value = {

@@ -44,6 +44,7 @@ mypy_path = [
   "packages/event-schema/src",
   "packages/shared-models/src",
   "packages/tesla-client/src",
+  "services/certificate-renewer/src",
   "services/mcp-gateway/src",
   "services/telemetry-edge/src",
   "services/telemetry-processor/src",

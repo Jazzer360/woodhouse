@@ -47,6 +47,14 @@ resource "google_project_iam_member" "platform" {
   member  = each.value.member
 }
 
+resource "google_project_iam_member" "cloud_scheduler_service_agent" {
+  count = var.enable_telemetry_certificate_automation ? 1 : 0
+
+  project = var.project_id
+  role    = "roles/cloudscheduler.serviceAgent"
+  member  = "serviceAccount:${google_project_service_identity.cloud_scheduler.email}"
+}
+
 resource "google_project_iam_custom_role" "telemetry_edge_topic_inspector" {
   project     = var.project_id
   role_id     = "tppTelemetryEdgeTopicInspector"
@@ -99,11 +107,39 @@ resource "google_project_iam_member" "telemetry_edge_deployer" {
 }
 
 resource "google_service_account_iam_member" "deployer_runtime_user" {
-  for_each = toset(["mcp_gateway", "telemetry_processor"])
+  for_each = toset(["certificate_renewer", "mcp_gateway", "telemetry_processor"])
 
   service_account_id = google_service_account.platform[each.value].name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.platform["cloud_build_deployer"].email}"
+}
+
+resource "google_project_iam_custom_role" "certificate_renewer_edge_reloader" {
+  count = var.enable_telemetry_certificate_automation ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "tppCertificateEdgeReloader"
+  title       = "TPP certificate edge reloader"
+  description = "Restart the single telemetry edge VM and verify its certificate release status."
+  stage       = "GA"
+  permissions = [
+    "compute.instances.getGuestAttributes",
+    "compute.instances.reset",
+  ]
+}
+
+resource "google_project_iam_member" "certificate_renewer_edge_reloader" {
+  count = var.enable_telemetry_certificate_automation ? 1 : 0
+
+  project = var.project_id
+  role    = google_project_iam_custom_role.certificate_renewer_edge_reloader[0].id
+  member  = "serviceAccount:${google_service_account.platform["certificate_renewer"].email}"
+
+  condition {
+    title       = "telemetry-edge-instance-only"
+    description = "Restrict certificate reloads to the single telemetry edge instance."
+    expression  = "resource.name == 'projects/${var.project_id}/zones/${var.zone}/instances/${google_compute_instance.telemetry_edge.name}'"
+  }
 }
 
 resource "google_service_account_iam_member" "deployer_edge_runtime_user" {

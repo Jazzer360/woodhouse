@@ -22,6 +22,7 @@ from tesla_personal_platform.telemetry_processor.processor import (
     ProcessingResult,
     RetryableProcessingError,
     TelemetryProcessor,
+    TelemetrySourcePolicy,
     decode_pubsub_push,
 )
 
@@ -64,9 +65,11 @@ class TelemetryHTTPServer(ThreadingHTTPServer):
         address: tuple[str, int],
         processor: TelemetryProcessor,
         verifier: PushTokenVerifier,
+        source_policy: TelemetrySourcePolicy,
     ) -> None:
         self.processor = processor
         self.verifier = verifier
+        self.source_policy = source_policy
         super().__init__(address, TelemetryHandler)
 
 
@@ -96,7 +99,11 @@ class TelemetryHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         now = datetime.now(UTC)
         try:
-            incoming = decode_pubsub_push(body, now=now)
+            incoming = decode_pubsub_push(
+                body,
+                now=now,
+                source_policy=self.server.source_policy,
+            )
             result = self.server.processor.process(incoming, now=now)
         except InvalidPushMessageError as exc:
             self._event("pubsub_push_rejected", outcome="invalid", category=str(exc))
@@ -141,6 +148,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             "disposition": result.disposition,
             "record_type": result.record_type,
             "pubsub_message_id": result.pubsub_message_id,
+            "source_authentication": result.source_authentication,
         }
         if result.user_id:
             fields["user_id"] = result.user_id
@@ -185,7 +193,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
         )
 
 
-def build_runtime() -> tuple[TelemetryProcessor, PushTokenVerifier]:
+def build_runtime() -> tuple[TelemetryProcessor, PushTokenVerifier, TelemetrySourcePolicy]:
     project_id = _required_env("GOOGLE_CLOUD_PROJECT")
     audience = _required_env("PUBSUB_PUSH_AUDIENCE")
     push_identity = _required_env("PUBSUB_PUSH_SERVICE_ACCOUNT")
@@ -202,7 +210,24 @@ def build_runtime() -> tuple[TelemetryProcessor, PushTokenVerifier]:
         FirestoreFixtureRetryGate(firestore_client),
         receiver_version=receiver_version,
     )
-    return processor, GooglePushTokenVerifier(audience, push_identity)
+    synthetic_subscription = os.environ.get(
+        "SYNTHETIC_TELEMETRY_SUBSCRIPTION",
+        f"projects/{project_id}/subscriptions/tpp-raw-telemetry-processor",
+    )
+    fleet_subscriptions = os.environ.get("FLEET_TELEMETRY_SUBSCRIPTIONS") or json.dumps(
+        {
+            (
+                f"projects/{project_id}/subscriptions/"
+                f"tpp-raw-telemetry-{record_type.lower()}-processor"
+            ): record_type
+            for record_type in ("V", "alerts", "connectivity", "errors")
+        }
+    )
+    source_policy = TelemetrySourcePolicy.from_json(
+        synthetic_subscription,
+        fleet_subscriptions,
+    )
+    return processor, GooglePushTokenVerifier(audience, push_identity), source_policy
 
 
 def _required_env(name: str) -> str:
@@ -215,8 +240,8 @@ def _required_env(name: str) -> str:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
-        processor, verifier = build_runtime()
-    except RuntimeError as exc:
+        processor, verifier, source_policy = build_runtime()
+    except (RuntimeError, ValueError) as exc:
         LOGGER.warning(
             json.dumps(
                 {
@@ -231,9 +256,13 @@ def main() -> None:
         # Pub/Sub retains/redelivers rather than acknowledging any observation.
         processor = AwaitingInfrastructureProcessor()  # type: ignore[assignment]
         verifier = AwaitingInfrastructureVerifier()
+        source_policy = TelemetrySourcePolicy(
+            "projects/awaiting/subscriptions/synthetic",
+            {"projects/awaiting/subscriptions/fleet": "V"},
+        )
     host = os.environ.get("HOST", DEFAULT_HOST)
     port = int(os.environ.get("PORT", str(DEFAULT_PORT)))
-    TelemetryHTTPServer((host, port), processor, verifier).serve_forever()
+    TelemetryHTTPServer((host, port), processor, verifier, source_policy).serve_forever()
 
 
 if __name__ == "__main__":

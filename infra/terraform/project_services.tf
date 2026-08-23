@@ -3,6 +3,7 @@ locals {
     "artifactregistry.googleapis.com",
     "bigquery.googleapis.com",
     "cloudbuild.googleapis.com",
+    "cloudscheduler.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "compute.googleapis.com",
     "firestore.googleapis.com",
@@ -39,6 +40,14 @@ resource "google_project_service_identity" "cloud_build" {
   provider = google-beta
   project  = var.project_id
   service  = "cloudbuild.googleapis.com"
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_project_service_identity" "cloud_scheduler" {
+  provider = google-beta
+  project  = var.project_id
+  service  = "cloudscheduler.googleapis.com"
 
   depends_on = [google_project_service.required]
 }

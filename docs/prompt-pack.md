@@ -246,6 +246,14 @@ Acknowledge Pub/Sub only after the raw record has been durably accepted accordin
 
 Implement TLS/certificate handling, structured health metrics, immutable image deployment to the VM by exact digest, health-checked restart, and rollback. Add tests for multiple users, multiple vehicles, buffered source timestamps, intentional preservation of duplicate deliveries, unknown VIN quarantine, transient Pub/Sub/BigQuery failures, and no downstream filtering.
 
+Treat a manually issued short-lived certificate only as bootstrap. Before real
+vehicle telemetry configuration, implement unattended renewal with a
+least-privilege DNS-01 credential outside telemetry-edge, atomic certificate/key
+activation, previous-pair rollback, public fingerprint verification, and alerts
+for failed or missing renewal checks. Preserve Tesla's mTLS boundary and bind
+downstream production deliveries to exact trusted subscriptions so the separate
+synthetic path cannot impersonate vehicle telemetry.
+
 Finish with an OPERATOR CHECKPOINT for the deployed telemetry path before changing any real vehicle telemetry configuration. If DNS or certificate ownership requires external action, give the exact hostname, DNS record type/value, propagation check, and certificate validation steps. After confirmation, verify the receiver's public TLS endpoint/health and service identity. Then run a safe synthetic end-to-end ingestion test through the real Pub/Sub/telemetry-processor/BigQuery path using a clearly marked non-vehicle fixture: prove the record lands in the intended test/system destination, prove an unknown VIN is quarantined rather than attributed to a user, and prove failure/retry behavior does not silently lose the record. Do not fabricate a real user's vehicle identity for this test and do not apply a Tesla Fleet Telemetry configuration yet.
 ```
 
@@ -269,6 +277,21 @@ Use rational per-field interval_seconds/change behavior at the Tesla source; do 
 
 Implement per-vehicle inspect, desired-vs-current diff, apply, verify, remove, repair/reapply, telemetry-error inspection, and config hash/version persistence through Tesla's currently recommended signed configuration path. Multiple vehicles on the same Tesla account must be configurable independently, and failure on one vehicle must not block the others. Do not implement plan-based telemetry profiles or downstream sampling.
 
+Treat server leaf renewal separately from vehicle configuration. Build the
+vehicle `ca` field from stable CA trust material rather than the expiring leaf,
+persist a canonical server trust-profile ID/hash separately from the
+field/interval config hash, and validate each renewal candidate against that
+exact profile with Tesla's current certificate-check behavior before it can be
+activated. Compatible leaf renewal must not call Tesla or wake a vehicle. For a
+real hostname, port, or CA migration, implement an audited per-vehicle
+reconciler in the control plane, not telemetry-edge or the certificate-renewal
+job. It must retain the existing field/interval selection, canary and wait for
+`synced=true`, inspect telemetry errors, retry vehicles independently, and
+block server cutover until all required vehicles are ready. Allow automatic
+transport-trust maintenance only after explicit per-vehicle operator opt-in;
+first enrollment, removal, and field/frequency changes remain explicit. CI must
+never apply a real vehicle configuration.
+
 Add tests using current schema fixtures/mocks. CI must never automatically apply or remove a real vehicle telemetry configuration.
 
 Finish with a required OPERATOR CHECKPOINT for the first real vehicle. Show the operator the exact desired-vs-current telemetry configuration diff and explain any fields/intervals that materially affect volume or behavior. Ask the operator to select the vehicle and explicitly approve applying the configuration. Walk through any Tesla-side prerequisite or pairing repair that remains. After the operator approves, apply the configuration using the documented admin path, verify Tesla reports the expected config/hash with no relevant telemetry errors, then verify real telemetry from that vehicle reaches the VM, Pub/Sub, and the correct user's BigQuery `raw_telemetry_events` table. Confirm source and ingestion timestamps are present and that no expiration is configured. Do not declare the live checkpoint passed until at least one genuine vehicle observation is visible in the correct dataset.
@@ -279,7 +302,11 @@ Finish with a required OPERATOR CHECKPOINT for the first real vehicle. Show the 
 - Broad telemetry coverage is deliberate and documented.
 - Frequency decisions live only in Tesla config.
 - Config can be inspected/diffed/repaired per vehicle.
-- Real config changes require explicit manual execution outside CI.
+- Compatible leaf renewals do not rewrite vehicle config; CA/endpoint changes
+  use a separate opt-in, canary, sync-gated reconciliation path.
+- First enrollment and field/frequency/removal changes require explicit manual
+  execution outside CI; transport-trust maintenance may use the explicitly
+  opted-in runtime reconciler and is never a CI action.
 
 ---
 

@@ -139,3 +139,32 @@ resource "google_cloudbuild_trigger" "main_telemetry_edge" {
     }
   }
 }
+
+resource "google_cloudbuild_trigger" "main_certificate_renewer" {
+  count = var.cloud_build_repository != null && var.enable_telemetry_certificate_automation ? 1 : 0
+
+  project            = var.project_id
+  location           = var.region
+  name               = "tpp-main-certificate-renewer"
+  description        = "Deploy the affected certificate-renewal job by exact image digest after a main merge"
+  filename           = "cloudbuild.main.yaml"
+  service_account    = google_service_account.platform["cloud_build_deployer"].id
+  include_build_logs = "INCLUDE_BUILD_LOGS_WITH_STATUS"
+  included_files = [
+    "cloudbuild.main.yaml",
+    "services/certificate-renewer/**",
+    "pyproject.toml",
+    "uv.lock",
+  ]
+  substitutions = {
+    _SERVICE = "certificate-renewer"
+  }
+
+  repository_event_config {
+    repository = var.cloud_build_repository
+
+    push {
+      branch = "main$"
+    }
+  }
+}

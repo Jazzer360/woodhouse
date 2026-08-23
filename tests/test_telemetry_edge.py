@@ -63,9 +63,14 @@ def test_vm_delivery_requires_digest_health_check_and_rollback() -> None:
     assert "telemetry-edge@sha256:" in script
     assert "http://127.0.0.1:8080/status" in script
     assert "{{.RestartCount}}" in script
-    assert 'chown root:65532 "$STATE_DIR" "$TLS_DIR" "$CONFIG_DIR"' in script
+    assert 'chown root:65532 "$STATE_DIR" "$CONFIG_DIR"' in script
+    assert 'chown root:65532 "$TLS_STAGING_DIR"' in script
     assert 'run_receiver "$PREVIOUS_IMAGE"' in script
-    assert 'report_status "success:$DESIRED_COMMIT"' in script
+    assert 'report_status "success:$DESIRED_COMMIT:tls=$TLS_RELEASE_MARKER"' in script
+    assert "telemetry-edge-tls-release-secret" in script
+    assert 'secret_to_file "$cert_secret"' in script
+    assert "validate_tls_files" in script
+    assert 'mv "$TLS_PREVIOUS_DIR" "$TLS_DIR"' in script
     assert "--read-only" in script
     assert "--cap-drop=ALL" in script
     assert "metadata telemetry-edge-config" in script
@@ -83,6 +88,8 @@ def test_terraform_injects_the_deployment_project_into_receiver_config() -> None
 
     assert "telemetry-edge-config = jsonencode(merge(" in compute
     assert "gcp_project_id = var.project_id" in compute
+    assert "telemetry-edge-tls-release-secret" in compute
+    assert "telemetry-edge-hostname" in compute
     assert "startup-script" in compute
     assert (
         'replace(file("${path.module}/scripts/telemetry-edge-startup.sh"), "\\r\\n", "\\n")'

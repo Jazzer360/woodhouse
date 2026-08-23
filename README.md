@@ -7,7 +7,9 @@ the platform includes per-user authentication/Tesla OAuth, complete typed Fleet
 API coverage, a loopback-only official Vehicle Command Proxy, and the approved
 typed live MCP surface. The official Tesla Fleet Telemetry receiver and
 permanent, isolated raw-history pipeline are implemented; deployment is paused
-at the Phase 7 operator checkpoint before any real vehicle configuration.
+after the Phase 7 receiver/storage checkpoint and before any real vehicle
+configuration. Unattended public-certificate renewal has its own fail-closed
+enablement checkpoint.
 
 ## Source of truth
 
@@ -34,12 +36,13 @@ application language is maintained in this repository.
 multi-platform digest. Its native Google Pub/Sub dispatcher is the minimal
 adapter, so the repository contains no custom implementation of Tesla's wire
 protocol. Python remains the application runtime for the authenticated
-telemetry processor and safe operator verification.
+telemetry processor, isolated certificate-renewal job, and safe operator
+verification.
 
 ## Layout
 
 ```text
-services/                 mcp-gateway, telemetry-processor, telemetry-edge
+services/                 mcp-gateway, telemetry-processor, telemetry-edge, certificate-renewer
 packages/                 tesla-client, auth, shared-models, analytics, event-schema
 infra/terraform/          shared GCP baseline and one-time state bootstrap
 scripts/admin/            manual administration entry points added in later phases
@@ -72,14 +75,16 @@ terraform -chdir=infra/terraform validate
 docker build -f services/mcp-gateway/Dockerfile .
 docker build -f services/telemetry-processor/Dockerfile .
 docker build -f services/telemetry-edge/Dockerfile .
+docker build -f services/certificate-renewer/Dockerfile .
 ```
 
 The shared-root speculative plan is generated from a backend-free temporary copy in `cloudbuild.pr.yaml`. Authoritative local plans use the bootstrapped GCS backend described in [deployment notes](docs/deployment.md).
 
 The Cloud Build PR configuration runs the same categories without deploying or
 contacting real vehicles. `cloudbuild.main.yaml` delivers affected Cloud Run
-services and telemetry-edge from `main` by full commit tag and resolved image
-digest, preserves the gateway command-proxy sidecar, and performs
+services, the certificate-renewal job, and telemetry-edge from `main` by full
+commit tag and resolved image digest, preserves the gateway command-proxy
+sidecar, and performs
 readiness/health verification. Terraform apply remains a separate reviewed
 operator action. Telemetry-edge delivery is intentionally opt-in until DNS and
 certificate prerequisites pass the

@@ -277,6 +277,33 @@ the same authenticated persistence handler. The original
 `tpp-raw-telemetry` topic is reserved for guarded non-vehicle operator fixtures
 and never receives permission from the edge identity.
 
+The receiver validates Tesla vehicle client certificates with its embedded
+production Tesla CA bundle and derives VIN/device identity from the verified
+certificate. It overwrites payload VIN fields before dispatch. The processor
+also binds each push to the exact fleet subscription and expected record type,
+so the separately authorized synthetic topic cannot impersonate the production
+vehicle path.
+
+Public server-certificate lifecycle is owned by a separate scheduled Cloud Run
+Job, not by telemetry-edge. The job performs DNS-01 with a Cloudflare token
+restricted to DNS edits for the one authoritative zone, retains compact ACME
+state in Secret Manager, validates SAN/chain/key/validity, publishes an atomic
+certificate release manifest, restarts the VM, and verifies both guest health
+and the public leaf fingerprint. The edge continues to possess only its TLS
+material and receiver responsibilities.
+
+Routine renewal of the short-lived server leaf certificate must not rewrite a
+vehicle's Fleet Telemetry configuration. Phase 8 must configure a stable
+hostname, port, and CA trust profile that is compatible with replacement leaf
+certificates, and must never put the expiring leaf certificate in the vehicle's
+`ca` field. Tesla's current documentation requires the configured host and CA
+to validate the served certificate but does not promise that every future
+public-CA chain transition is transparent. Phase 8 therefore also owns a
+candidate-versus-configured-trust compatibility gate and a separate,
+per-vehicle signed reconciliation path for genuine hostname, port, or CA trust
+changes. The certificate-renewal job must remain unable to access Tesla OAuth
+tokens or the command-signing key.
+
 ---
 
 ## 6. Repository layout
@@ -312,6 +339,7 @@ Use one monorepo.
     mcp-gateway/
     telemetry-processor/
     telemetry-edge/
+    certificate-renewer/
 
   packages/
     tesla-client/

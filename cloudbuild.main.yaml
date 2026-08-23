@@ -22,6 +22,9 @@ steps:
           telemetry-edge)
             dockerfile="services/telemetry-edge/Dockerfile"
             ;;
+          certificate-renewer)
+            dockerfile="services/certificate-renewer/Dockerfile"
+            ;;
           *)
             echo "Unsupported deploy service: ${_SERVICE}" >&2
             exit 2
@@ -84,7 +87,7 @@ steps:
               --query-path="telemetry-edge/status" \
               --format='value(value)' 2>/dev/null || true)"
             case "$$status" in
-              "success:$COMMIT_SHA")
+              "success:$COMMIT_SHA"|"success:$COMMIT_SHA:tls="*)
                 echo "deployed_service=telemetry-edge commit=$COMMIT_SHA digest=$$digest"
                 exit 0
                 ;;
@@ -98,6 +101,22 @@ steps:
           done
           echo "Timed out waiting for telemetry edge guest health status; last_status=$$status" >&2
           exit 1
+        fi
+
+        if test "${_SERVICE}" = "certificate-renewer"; then
+          job="tpp-telemetry-cert-renewer"
+          gcloud run jobs update "$$job" \
+            --project="$PROJECT_ID" \
+            --region="${_REGION}" \
+            --update-labels="tpp-deployed-commit=$COMMIT_SHA" \
+            --image="$$digest_image"
+          deployed_image="$$(gcloud run jobs describe "$$job" \
+            --project="$PROJECT_ID" \
+            --region="${_REGION}" \
+            --format='value(template.template.containers[0].image)')"
+          test "$$deployed_image" = "$$digest_image"
+          echo "deployed_service=certificate-renewer commit=$COMMIT_SHA digest=$$digest"
+          exit 0
         fi
 
         case "${_SERVICE}" in

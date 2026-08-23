@@ -24,6 +24,34 @@ class RetryableProcessingError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class TelemetrySourcePolicy:
+    """Bind authenticated Pub/Sub deliveries to their Terraform-owned source path."""
+
+    synthetic_subscription: str
+    fleet_subscriptions: dict[str, str]
+
+    @classmethod
+    def from_json(
+        cls, synthetic_subscription: str, fleet_subscriptions: str
+    ) -> "TelemetrySourcePolicy":
+        decoded = json.loads(fleet_subscriptions)
+        if (
+            not synthetic_subscription.startswith("projects/")
+            or not isinstance(decoded, dict)
+            or not decoded
+            or not all(
+                isinstance(subscription, str)
+                and subscription.startswith("projects/")
+                and isinstance(record_type, str)
+                and record_type in ALLOWED_RECORD_TYPES
+                for subscription, record_type in decoded.items()
+            )
+        ):
+            raise ValueError("telemetry subscription policy is invalid")
+        return cls(synthetic_subscription, decoded)
+
+
+@dataclass(frozen=True, slots=True)
 class VehicleRoute:
     """Trusted server-side destination for one vehicle."""
 
@@ -76,6 +104,7 @@ class IncomingTelemetry:
     validation_error: str | None
     synthetic_fixture_id: str | None
     synthetic_fail_first: bool
+    source_authentication: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +116,7 @@ class ProcessingResult:
     user_id: str | None = None
     quarantine_reason: str | None = None
     fixture_id: str | None = None
+    source_authentication: str | None = None
 
 
 class TelemetryProcessor:
@@ -115,6 +145,7 @@ class TelemetryProcessor:
                 incoming.record_type,
                 incoming.pubsub_message_id,
                 quarantine_reason=incoming.validation_error,
+                source_authentication=incoming.source_authentication,
             )
 
         fixture_id = incoming.synthetic_fixture_id
@@ -134,6 +165,7 @@ class TelemetryProcessor:
                 incoming.record_type,
                 incoming.pubsub_message_id,
                 fixture_id=fixture_id,
+                source_authentication=incoming.source_authentication,
             )
 
         if incoming.vin is None:
@@ -143,6 +175,7 @@ class TelemetryProcessor:
                 incoming.record_type,
                 incoming.pubsub_message_id,
                 quarantine_reason="missing_vin",
+                source_authentication=incoming.source_authentication,
             )
 
         route = self._registry.resolve(incoming.vin)
@@ -153,6 +186,7 @@ class TelemetryProcessor:
                 incoming.record_type,
                 incoming.pubsub_message_id,
                 quarantine_reason="unknown_vin",
+                source_authentication=incoming.source_authentication,
             )
 
         owned_event = replace(
@@ -169,6 +203,7 @@ class TelemetryProcessor:
             incoming.pubsub_message_id,
             vehicle_id=route.vehicle_id,
             user_id=route.user_id,
+            source_authentication=incoming.source_authentication,
         )
 
     def _event(self, incoming: IncomingTelemetry, *, now: datetime) -> RawTelemetryEvent:
@@ -193,7 +228,9 @@ class TelemetryProcessor:
         )
 
 
-def decode_pubsub_push(body: bytes, *, now: datetime) -> IncomingTelemetry:
+def decode_pubsub_push(
+    body: bytes, *, now: datetime, source_policy: TelemetrySourcePolicy
+) -> IncomingTelemetry:
     """Decode the authenticated Pub/Sub push wrapper and official receiver metadata."""
     try:
         wrapper = json.loads(body)
@@ -202,6 +239,7 @@ def decode_pubsub_push(body: bytes, *, now: datetime) -> IncomingTelemetry:
     if not isinstance(wrapper, dict) or not isinstance(wrapper.get("message"), dict):
         raise InvalidPushMessageError("missing_pubsub_message")
     message = wrapper["message"]
+    subscription = _required_string(wrapper, "subscription")
     message_id = _required_string(message, "messageId")
     encoded = _required_string(message, "data")
     try:
@@ -226,8 +264,22 @@ def decode_pubsub_push(body: bytes, *, now: datetime) -> IncomingTelemetry:
     vin_value = attributes.get("vin")
     vin = vin_value if vin_value else None
     validation_error: str | None = None
+    expected_record_type = source_policy.fleet_subscriptions.get(subscription)
+    if subscription == source_policy.synthetic_subscription:
+        source_authentication = "operator_fixture"
+        if synthetic_fixture_id is None:
+            validation_error = "missing_synthetic_marker"
+    elif expected_record_type is not None:
+        source_authentication = "tesla_mtls"
+        if synthetic_fixture_id is not None:
+            validation_error = "synthetic_marker_on_fleet_subscription"
+        elif record_type != expected_record_type:
+            validation_error = "record_type_subscription_mismatch"
+    else:
+        source_authentication = "untrusted_subscription"
+        validation_error = "untrusted_pubsub_subscription"
     if synthetic_fixture_id is None and record_type not in ALLOWED_RECORD_TYPES:
-        validation_error = "invalid_record_type"
+        validation_error = validation_error or "invalid_record_type"
 
     payload_vin = payload.get("vin")
     if (
@@ -237,7 +289,7 @@ def decode_pubsub_push(body: bytes, *, now: datetime) -> IncomingTelemetry:
         and payload_vin
         and payload_vin != vin
     ):
-        validation_error = "payload_vin_mismatch"
+        validation_error = validation_error or "payload_vin_mismatch"
 
     source_timestamp = _optional_timestamp(payload.get("createdAt"))
     if source_timestamp is None:
@@ -265,6 +317,7 @@ def decode_pubsub_push(body: bytes, *, now: datetime) -> IncomingTelemetry:
         validation_error=validation_error,
         synthetic_fixture_id=synthetic_fixture_id,
         synthetic_fail_first=(attributes.get("tpp_fixture_fail_first") == "true"),
+        source_authentication=source_authentication,
     )
 
 

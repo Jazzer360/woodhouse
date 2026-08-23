@@ -266,6 +266,57 @@ to 5,000 messages while disconnected. Re-check Tesla's official documentation
 before Phase 8 changes any vehicle because these values are protocol facts, not
 permanent architecture assumptions.
 
+Do not configure a real vehicle until the unattended certificate-renewal job in
+`docs/runbooks/telemetry-cert-renewal.md` has completed one successful manual
+execution and its daily schedule is enabled. The official receiver must retain
+the mTLS boundary: it verifies a Tesla client certificate, derives the VIN from
+that verified certificate, and overwrites payload VIN fields before publishing.
+
+### 9.1 Server-certificate renewal and vehicle configuration
+
+The server leaf certificate and the Fleet Telemetry configuration are related,
+but they are not the same lifecycle:
+
+- replacing only the short-lived leaf certificate does not require a vehicle
+  configuration update when the hostname, port, and configured CA trust remain
+  compatible;
+- the vehicle configuration's `ca` value must be stable CA trust material, not
+  the expiring server leaf;
+- changing the hostname, port, or CA trust outside the currently configured
+  trust profile requires a signed `fleet_telemetry_config` update for every
+  affected vehicle;
+- Tesla's current documentation says to validate the exact hostname and CA
+  configuration with the official
+  [`check_server_cert.sh`](https://github.com/teslamotors/fleet-telemetry/blob/v0.9.4/tools/check_server_cert.sh),
+  but it does not
+  define a universal no-reconfiguration guarantee for future public-CA chain
+  changes. Treat compatibility as something to prove, not assume.
+
+Phase 8 must persist a canonical server trust-profile ID/hash separately from
+the field/interval config hash. Before a candidate certificate is activated,
+validate its leaf and presented chain against the exact canonical vehicle
+configuration.
+A normal compatible leaf renewal proceeds without contacting Tesla or waking a
+vehicle. An incompatible candidate must fail closed while the still-valid old
+certificate remains served and must create an actionable alert.
+
+CA or endpoint migrations belong to a separate control-plane reconciler that
+has the per-user Tesla OAuth context and uses the Vehicle Command Proxy. The
+certificate-renewal job and telemetry edge must never receive those
+credentials. After an explicit one-time opt-in to managed telemetry transport
+maintenance, the reconciler may automate only the transport-trust portion of
+the existing desired config: inspect each vehicle, retain the same fields and
+intervals, apply the signed update, wait for `synced=true`, inspect telemetry
+errors, and record an audit result independently per vehicle. Field selection,
+frequency, removal, and first-time enrollment remain explicit operator changes.
+
+For a CA migration, prefer an overlap in which vehicles trust both the old and
+new chains before the server changes, but only after confirming the current
+Tesla client accepts that CA bundle. Canary one vehicle, wait for sync and a
+genuine authenticated connection, then reconcile the remaining opted-in
+vehicles. Do not activate the new chain until all required vehicles are ready;
+manual-mode or failed vehicles must block cutover and alert the operator.
+
 Use Tesla's recommended signed configuration path through Vehicle Command Proxy.
 
 For every eligible vehicle:
@@ -275,7 +326,8 @@ For every eligible vehicle:
 3. apply config;
 4. verify sync status;
 5. inspect telemetry errors;
-6. record config hash/version in platform state.
+6. record field/interval config hash and server trust-profile hash/version in
+   platform state.
 
 Do not let one vehicle's pairing/config failure prevent other vehicles on the account from working.
 

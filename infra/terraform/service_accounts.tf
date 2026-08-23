@@ -12,6 +12,14 @@ locals {
       account_id   = "tpp-telemetry-edge"
       display_name = "Tesla Personal Platform telemetry edge"
     }
+    certificate_renewer = {
+      account_id   = "tpp-cert-renewer"
+      display_name = "Tesla Personal Platform telemetry certificate renewer"
+    }
+    certificate_scheduler = {
+      account_id   = "tpp-cert-scheduler"
+      display_name = "Tesla Personal Platform certificate renewal scheduler"
+    }
     pubsub_push = {
       account_id   = "tpp-pubsub-push"
       display_name = "Tesla Personal Platform Pub/Sub push invoker"

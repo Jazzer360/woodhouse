@@ -109,7 +109,8 @@ def test_pubsub_oidc_audience_is_path_scoped_and_accepted_by_cloud_run() -> None
     assert 'telemetry_processor_push_audience = "https://' in pubsub
     assert '/pubsub/push"' in pubsub
     assert "custom_audiences" in cloud_run
-    assert "PUBSUB_PUSH_AUDIENCE        = local.telemetry_processor_push_audience" in cloud_run
+    assert "PUBSUB_PUSH_AUDIENCE" in cloud_run
+    assert "= local.telemetry_processor_push_audience" in cloud_run
 
 
 def test_mcp_external_route_is_fail_closed_until_oidc_is_configured() -> None:
@@ -203,6 +204,7 @@ def test_telemetry_edge_has_only_receiver_topics_and_gated_tls_secrets() -> None
     ]
     assert '"telemetry_edge_tls_cert"' in edge_secret_binding
     assert '"telemetry_edge_tls_key"' in edge_secret_binding
+    assert '"telemetry_edge_tls_release"' in edge_secret_binding
     assert "tesla_client_secret" not in edge_secret_binding
     assert 'permissions = ["pubsub.topics.get"]' in iam
     edge_act_as_start = iam.index(
@@ -216,6 +218,43 @@ def test_telemetry_edge_has_only_receiver_topics_and_gated_tls_secrets() -> None
     assert 'platform["telemetry_edge"]' in edge_act_as
     assert 'role               = "roles/iam.serviceAccountUser"' in edge_act_as
     assert 'platform["cloud_build_deployer"]' in edge_act_as
+
+
+def test_certificate_renewal_is_isolated_scheduled_and_fail_closed() -> None:
+    variables = (TERRAFORM_ROOT / "variables.tf").read_text(encoding="utf-8")
+    renewal = (TERRAFORM_ROOT / "certificate_renewal.tf").read_text(encoding="utf-8")
+    secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")
+    iam = (TERRAFORM_ROOT / "iam.tf").read_text(encoding="utf-8")
+
+    assert "default     = false" in variable_block(
+        variables, "enable_telemetry_certificate_automation"
+    )
+    assert "default     = true" in variable_block(
+        variables, "telemetry_certificate_schedule_paused"
+    )
+    assert 'resource "google_cloud_run_v2_job" "telemetry_certificate_renewer"' in renewal
+    assert 'resource "google_cloud_scheduler_job" "telemetry_certificate_renewal"' in renewal
+    assert "paused           = var.telemetry_certificate_schedule_paused" in renewal
+    assert "length(var.monitoring_notification_channels) > 0" in renewal
+    assert (
+        "Unpausing telemetry certificate renewal requires at least one monitoring "
+        "notification channel."
+    ) in renewal
+    assert 'secret  = google_secret_manager_secret.platform["cloudflare_dns_api_token"]' in renewal
+    assert 'role      = "roles/secretmanager.secretVersionAdder"' in secrets
+    assert 'role_id     = "tppCertificateEdgeReloader"' in iam
+    assert '"compute.instances.reset"' in iam
+    assert 'role    = "roles/cloudscheduler.serviceAgent"' in iam
+    assert (
+        "compute.instances.setMetadata"
+        not in iam[
+            iam.index(
+                'resource "google_project_iam_custom_role" "certificate_renewer_edge_reloader"'
+            ) : iam.index(
+                'resource "google_project_iam_member" "certificate_renewer_edge_reloader"'
+            )
+        ]
+    )
 
 
 def test_abandoned_oauth_states_and_sessions_have_firestore_ttl() -> None:
