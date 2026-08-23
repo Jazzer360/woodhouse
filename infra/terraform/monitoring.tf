@@ -12,6 +12,19 @@ resource "google_logging_project_exclusion" "mcp_oauth_callback_request_urls" {
   depends_on = [google_project_service.required]
 }
 
+# Certificate metrics were originally conditional on enabling the renewal job.
+# Keep their existing state addresses when making them bootstrap resources so
+# Cloud Monitoring has time to register them before alert policies are enabled.
+moved {
+  from = google_logging_metric.telemetry_certificate_check_success[0]
+  to   = google_logging_metric.telemetry_certificate_check_success
+}
+
+moved {
+  from = google_logging_metric.telemetry_certificate_check_failure[0]
+  to   = google_logging_metric.telemetry_certificate_check_failure
+}
+
 resource "google_logging_metric" "unknown_vehicle_telemetry" {
   project     = var.project_id
   name        = "tpp/unknown_vehicle_telemetry"
@@ -33,8 +46,6 @@ resource "google_logging_metric" "unknown_vehicle_telemetry" {
 }
 
 resource "google_logging_metric" "telemetry_certificate_check_success" {
-  count = var.enable_telemetry_certificate_automation ? 1 : 0
-
   project     = var.project_id
   name        = "tpp/telemetry_certificate_check_success"
   description = "Successful scheduled validation or renewal of the Fleet Telemetry certificate."
@@ -56,8 +67,6 @@ resource "google_logging_metric" "telemetry_certificate_check_success" {
 }
 
 resource "google_logging_metric" "telemetry_certificate_check_failure" {
-  count = var.enable_telemetry_certificate_automation ? 1 : 0
-
   project     = var.project_id
   name        = "tpp/telemetry_certificate_check_failure"
   description = "Failed scheduled validation, renewal, or deployment of the Fleet Telemetry certificate."
@@ -87,25 +96,27 @@ resource "google_monitoring_alert_policy" "telemetry_certificate_check_missing" 
   enabled      = true
 
   documentation {
-    content   = "No successful Fleet Telemetry certificate check has been observed for 48 hours. Inspect the Scheduler and Cloud Run Job before the active certificate approaches expiry."
+    content   = "No successful Fleet Telemetry certificate check has been observed for 23 hours. With the twice-daily schedule, this represents roughly two missed checks. Inspect the Scheduler and Cloud Run Job before the active certificate approaches expiry."
     mime_type = "text/markdown"
   }
 
   conditions {
-    display_name = "No successful certificate check for 48 hours"
+    display_name = "No successful certificate check for 23 hours"
 
     condition_absent {
-      filter   = "resource.type = \"cloud_run_job\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.telemetry_certificate_check_success[0].name}\""
-      duration = "172800s"
+      filter   = "resource.type = \"cloud_run_job\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.telemetry_certificate_check_success.name}\""
+      duration = "82800s"
 
       aggregations {
-        alignment_period   = "86400s"
+        alignment_period   = "3600s"
         per_series_aligner = "ALIGN_SUM"
       }
     }
   }
 
   notification_channels = var.monitoring_notification_channels
+
+  depends_on = [google_logging_metric.telemetry_certificate_check_success]
 }
 
 resource "google_monitoring_alert_policy" "telemetry_certificate_check_failed" {
@@ -125,7 +136,7 @@ resource "google_monitoring_alert_policy" "telemetry_certificate_check_failed" {
     display_name = "Certificate job reported a failure"
 
     condition_threshold {
-      filter          = "resource.type = \"cloud_run_job\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.telemetry_certificate_check_failure[0].name}\""
+      filter          = "resource.type = \"cloud_run_job\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.telemetry_certificate_check_failure.name}\""
       comparison      = "COMPARISON_GT"
       duration        = "0s"
       threshold_value = 0
@@ -138,6 +149,8 @@ resource "google_monitoring_alert_policy" "telemetry_certificate_check_failed" {
   }
 
   notification_channels = var.monitoring_notification_channels
+
+  depends_on = [google_logging_metric.telemetry_certificate_check_failure]
 }
 
 resource "google_monitoring_alert_policy" "raw_telemetry_backlog" {

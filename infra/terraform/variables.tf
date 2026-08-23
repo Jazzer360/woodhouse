@@ -67,9 +67,9 @@ variable "telemetry_certificate_schedule_paused" {
 }
 
 variable "telemetry_certificate_renewal_schedule" {
-  description = "UTC cron schedule for the unattended certificate check."
+  description = "UTC cron schedule for the unattended certificate check; defaults to twice daily."
   type        = string
-  default     = "17 5 * * *"
+  default     = "17 5,17 * * *"
 }
 
 variable "telemetry_certificate_acme_email" {

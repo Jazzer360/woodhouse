@@ -96,7 +96,7 @@ The public receiver certificate has a separate fail-closed checkpoint. Keep
 `enable_telemetry_certificate_automation=false` until the zone-scoped Cloudflare
 token exists in Secret Manager. Enable the job with its schedule paused, deploy
 the merged commit-addressed image, require one successful manual execution, and
-only then unpause the daily schedule. See
+only then unpause the twice-daily schedule. See
 [telemetry-cert-renewal.md](../../docs/runbooks/telemetry-cert-renewal.md).
 
 Manual Cloud Build submissions must stage source in the dedicated private
