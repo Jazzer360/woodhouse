@@ -292,6 +292,18 @@ certificate release manifest, restarts the VM, and verifies both guest health
 and the public leaf fingerprint. The edge continues to possess only its TLS
 material and receiver responsibilities.
 
+Routine renewal of the short-lived server leaf certificate must not rewrite a
+vehicle's Fleet Telemetry configuration. Phase 8 must configure a stable
+hostname, port, and CA trust profile that is compatible with replacement leaf
+certificates, and must never put the expiring leaf certificate in the vehicle's
+`ca` field. Tesla's current documentation requires the configured host and CA
+to validate the served certificate but does not promise that every future
+public-CA chain transition is transparent. Phase 8 therefore also owns a
+candidate-versus-configured-trust compatibility gate and a separate,
+per-vehicle signed reconciliation path for genuine hostname, port, or CA trust
+changes. The certificate-renewal job must remain unable to access Tesla OAuth
+tokens or the command-signing key.
+
 ---
 
 ## 6. Repository layout

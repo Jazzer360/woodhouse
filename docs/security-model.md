@@ -220,6 +220,13 @@ then requires the exact Terraform-owned fleet subscription associated with the
 record type. The operator fixture subscription requires its bounded synthetic
 marker and can never enter a user dataset as vehicle telemetry.
 
+Internet scanners and arbitrary clients can reach the public TCP socket, but a
+client with no Tesla-issued certificate, an invalid chain, or no verified leaf
+identity fails during the mTLS handshake before a telemetry record can be
+decoded or published. This is an authenticity boundary, not a denial-of-service
+boundary; network and receiver resource protections still matter for abusive
+connection attempts.
+
 This proves that an accepted production record traversed a Tesla-authenticated
 vehicle connection; it is not proof that every sensor value is physically true.
 Tesla explicitly advises backends to anticipate compromise of a vehicle TLS

@@ -32,6 +32,31 @@ Let's Encrypt DNS-01; there is no recurring manual TXT-record workflow.
   `monitoring_notification_channels`; an alert with no notification channel is
   visible in Cloud Monitoring but cannot wake an operator.
 
+## Relationship to the vehicle configuration
+
+Routine leaf renewal must not require reconfiguring a vehicle. Phase 8 must put
+stable CA trust material—not the expiring server leaf—into the signed Fleet
+Telemetry `ca` field and keep the hostname and port stable. When a candidate
+chains to that configured trust profile, the renewal job may rotate the server
+certificate without a Tesla API call or vehicle wake.
+
+Tesla requires the configured host and CA to validate the served certificate
+and recommends checking the exact combination with its official
+[`check_server_cert.sh`](https://github.com/teslamotors/fleet-telemetry/blob/v0.9.4/tools/check_server_cert.sh).
+Its documentation does not guarantee that an arbitrary future public-CA chain
+change remains compatible. Before the first real vehicle configuration, Phase
+8 must therefore add a gate that validates every candidate leaf and chain
+against the canonical vehicle trust profile before activation.
+
+If the hostname, port, or CA trust profile must change, do not let this job
+silently activate an incompatible certificate and do not give it Tesla
+credentials. Keep serving the still-valid certificate, alert, and use the
+separate Phase 8 per-vehicle signed reconciler described in
+`docs/tesla-onboarding.md`. That reconciler may perform transport-trust
+maintenance automatically only for vehicles whose operator has explicitly
+enabled managed maintenance. Cutover waits for every required vehicle to report
+`synced=true` and for a canary to establish a genuine authenticated connection.
+
 ## One-time enablement checkpoint
 
 1. In Cloudflare, create a custom API token with only `Zone:DNS:Edit`, limited
@@ -94,6 +119,8 @@ remain available.
 
 Certificate renewal changes no Tesla OAuth token, Virtual Key, command key,
 vehicle ownership mapping, Fleet Telemetry configuration, or historical row.
+That statement applies to compatible leaf renewal. A CA or endpoint migration
+is a separate, audited Phase 8 operation and is never performed by this job.
 
 The credential format and least-privilege token recommendation follow the
 official [Certbot Cloudflare plugin documentation](https://certbot-dns-cloudflare.readthedocs.io/en/stable/).

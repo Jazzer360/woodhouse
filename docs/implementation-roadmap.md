@@ -160,7 +160,16 @@ No real vehicle Fleet Telemetry configuration is applied in this phase.
 - broad field coverage includes media and other analytical signals;
 - intentional omissions are documented;
 - inspect/diff/apply/verify/remove/repair works per vehicle;
-- telemetry config version/hash is persisted;
+- telemetry field/interval config and server trust-profile versions/hashes are
+  persisted separately;
+- compatible server leaf renewal requires no vehicle reconfiguration;
+- each candidate certificate is checked against the exact configured vehicle
+  CA trust profile before activation;
+- hostname/port/CA migrations have canary, sync-gated, per-vehicle
+  reconciliation without giving Tesla credentials to telemetry-edge or the
+  certificate-renewal job;
+- automatic transport-trust maintenance requires explicit per-vehicle opt-in,
+  while first enrollment and field/frequency changes remain explicit;
 - CI never changes a real vehicle config automatically.
 
 ---
