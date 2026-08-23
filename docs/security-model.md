@@ -210,6 +210,28 @@ A publisher cannot supply `user_id`, `vehicle_id`, or dataset. Disabled users,
 duplicate bindings, inconsistent VIN records, and malformed dataset IDs fail to
 the restricted quarantine path rather than a user dataset.
 
+The VIN presented to that routing chain is not accepted from arbitrary JSON.
+Tesla's pinned official receiver terminates mTLS with
+`tls.RequireAndVerifyClientCert`, validates the client chain against its embedded
+production Tesla CA bundle, derives the device identity from the verified leaf
+certificate, and overwrites VIN fields in decoded `V`, `alerts`, `errors`, and
+`connectivity` records with that certificate-derived identity. The processor
+then requires the exact Terraform-owned fleet subscription associated with the
+record type. The operator fixture subscription requires its bounded synthetic
+marker and can never enter a user dataset as vehicle telemetry.
+
+This proves that an accepted production record traversed a Tesla-authenticated
+vehicle connection; it is not proof that every sensor value is physically true.
+Tesla explicitly advises backends to anticipate compromise of a vehicle TLS
+private key. Keep ownership allowlisting and input sanitization, flag implausible
+values in derived analytics, and never let telemetry alone authorize a vehicle
+command.
+
+Implementation reference: Tesla's official
+[Fleet Telemetry receiver](https://github.com/teslamotors/fleet-telemetry/tree/v0.9.4)
+documents vehicle client-certificate authentication and the same defense-in-depth
+warning about possible vehicle-key compromise.
+
 Pub/Sub push has two authentication layers: Cloud Run IAM accepts only the
 `tpp-pubsub-push` invoker with the configured custom audience, and the
 application verifies the Google signature, exact audience, issuer, exact

@@ -18,11 +18,15 @@ from tesla_personal_platform.telemetry_processor.processor import (
     IncomingTelemetry,
     RetryableProcessingError,
     TelemetryProcessor,
+    TelemetrySourcePolicy,
     VehicleRoute,
     decode_pubsub_push,
 )
 
 NOW = datetime(2026, 8, 23, 12, tzinfo=UTC)
+FLEET_SUBSCRIPTION = "projects/test/subscriptions/tpp-raw-telemetry-v-processor"
+SYNTHETIC_SUBSCRIPTION = "projects/test/subscriptions/tpp-raw-telemetry-processor"
+SOURCE_POLICY = TelemetrySourcePolicy(SYNTHETIC_SUBSCRIPTION, {FLEET_SUBSCRIPTION: "V"})
 
 
 def test_operator_proof_uses_bigquery_minimum_bytes_guardrail() -> None:
@@ -91,6 +95,7 @@ def incoming(vin: str = "VIN-A", message_id: str = "message-1") -> IncomingTelem
         validation_error=None,
         synthetic_fixture_id=None,
         synthetic_fail_first=False,
+        source_authentication="tesla_mtls",
     )
 
 
@@ -202,7 +207,11 @@ def test_synthetic_fixture_is_isolated_and_can_prove_one_redelivery() -> None:
 
 
 def push_body(
-    payload: dict[str, Any], attributes: dict[str, str], *, message_id: str = "pubsub-1"
+    payload: dict[str, Any],
+    attributes: dict[str, str],
+    *,
+    message_id: str = "pubsub-1",
+    subscription: str = FLEET_SUBSCRIPTION,
 ) -> bytes:
     return json.dumps(
         {
@@ -213,6 +222,7 @@ def push_body(
                 "data": base64.b64encode(json.dumps(payload).encode()).decode(),
             },
             "deliveryAttempt": 2,
+            "subscription": subscription,
         }
     ).encode()
 
@@ -230,7 +240,7 @@ def test_official_receiver_payload_and_transport_metadata_are_preserved() -> Non
         },
     )
 
-    decoded = decode_pubsub_push(body, now=NOW)
+    decoded = decode_pubsub_push(body, now=NOW, source_policy=SOURCE_POLICY)
 
     assert decoded.source_timestamp == datetime(2026, 8, 20, 1, 2, 3, tzinfo=UTC)
     assert decoded.edge_received_at == datetime.fromtimestamp(1787486400, tz=UTC)
@@ -239,6 +249,44 @@ def test_official_receiver_payload_and_transport_metadata_are_preserved() -> Non
     assert decoded.pubsub_delivery_attempt == 2
     assert decoded.telemetry_client_version == "1.3.0"
     assert decoded.receiver_record_version == 2
+    assert decoded.source_authentication == "tesla_mtls"
+
+
+def test_operator_topic_cannot_impersonate_vehicle_telemetry_without_fixture_marker() -> None:
+    body = push_body(
+        {"createdAt": "2026-08-20T01:02:03Z", "vin": "VIN-A", "data": []},
+        {"vin": "VIN-A", "txtype": "V", "receivedat": "1787486400000"},
+        subscription=SYNTHETIC_SUBSCRIPTION,
+    )
+
+    decoded = decode_pubsub_push(body, now=NOW, source_policy=SOURCE_POLICY)
+
+    assert decoded.validation_error == "missing_synthetic_marker"
+    assert decoded.source_authentication == "operator_fixture"
+
+
+def test_fleet_topic_record_type_is_bound_to_its_exact_subscription() -> None:
+    body = push_body(
+        {"createdAt": "2026-08-20T01:02:03Z", "vin": "VIN-A", "alerts": []},
+        {"vin": "VIN-A", "txtype": "alerts", "receivedat": "1787486400000"},
+    )
+
+    decoded = decode_pubsub_push(body, now=NOW, source_policy=SOURCE_POLICY)
+
+    assert decoded.validation_error == "record_type_subscription_mismatch"
+
+
+def test_unknown_subscription_is_never_treated_as_vehicle_authenticated() -> None:
+    body = push_body(
+        {"createdAt": "2026-08-20T01:02:03Z", "vin": "VIN-A", "data": []},
+        {"vin": "VIN-A", "txtype": "V", "receivedat": "1787486400000"},
+        subscription="projects/test/subscriptions/untrusted",
+    )
+
+    decoded = decode_pubsub_push(body, now=NOW, source_policy=SOURCE_POLICY)
+
+    assert decoded.validation_error == "untrusted_pubsub_subscription"
+    assert decoded.source_authentication == "untrusted_subscription"
 
 
 class FakeBigQueryClient:

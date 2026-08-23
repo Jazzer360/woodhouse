@@ -45,11 +45,13 @@ resource "google_compute_instance" "telemetry_edge" {
       jsondecode(file("${path.module}/files/telemetry-edge-config.json")),
       { pubsub = { gcp_project_id = var.project_id } }
     ))
-    telemetry-edge-project-id      = var.project_id
-    telemetry-edge-region          = var.region
-    telemetry-edge-repository      = google_artifact_registry_repository.platform.repository_id
-    telemetry-edge-tls-cert-secret = google_secret_manager_secret.platform["telemetry_edge_tls_cert"].secret_id
-    telemetry-edge-tls-key-secret  = google_secret_manager_secret.platform["telemetry_edge_tls_key"].secret_id
+    telemetry-edge-project-id         = var.project_id
+    telemetry-edge-region             = var.region
+    telemetry-edge-repository         = google_artifact_registry_repository.platform.repository_id
+    telemetry-edge-tls-cert-secret    = google_secret_manager_secret.platform["telemetry_edge_tls_cert"].secret_id
+    telemetry-edge-tls-key-secret     = google_secret_manager_secret.platform["telemetry_edge_tls_key"].secret_id
+    telemetry-edge-tls-release-secret = google_secret_manager_secret.platform["telemetry_edge_tls_release"].secret_id
+    telemetry-edge-hostname           = var.telemetry_hostname
   }
 
   service_account {

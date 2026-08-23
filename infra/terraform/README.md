@@ -92,6 +92,13 @@ to `true` to grant only edge TLS access and create the exact-digest deployment
 trigger. See the complete
 [operator checkpoint](../../docs/deployment.md#phase-7-operator-checkpoint).
 
+The public receiver certificate has a separate fail-closed checkpoint. Keep
+`enable_telemetry_certificate_automation=false` until the zone-scoped Cloudflare
+token exists in Secret Manager. Enable the job with its schedule paused, deploy
+the merged commit-addressed image, require one successful manual execution, and
+only then unpause the daily schedule. See
+[telemetry-cert-renewal.md](../../docs/runbooks/telemetry-cert-renewal.md).
+
 Manual Cloud Build submissions must stage source in the dedicated private
 `${project_id}-tpp-cloudbuild-source` bucket. Pass its `source` prefix through
 `gcloud builds submit --gcs-source-staging-dir`; do not grant the deployer

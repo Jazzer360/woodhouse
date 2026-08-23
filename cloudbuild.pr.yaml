@@ -92,6 +92,17 @@ steps:
       - tpp/telemetry-edge:pr-$BUILD_ID
       - .
 
+  - id: build-certificate-renewer
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args:
+      - build
+      - --file
+      - services/certificate-renewer/Dockerfile
+      - --tag
+      - tpp/certificate-renewer:pr-$BUILD_ID
+      - .
+
 options:
   logging: CLOUD_LOGGING_ONLY
 

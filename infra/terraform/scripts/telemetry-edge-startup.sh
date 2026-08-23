@@ -5,6 +5,8 @@ METADATA_ROOT="http://metadata.google.internal/computeMetadata/v1"
 METADATA_HEADER="Metadata-Flavor: Google"
 STATE_DIR="/var/lib/telemetry-edge"
 TLS_DIR="$STATE_DIR/tls"
+TLS_STAGING_DIR="$STATE_DIR/tls-staging"
+TLS_PREVIOUS_DIR="$STATE_DIR/tls-previous"
 CONFIG_DIR="$STATE_DIR/config"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 DOCKER_CONFIG_DIR="/run/telemetry-edge-docker"
@@ -53,9 +55,10 @@ secret_to_file() {
   secret_name="$1"
   output_file="$2"
   token="$3"
+  version="${4:-latest}"
   response="$(curl --fail --silent --show-error \
     --header "Authorization: Bearer $token" \
-    "https://secretmanager.googleapis.com/v1/projects/$PROJECT_ID/secrets/$secret_name/versions/latest:access")"
+    "https://secretmanager.googleapis.com/v1/projects/$PROJECT_ID/secrets/$secret_name/versions/$version:access")"
   payload="$(printf '%s' "$response" | tr -d '\n' \
     | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
   if [ -z "$payload" ]; then
@@ -68,6 +71,102 @@ secret_to_file() {
   chown 65532:65532 "$temporary_file"
   chmod 0440 "$temporary_file"
   mv -f "$temporary_file" "$output_file"
+  printf '%s' "$response" | tr -d '\n' \
+    | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"[^"]*\/versions\/\([0-9][0-9]*\)".*/\1/p'
+}
+
+json_field() {
+  file="$1"
+  field="$2"
+  sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$file"
+}
+
+valid_sha256() {
+  [ "${#1}" -eq 64 ] && ! printf '%s' "$1" | grep -q '[^0-9a-f]'
+}
+
+validate_tls_files() {
+  directory="$1"
+  expected_hostname="$2"
+  expected_fullchain_sha="$3"
+  expected_leaf_sha="$4"
+  cert_file="$directory/fullchain.pem"
+  key_file="$directory/privkey.pem"
+
+  [ -s "$cert_file" ] && [ -s "$key_file" ]
+  [ "$(grep -c -- '-----BEGIN CERTIFICATE-----' "$cert_file")" -ge 2 ]
+  openssl x509 -in "$cert_file" -noout -checkend 604800 >/dev/null
+  openssl x509 -in "$cert_file" -noout -ext subjectAltName \
+    | grep -F "DNS:$expected_hostname" >/dev/null
+  actual_fullchain_sha="$(sha256sum "$cert_file" | cut -d ' ' -f 1)"
+  actual_leaf_sha="$(openssl x509 -in "$cert_file" -noout -fingerprint -sha256 \
+    | cut -d '=' -f 2 | tr -d ':' | tr 'A-F' 'a-f')"
+  cert_public_sha="$(openssl x509 -in "$cert_file" -pubkey -noout \
+    | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d ' ' -f 1)"
+  key_public_sha="$(openssl pkey -in "$key_file" -pubout -outform DER 2>/dev/null \
+    | sha256sum | cut -d ' ' -f 1)"
+
+  [ "$actual_fullchain_sha" = "$expected_fullchain_sha" ]
+  [ "$actual_leaf_sha" = "$expected_leaf_sha" ]
+  [ "$cert_public_sha" = "$key_public_sha" ]
+}
+
+prepare_tls() {
+  token="$1"
+  release_file="$STATE_DIR/tls-release.json.new"
+  rm -rf "$TLS_STAGING_DIR"
+  mkdir -p "$TLS_STAGING_DIR"
+  chown root:65532 "$TLS_STAGING_DIR"
+  chmod 0750 "$TLS_STAGING_DIR"
+
+  if release_version="$(secret_to_file "$TLS_RELEASE_SECRET" "$release_file" "$token")" \
+    && [ -n "$release_version" ]; then
+    cert_secret="$(json_field "$release_file" cert_secret)"
+    cert_version="$(json_field "$release_file" cert_version)"
+    key_secret="$(json_field "$release_file" key_secret)"
+    key_version="$(json_field "$release_file" key_version)"
+    release_hostname="$(json_field "$release_file" hostname)"
+    fullchain_sha="$(json_field "$release_file" fullchain_sha256)"
+    leaf_sha="$(json_field "$release_file" leaf_sha256)"
+    [ "$cert_secret" = "$TLS_CERT_SECRET" ]
+    [ "$key_secret" = "$TLS_KEY_SECRET" ]
+    [ "$release_hostname" = "$TELEMETRY_HOSTNAME" ]
+    case "$cert_version" in ''|*[!0-9]*) return 1 ;; esac
+    case "$key_version" in ''|*[!0-9]*) return 1 ;; esac
+    valid_sha256 "$fullchain_sha"
+    valid_sha256 "$leaf_sha"
+    secret_to_file "$cert_secret" "$TLS_STAGING_DIR/fullchain.pem" "$token" "$cert_version" >/dev/null
+    secret_to_file "$key_secret" "$TLS_STAGING_DIR/privkey.pem" "$token" "$key_version" >/dev/null
+    validate_tls_files "$TLS_STAGING_DIR" "$TELEMETRY_HOSTNAME" "$fullchain_sha" "$leaf_sha"
+    leaf_prefix="$(printf '%s' "$leaf_sha" | cut -c 1-16)"
+    TLS_RELEASE_MARKER="$release_version:$leaf_prefix"
+    mv -f "$release_file" "$STATE_DIR/tls-release.json"
+  elif [ -s "$TLS_DIR/fullchain.pem" ] && [ -s "$TLS_DIR/privkey.pem" ]; then
+    fullchain_sha="$(sha256sum "$TLS_DIR/fullchain.pem" | cut -d ' ' -f 1)"
+    leaf_sha="$(openssl x509 -in "$TLS_DIR/fullchain.pem" -noout -fingerprint -sha256 \
+      | cut -d '=' -f 2 | tr -d ':' | tr 'A-F' 'a-f')"
+    validate_tls_files "$TLS_DIR" "$TELEMETRY_HOSTNAME" "$fullchain_sha" "$leaf_sha"
+    rm -rf "$TLS_STAGING_DIR"
+    TLS_RELEASE_MARKER="$(cat "$STATE_DIR/deployed-tls-release" 2>/dev/null || printf legacy)"
+    return 0
+  else
+    rm -f "$release_file"
+    secret_to_file "$TLS_CERT_SECRET" "$TLS_STAGING_DIR/fullchain.pem" "$token" >/dev/null
+    secret_to_file "$TLS_KEY_SECRET" "$TLS_STAGING_DIR/privkey.pem" "$token" >/dev/null
+    fullchain_sha="$(sha256sum "$TLS_STAGING_DIR/fullchain.pem" | cut -d ' ' -f 1)"
+    leaf_sha="$(openssl x509 -in "$TLS_STAGING_DIR/fullchain.pem" -noout -fingerprint -sha256 \
+      | cut -d '=' -f 2 | tr -d ':' | tr 'A-F' 'a-f')"
+    validate_tls_files "$TLS_STAGING_DIR" "$TELEMETRY_HOSTNAME" "$fullchain_sha" "$leaf_sha"
+    TLS_RELEASE_MARKER="legacy"
+  fi
+
+  rm -rf "$TLS_PREVIOUS_DIR"
+  if [ -d "$TLS_DIR" ]; then
+    mv "$TLS_DIR" "$TLS_PREVIOUS_DIR"
+  fi
+  mv "$TLS_STAGING_DIR" "$TLS_DIR"
+  chown root:65532 "$TLS_DIR"
+  chmod 0750 "$TLS_DIR"
 }
 
 run_receiver() {
@@ -104,15 +203,17 @@ wait_for_health() {
     http://127.0.0.1:8080/status >/dev/null
 }
 
-mkdir -p "$TLS_DIR" "$CONFIG_DIR"
-chown root:65532 "$STATE_DIR" "$TLS_DIR" "$CONFIG_DIR"
-chmod 0750 "$STATE_DIR" "$TLS_DIR" "$CONFIG_DIR"
+mkdir -p "$STATE_DIR" "$CONFIG_DIR"
+chown root:65532 "$STATE_DIR" "$CONFIG_DIR"
+chmod 0750 "$STATE_DIR" "$CONFIG_DIR"
 
 PROJECT_ID="$(metadata telemetry-edge-project-id)"
 REGION="$(metadata telemetry-edge-region)"
 REPOSITORY="$(metadata telemetry-edge-repository)"
 TLS_CERT_SECRET="$(metadata telemetry-edge-tls-cert-secret)"
 TLS_KEY_SECRET="$(metadata telemetry-edge-tls-key-secret)"
+TLS_RELEASE_SECRET="$(metadata telemetry-edge-tls-release-secret)"
+TELEMETRY_HOSTNAME="$(metadata telemetry-edge-hostname)"
 DESIRED_IMAGE="$(metadata telemetry-edge-image || true)"
 DESIRED_COMMIT="$(metadata telemetry-edge-commit || true)"
 
@@ -147,8 +248,7 @@ mv -f "$temporary_config" "$CONFIG_FILE"
 
 TOKEN="$(access_token)"
 test -n "$TOKEN"
-secret_to_file "$TLS_CERT_SECRET" "$TLS_DIR/fullchain.pem" "$TOKEN"
-secret_to_file "$TLS_KEY_SECRET" "$TLS_DIR/privkey.pem" "$TOKEN"
+prepare_tls "$TOKEN"
 
 mkdir -p "$DOCKER_CONFIG_DIR"
 chmod 0700 "$DOCKER_CONFIG_DIR"
@@ -170,12 +270,22 @@ fi
 if run_receiver "$DESIRED_IMAGE" && wait_for_health; then
   printf '%s' "$DESIRED_IMAGE" >"$STATE_DIR/deployed-image"
   printf '%s' "$DESIRED_COMMIT" >"$STATE_DIR/deployed-commit"
-  report_status "success:$DESIRED_COMMIT"
+  printf '%s' "$TLS_RELEASE_MARKER" >"$STATE_DIR/deployed-tls-release"
+  report_status "success:$DESIRED_COMMIT:tls=$TLS_RELEASE_MARKER"
   exit 0
 fi
 
 docker logs --tail 100 "$CONTAINER_NAME" 2>&1 || true
 docker rm --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
+if [ -d "$TLS_PREVIOUS_DIR" ]; then
+  rm -rf "$TLS_DIR"
+  mv "$TLS_PREVIOUS_DIR" "$TLS_DIR"
+  if run_receiver "$DESIRED_IMAGE" && wait_for_health; then
+    report_status "failed:$DESIRED_COMMIT:tls-rolled-back"
+    exit 1
+  fi
+  docker rm --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
+fi
 if [ -n "$PREVIOUS_IMAGE" ] && [ "$PREVIOUS_IMAGE" != "$DESIRED_IMAGE" ]; then
   if run_receiver "$PREVIOUS_IMAGE" && wait_for_health; then
     report_status "failed:$DESIRED_COMMIT:rolled-back"

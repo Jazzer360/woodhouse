@@ -23,6 +23,14 @@ Vehicle
 
 Pub/Sub is a durability buffer, not a filter.
 
+Production fleet topics are provenance boundaries. Only the telemetry-edge
+service account may publish to them, and the processor binds each delivery to
+the exact Terraform-owned subscription and expected record type. The official
+receiver supplies a VIN derived from a verified Tesla client certificate rather
+than trusting the payload VIN. The separate synthetic topic is operator-only;
+deliveries from it require the guarded fixture marker and never route to a user
+dataset.
+
 The processor must acknowledge Pub/Sub only after the raw event has been durably accepted for persistence according to the chosen implementation.
 
 ---

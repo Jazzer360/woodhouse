@@ -14,6 +14,13 @@ from tesla_personal_platform.telemetry_processor.processor import (
     IncomingTelemetry,
     ProcessingResult,
     RetryableProcessingError,
+    TelemetrySourcePolicy,
+)
+
+FLEET_SUBSCRIPTION = "projects/test/subscriptions/tpp-raw-telemetry-v-processor"
+SOURCE_POLICY = TelemetrySourcePolicy(
+    "projects/test/subscriptions/tpp-raw-telemetry-processor",
+    {FLEET_SUBSCRIPTION: "V"},
 )
 
 
@@ -52,7 +59,8 @@ def valid_push() -> bytes:
                     "txtype": "V",
                 },
                 "data": base64.b64encode(json.dumps(payload).encode()).decode(),
-            }
+            },
+            "subscription": FLEET_SUBSCRIPTION,
         }
     ).encode()
 
@@ -68,6 +76,7 @@ def post(
         ("127.0.0.1", 0),
         processor,  # type: ignore[arg-type]
         AcceptingVerifier(),
+        SOURCE_POLICY,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

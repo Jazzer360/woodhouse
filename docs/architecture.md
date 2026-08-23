@@ -277,6 +277,21 @@ the same authenticated persistence handler. The original
 `tpp-raw-telemetry` topic is reserved for guarded non-vehicle operator fixtures
 and never receives permission from the edge identity.
 
+The receiver validates Tesla vehicle client certificates with its embedded
+production Tesla CA bundle and derives VIN/device identity from the verified
+certificate. It overwrites payload VIN fields before dispatch. The processor
+also binds each push to the exact fleet subscription and expected record type,
+so the separately authorized synthetic topic cannot impersonate the production
+vehicle path.
+
+Public server-certificate lifecycle is owned by a separate scheduled Cloud Run
+Job, not by telemetry-edge. The job performs DNS-01 with a Cloudflare token
+restricted to DNS edits for the one authoritative zone, retains compact ACME
+state in Secret Manager, validates SAN/chain/key/validity, publishes an atomic
+certificate release manifest, restarts the VM, and verifies both guest health
+and the public leaf fingerprint. The edge continues to possess only its TLS
+material and receiver responsibilities.
+
 ---
 
 ## 6. Repository layout
@@ -312,6 +327,7 @@ Use one monorepo.
     mcp-gateway/
     telemetry-processor/
     telemetry-edge/
+    certificate-renewer/
 
   packages/
     tesla-client/

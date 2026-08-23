@@ -266,6 +266,12 @@ to 5,000 messages while disconnected. Re-check Tesla's official documentation
 before Phase 8 changes any vehicle because these values are protocol facts, not
 permanent architecture assumptions.
 
+Do not configure a real vehicle until the unattended certificate-renewal job in
+`docs/runbooks/telemetry-cert-renewal.md` has completed one successful manual
+execution and its daily schedule is enabled. The official receiver must retain
+the mTLS boundary: it verifies a Tesla client certificate, derives the VIN from
+that verified certificate, and overwrites payload VIN fields before publishing.
+
 Use Tesla's recommended signed configuration path through Vehicle Command Proxy.
 
 For every eligible vehicle:

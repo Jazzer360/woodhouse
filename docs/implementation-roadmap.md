@@ -127,7 +127,8 @@ remain operator checkpoint actions.
 
 **Goal:** Receive Fleet Telemetry and permanently retain every valid received observation.
 
-**Status:** Implementation complete; operator deployment/TLS/synthetic checkpoint pending.
+**Status:** Receiver/storage operator checkpoint complete; unattended certificate
+renewal enablement pending before real-vehicle configuration.
 No real vehicle Fleet Telemetry configuration is applied in this phase.
 
 **Prompt:** `docs/prompt-pack.md` → **Prompt 7 — Fleet Telemetry edge and permanent raw BigQuery history**
@@ -140,6 +141,10 @@ No real vehicle Fleet Telemetry configuration is applied in this phase.
 - source/ingestion timestamps and transport/config metadata are preserved;
 - unknown VINs are quarantined rather than guessed;
 - VM deployment/rollback and TLS health are operational.
+- public certificate renewal is scheduled, atomic, monitored, and verified
+  without placing DNS credentials on telemetry-edge;
+- production records are bound to Tesla mTLS identity and exact fleet
+  subscriptions, while synthetic traffic cannot enter a user dataset.
 
 ---
 

@@ -47,11 +47,16 @@ locals {
   }
 
   telemetry_processor_environment = {
-    PUBSUB_PUSH_AUDIENCE        = local.telemetry_processor_push_audience
-    PUBSUB_PUSH_SERVICE_ACCOUNT = google_service_account.platform["pubsub_push"].email
-    QUARANTINE_TABLE            = "${var.project_id}.${google_bigquery_dataset.quarantine.dataset_id}.${google_bigquery_table.quarantine_raw_telemetry.table_id}"
-    SYNTHETIC_TELEMETRY_TABLE   = "${var.project_id}.${google_bigquery_dataset.quarantine.dataset_id}.${google_bigquery_table.synthetic_raw_telemetry.table_id}"
-    TELEMETRY_RECEIVER_VERSION  = var.fleet_telemetry_receiver_version
+    PUBSUB_PUSH_AUDIENCE             = local.telemetry_processor_push_audience
+    PUBSUB_PUSH_SERVICE_ACCOUNT      = google_service_account.platform["pubsub_push"].email
+    QUARANTINE_TABLE                 = "${var.project_id}.${google_bigquery_dataset.quarantine.dataset_id}.${google_bigquery_table.quarantine_raw_telemetry.table_id}"
+    SYNTHETIC_TELEMETRY_TABLE        = "${var.project_id}.${google_bigquery_dataset.quarantine.dataset_id}.${google_bigquery_table.synthetic_raw_telemetry.table_id}"
+    TELEMETRY_RECEIVER_VERSION       = var.fleet_telemetry_receiver_version
+    SYNTHETIC_TELEMETRY_SUBSCRIPTION = "projects/${var.project_id}/subscriptions/tpp-raw-telemetry-processor"
+    FLEET_TELEMETRY_SUBSCRIPTIONS = jsonencode({
+      for key in local.fleet_telemetry_record_types :
+      "projects/${var.project_id}/subscriptions/tpp-raw-telemetry-${lower(key)}-processor" => key
+    })
   }
 }
 

@@ -246,6 +246,14 @@ Acknowledge Pub/Sub only after the raw record has been durably accepted accordin
 
 Implement TLS/certificate handling, structured health metrics, immutable image deployment to the VM by exact digest, health-checked restart, and rollback. Add tests for multiple users, multiple vehicles, buffered source timestamps, intentional preservation of duplicate deliveries, unknown VIN quarantine, transient Pub/Sub/BigQuery failures, and no downstream filtering.
 
+Treat a manually issued short-lived certificate only as bootstrap. Before real
+vehicle telemetry configuration, implement unattended renewal with a
+least-privilege DNS-01 credential outside telemetry-edge, atomic certificate/key
+activation, previous-pair rollback, public fingerprint verification, and alerts
+for failed or missing renewal checks. Preserve Tesla's mTLS boundary and bind
+downstream production deliveries to exact trusted subscriptions so the separate
+synthetic path cannot impersonate vehicle telemetry.
+
 Finish with an OPERATOR CHECKPOINT for the deployed telemetry path before changing any real vehicle telemetry configuration. If DNS or certificate ownership requires external action, give the exact hostname, DNS record type/value, propagation check, and certificate validation steps. After confirmation, verify the receiver's public TLS endpoint/health and service identity. Then run a safe synthetic end-to-end ingestion test through the real Pub/Sub/telemetry-processor/BigQuery path using a clearly marked non-vehicle fixture: prove the record lands in the intended test/system destination, prove an unknown VIN is quarantined rather than attributed to a user, and prove failure/retry behavior does not silently lose the record. Do not fabricate a real user's vehicle identity for this test and do not apply a Tesla Fleet Telemetry configuration yet.
 ```
 

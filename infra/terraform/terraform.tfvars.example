@@ -5,6 +5,11 @@ project_id = "woodhouse-506215"
 # changes by exact image digest.
 enable_telemetry_edge_delivery = false
 telemetry_hostname             = "telemetry.woodhouse.derekjass.com"
+# Enable only after adding a zone-scoped token to cloudflare-dns-api-token.
+# Keep the schedule paused through the first reviewed manual job execution.
+# enable_telemetry_certificate_automation = true
+# telemetry_certificate_acme_email        = "operator@example.com"
+# telemetry_certificate_schedule_paused   = true
 region     = "us-central1"
 zone       = "us-central1-a"
 

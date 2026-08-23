@@ -32,6 +32,7 @@ adapter or second application-language codebase is maintained.
 | Vehicle Command Proxy | `mcp-gateway` Cloud Run sidecar | Official digest-pinned image; loopback TLS only; signs typed vehicle commands |
 | Telemetry processor | Cloud Run `telemetry-processor` | Authenticated Pub/Sub push; trusted VIN routing; append-only per-user BigQuery writes |
 | Telemetry edge | Compute Engine `tpp-telemetry-edge` | Shielded COS `e2-micro`; exact-digest official receiver; local health/Prometheus endpoints; automatic rollback |
+| Certificate renewer | Cloud Run Job `tpp-telemetry-cert-renewer` | Daily DNS-01 check; atomic Secret Manager release; edge reload and public fingerprint verification |
 | Telemetry address | Regional static external IPv4 | DNS target for `telemetry.woodhouse.derekjass.com` |
 | Raw transport | `tpp-raw-telemetry_{V,alerts,connectivity,errors}` | Official receiver topics, 31-day retention, authenticated processor push |
 | Synthetic transport | `tpp-raw-telemetry` | Operator-only non-vehicle Phase 7 verification; edge cannot publish |
@@ -104,7 +105,8 @@ Firewall logging remains enabled for IAP administration but is disabled on the p
 Project SSH keys are blocked, OS Login is required, and no direct public SSH
 rule exists. The VM service account can inspect and publish only the four
 official receiver topics, pull only from the platform Artifact Registry
-repository, read only the two telemetry TLS secrets after delivery is enabled,
+repository, read only the telemetry TLS certificate, key, and atomic release
+manifest after delivery is enabled,
 and write logs/metrics. It has no Tesla OAuth, command-key, Firestore, BigQuery,
 or synthetic-topic access.
 
@@ -126,6 +128,8 @@ self-reference cycle.
 | `tpp-mcp-gateway` | Firestore user; BigQuery job user; runtime secret access for onboarding plus command/proxy key material mounted only into the command-proxy sidecar |
 | `tpp-telemetry-processor` | Firestore user; writer on the quarantine/system dataset and each user dataset through dataset ACLs |
 | `tpp-telemetry-edge` | Four-topic publisher/inspector; platform-repository reader; gated TLS-secret reader; log and metric writer |
+| `tpp-cert-renewer` | Read narrow Cloudflare/ACME/release secrets; add TLS/state/release versions; reset and inspect only `tpp-telemetry-edge` |
+| `tpp-cert-scheduler` | Invoke only the certificate-renewal Cloud Run Job |
 | `tpp-pubsub-push` | Invoker on telemetry-processor only |
 | `tpp-build-validator` | Log writer only; no deploy, secret, or data permission |
 | `tpp-build-deployer` | Artifact Registry writer, Cloud Run developer, `actAs` on Cloud Run runtimes, and—when enabled—`actAs` plus metadata/reset/health access only for `tpp-telemetry-edge` |
@@ -592,12 +596,14 @@ health route.
 
 For telemetry-edge, the build resolves the commit-tagged image to a digest,
 writes only that digest and the 40-character commit to VM metadata, and resets
-the VM. The startup script validates both values, retrieves TLS material into a
-root-owned persistent directory, pulls from Artifact Registry, starts the
-receiver with a read-only filesystem and dropped capabilities, and polls the
-receiver's local `/status`. A failed image is removed and the previously
-healthy digest is restarted. Cloud Build reads a guest attribute and succeeds
-only for the requested commit. Terraform ignores only the two
+the VM. The startup script validates both values, resolves the TLS release
+manifest to exact certificate/key versions, validates their hashes, hostname,
+chain, expiry, and key match in a staging directory, then activates them as a
+pair. It pulls from Artifact Registry, starts the receiver with a read-only
+filesystem and dropped capabilities, and polls the receiver's local `/status`.
+A failed TLS pair is rolled back before the previously healthy image fallback.
+Cloud Build reads a guest attribute and succeeds only for the requested commit.
+Terraform ignores only the two
 delivery-owned metadata keys so an infrastructure apply cannot roll back the
 application image.
 
@@ -713,6 +719,14 @@ gcloud secrets versions add telemetry-edge-tls-key \
   --project=woodhouse-506215 --data-file=/path/to/privkey.pem
 ```
 
+This manual certificate is bootstrap material only. Complete
+[the unattended renewal checkpoint](runbooks/telemetry-cert-renewal.md) before
+configuring a real vehicle. Google-managed certificates are not used here:
+Tesla requires mTLS to terminate in the official receiver, while a managed
+certificate attached to a Google TLS/HTTPS proxy is not exportable to that
+receiver and would terminate the client-certificate boundary in the wrong
+component.
+
 ### 4. Enable exact-digest delivery and deploy once
 
 Set `enable_telemetry_edge_delivery = true`, plan, and apply again. This grants
@@ -801,6 +815,9 @@ Terraform creates these empty containers:
 - `tesla-token-encryption-key`
 - `telemetry-edge-tls-cert`
 - `telemetry-edge-tls-key`
+- `telemetry-edge-tls-release`
+- `telemetry-acme-state`
+- `cloudflare-dns-api-token`
 - `webhook-hmac-key`
 
 No secret version, key material, token, PIN, service-account key, or example

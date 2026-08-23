@@ -54,6 +54,39 @@ variable "enable_telemetry_edge_delivery" {
   default     = false
 }
 
+variable "enable_telemetry_certificate_automation" {
+  description = "Create the isolated ACME renewal job after its Cloudflare token and operator email are ready."
+  type        = bool
+  default     = false
+}
+
+variable "telemetry_certificate_schedule_paused" {
+  description = "Keep scheduled renewal paused until the commit-addressed renewer image passes its first manual execution."
+  type        = bool
+  default     = true
+}
+
+variable "telemetry_certificate_renewal_schedule" {
+  description = "UTC cron schedule for the unattended certificate check."
+  type        = string
+  default     = "17 5 * * *"
+}
+
+variable "telemetry_certificate_acme_email" {
+  description = "Operator email registered with the ACME certificate authority; not a secret."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.telemetry_certificate_acme_email == null ? true : can(regex(
+      "^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$",
+      var.telemetry_certificate_acme_email
+    ))
+    error_message = "telemetry_certificate_acme_email must be null or a plausible email address."
+  }
+}
+
 variable "cloud_run_placeholder_image" {
   description = "Public placeholder used only until commit-addressed project images are deployed."
   type        = string

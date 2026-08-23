@@ -10,6 +10,9 @@ locals {
     tesla_token_encryption_key   = "tesla-token-encryption-key"
     telemetry_edge_tls_cert      = "telemetry-edge-tls-cert"
     telemetry_edge_tls_key       = "telemetry-edge-tls-key"
+    telemetry_edge_tls_release   = "telemetry-edge-tls-release"
+    telemetry_acme_state         = "telemetry-acme-state"
+    cloudflare_dns_api_token     = "cloudflare-dns-api-token"
     webhook_hmac_key             = "webhook-hmac-key"
   }
 }
@@ -18,12 +21,40 @@ resource "google_secret_manager_secret_iam_member" "telemetry_edge_tls_accessor"
   for_each = var.enable_telemetry_edge_delivery ? toset([
     "telemetry_edge_tls_cert",
     "telemetry_edge_tls_key",
+    "telemetry_edge_tls_release",
   ]) : toset([])
 
   project   = var.project_id
   secret_id = google_secret_manager_secret.platform[each.value].secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.platform["telemetry_edge"].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "certificate_renewer_accessor" {
+  for_each = var.enable_telemetry_certificate_automation ? toset([
+    "cloudflare_dns_api_token",
+    "telemetry_acme_state",
+    "telemetry_edge_tls_release",
+  ]) : toset([])
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.platform[each.value].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.platform["certificate_renewer"].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "certificate_renewer_version_adder" {
+  for_each = var.enable_telemetry_certificate_automation ? toset([
+    "telemetry_acme_state",
+    "telemetry_edge_tls_cert",
+    "telemetry_edge_tls_key",
+    "telemetry_edge_tls_release",
+  ]) : toset([])
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.platform[each.value].secret_id
+  role      = "roles/secretmanager.secretVersionAdder"
+  member    = "serviceAccount:${google_service_account.platform["certificate_renewer"].email}"
 }
 
 resource "google_secret_manager_secret" "platform" {
