@@ -62,6 +62,8 @@ def test_vm_delivery_requires_digest_health_check_and_rollback() -> None:
 
     assert "telemetry-edge@sha256:" in script
     assert "http://127.0.0.1:8080/status" in script
+    assert "{{.RestartCount}}" in script
+    assert 'chown root:65532 "$STATE_DIR" "$TLS_DIR" "$CONFIG_DIR"' in script
     assert 'run_receiver "$PREVIOUS_IMAGE"' in script
     assert 'report_status "success:$DESIRED_COMMIT"' in script
     assert "--read-only" in script

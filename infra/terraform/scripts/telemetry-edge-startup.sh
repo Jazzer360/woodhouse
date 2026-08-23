@@ -86,17 +86,26 @@ run_receiver() {
 
 wait_for_health() {
   attempts=0
-  until curl --fail --silent --show-error --max-time 2 \
-    http://127.0.0.1:8080/status >/dev/null; do
+  until [ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)" = "true" ] \
+    && curl --fail --silent --show-error --max-time 2 \
+      http://127.0.0.1:8080/status >/dev/null; do
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 30 ]; then
       return 1
     fi
     sleep 2
   done
+
+  restart_count="$(docker inspect --format '{{.RestartCount}}' "$CONTAINER_NAME")"
+  sleep 5
+  [ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME")" = "true" ]
+  [ "$(docker inspect --format '{{.RestartCount}}' "$CONTAINER_NAME")" = "$restart_count" ]
+  curl --fail --silent --show-error --max-time 2 \
+    http://127.0.0.1:8080/status >/dev/null
 }
 
 mkdir -p "$TLS_DIR" "$CONFIG_DIR"
+chown root:65532 "$STATE_DIR" "$TLS_DIR" "$CONFIG_DIR"
 chmod 0750 "$STATE_DIR" "$TLS_DIR" "$CONFIG_DIR"
 
 PROJECT_ID="$(metadata telemetry-edge-project-id)"
