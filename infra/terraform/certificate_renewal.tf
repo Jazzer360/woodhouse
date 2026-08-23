@@ -123,7 +123,7 @@ resource "google_cloud_scheduler_job" "telemetry_certificate_renewal" {
   project          = var.project_id
   region           = var.region
   name             = "tpp-telemetry-certificate-renewal"
-  description      = "Daily unattended ACME check for the Fleet Telemetry receiver."
+  description      = "Twice-daily unattended ACME check for the Fleet Telemetry receiver."
   schedule         = var.telemetry_certificate_renewal_schedule
   time_zone        = "Etc/UTC"
   paused           = var.telemetry_certificate_schedule_paused
