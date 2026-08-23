@@ -68,6 +68,11 @@ def test_vm_delivery_requires_digest_health_check_and_rollback() -> None:
     assert "--cap-drop=ALL" in script
     assert "metadata telemetry-edge-config" in script
     assert "src=$CONFIG_FILE,dst=/etc/fleet-telemetry/config.json,readonly" in script
+    assert 'DOCKER_CONFIG_DIR="/run/telemetry-edge-docker"' in script
+    assert 'export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"' in script
+    assert 'rm -f "$DOCKER_CONFIG_DIR/config.json"' in script
+    assert "/root/.docker" not in script
+    assert "$STATE_DIR/docker" not in script
 
 
 def test_terraform_injects_the_deployment_project_into_receiver_config() -> None:
