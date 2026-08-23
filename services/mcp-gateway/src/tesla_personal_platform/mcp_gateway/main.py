@@ -46,6 +46,7 @@ from tesla_personal_platform.tesla_client import (
     TeslaAPIError,
     TeslaAuthenticationError,
     TeslaReauthorizationRequired,
+    configure_json_logging,
 )
 
 DEFAULT_HOST: Final = "127.0.0.1"
@@ -875,6 +876,7 @@ class _Server(ThreadingHTTPServer):
 
 def main() -> None:
     """Run the authenticated gateway boundary."""
+    configure_json_logging()
     host = os.environ.get("HOST", DEFAULT_HOST)
     port = int(os.environ.get("PORT", str(DEFAULT_PORT)))
     auth_boundary, tesla_runtime, mcp_authorization, browser_auth = build_runtime()

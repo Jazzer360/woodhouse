@@ -7,6 +7,7 @@ from typing import NoReturn
 from google.api_core.exceptions import GoogleAPICallError
 from google.cloud import secretmanager
 from tesla_personal_platform.tesla_client.errors import TeslaAPIError
+from tesla_personal_platform.tesla_client.observability import configure_json_logging
 from tesla_personal_platform.tesla_client.partner import PartnerRegistrar
 from tesla_personal_platform.tesla_client.transport import UrllibTransport
 
@@ -31,6 +32,7 @@ def _fail(parser: argparse.ArgumentParser, error: Exception) -> NoReturn:
 
 def register_partner_main() -> int:
     """Register only missing regional partner records and verify their public key."""
+    configure_json_logging()
     parser = argparse.ArgumentParser(description="Register or verify Tesla partner account")
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--client-id", required=True, help="Tesla application client ID")

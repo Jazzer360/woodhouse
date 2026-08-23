@@ -30,6 +30,10 @@ from tesla_personal_platform.tesla_client import (
     TeslaVehicle,
     TokenSet,
 )
+from tesla_personal_platform.tesla_client.observability import (
+    TeslaAPILogContext,
+    current_tesla_api_log_context,
+)
 
 ROOT = Path(__file__).parents[1]
 ALL_SCOPES = (
@@ -102,6 +106,27 @@ class FakeFleet:
             if name in {"door_lock", "set_charge_limit", "set_pin_to_drive"}:
                 return CommandResult(True)
             return ObjectResponse({"operation": name})
+
+        return call
+
+
+class ContextCapturingFleet(FakeFleet):
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        vehicle_states: list[str] | None = None,
+        wake_state: str = "online",
+    ) -> None:
+        super().__init__(fail=fail, vehicle_states=vehicle_states, wake_state=wake_state)
+        self.log_contexts: list[tuple[str, TeslaAPILogContext]] = []
+
+    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+        operation = super().__getattr__(name)
+
+        def call(*args: object, **kwargs: object) -> object:
+            self.log_contexts.append((name, current_tesla_api_log_context()))
+            return operation(*args, **kwargs)
 
         return call
 
@@ -289,6 +314,24 @@ def test_exactly_one_vehicle_is_auto_selected() -> None:
     assert direct.calls[0][2]["vin"] == "VIN1"
 
 
+def test_read_result_correlation_is_propagated_to_tesla_log_context() -> None:
+    direct = ContextCapturingFleet()
+    instance, _, _ = service(
+        FakeStore([vehicle("veh-one", "user-a", "VIN1")]),
+        direct=direct,
+    )
+
+    result = instance.call(CONTEXT, "tesla_vehicle", {})
+
+    correlation_id = result["correlation_id"]
+    assert isinstance(correlation_id, str) and correlation_id.startswith("corr_")
+    _, context = direct.log_contexts[0]
+    assert context.correlation_id == correlation_id
+    assert context.vehicle_id == "veh-one"
+    assert context.source == "chatgpt-mcp"
+    assert context.flow_phase == "read"
+
+
 def test_cross_user_vehicle_selection_is_rejected_before_tesla() -> None:
     instance, direct, proxy = service(FakeStore([vehicle("veh-other", "user-b", "OTHER-VIN")]))
 
@@ -376,6 +419,36 @@ def test_offline_command_is_woken_audited_and_sent_once() -> None:
     assert [audit["result"] for audit in store.completed] == ["success", "success"]
     assert result["successful"] is True
     assert result["wake_correlation_id"] == store.started[1]["correlation_id"]
+
+
+def test_command_wake_phases_have_their_expected_log_correlations() -> None:
+    store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
+    direct = ContextCapturingFleet(vehicle_states=["offline", "online"], wake_state="asleep")
+    proxy = ContextCapturingFleet()
+    instance, _, _ = service(
+        store,
+        direct=direct,
+        proxy=proxy,
+        sleep=lambda _seconds: None,
+    )
+
+    result = instance.call(
+        CONTEXT,
+        "tesla_set_charge_limit",
+        {"vehicle_id": "veh-one", "percent": 80},
+    )
+
+    command_correlation = result["correlation_id"]
+    wake_correlation = result["wake_correlation_id"]
+    assert direct.log_contexts[0][1].correlation_id == command_correlation
+    assert direct.log_contexts[0][1].flow_phase == "command_preflight"
+    assert direct.log_contexts[1][1].correlation_id == wake_correlation
+    assert direct.log_contexts[1][1].flow_phase == "automatic_wake"
+    assert direct.log_contexts[2][1].correlation_id == wake_correlation
+    assert direct.log_contexts[2][1].flow_phase == "wake_poll"
+    assert direct.log_contexts[2][1].flow_iteration == 1
+    assert proxy.log_contexts[0][1].correlation_id == command_correlation
+    assert proxy.log_contexts[0][1].flow_phase == "command"
 
 
 def test_offline_command_is_not_sent_when_wake_times_out() -> None:

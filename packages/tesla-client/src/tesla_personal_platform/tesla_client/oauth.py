@@ -3,17 +3,23 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol, cast
 from urllib.parse import urlencode
 
 import jwt
+from jwt.exceptions import PyJWKClientConnectionError
 from tesla_personal_platform.tesla_client.errors import (
     TeslaAuthenticationError,
     TeslaConfigurationError,
     TeslaReauthorizationRequired,
+    TeslaTransportError,
 )
 from tesla_personal_platform.tesla_client.models import TokenSet
-from tesla_personal_platform.tesla_client.transport import HttpResponse, HttpTransport
+from tesla_personal_platform.tesla_client.transport import (
+    HttpResponse,
+    HttpTransport,
+    UrllibTransport,
+)
 
 TESLA_AUTHORIZE_URL = "https://auth.tesla.com/oauth2/v3/authorize"
 TESLA_TOKEN_URL = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"  # noqa: S105
@@ -62,8 +68,17 @@ class IDTokenVerifier(Protocol):
 class TeslaIDTokenVerifier:
     """Verify Tesla RS256 ID tokens against Tesla's current JWKS endpoint."""
 
-    def __init__(self, jwks_url: str = TESLA_JWKS_URL) -> None:
-        self._jwks = jwt.PyJWKClient(jwks_url, cache_jwk_set=True, lifespan=300)
+    def __init__(
+        self,
+        jwks_url: str = TESLA_JWKS_URL,
+        transport: HttpTransport | None = None,
+    ) -> None:
+        self._jwks = _LoggedPyJWKClient(
+            jwks_url,
+            transport or UrllibTransport(timeout_seconds=5.0),
+            cache_jwk_set=True,
+            lifespan=300,
+        )
 
     def verify(self, token: str, *, nonce: str, audience: str) -> str:
         try:
@@ -84,6 +99,32 @@ class TeslaIDTokenVerifier:
         if not isinstance(subject, str) or not subject:
             raise TeslaAuthenticationError("Tesla ID token subject is missing")
         return subject
+
+
+class _LoggedPyJWKClient(jwt.PyJWKClient):
+    """Use the approved Tesla transport for observable, bounded JWKS retrieval."""
+
+    def __init__(self, uri: str, transport: HttpTransport, **kwargs: Any) -> None:
+        super().__init__(uri, **kwargs)
+        self._transport = transport
+
+    def fetch_data(self) -> Any:
+        try:
+            response = self._transport.request("GET", self.uri)
+            if response.status < 200 or response.status >= 300:
+                raise PyJWKClientConnectionError(
+                    f"Tesla JWKS endpoint failed with status {response.status}"
+                )
+            document = response.json()
+            if not isinstance(document, dict):
+                raise ValueError("invalid JWKS document")
+        except TeslaTransportError as error:
+            raise PyJWKClientConnectionError("Tesla JWKS endpoint request failed") from error
+        except (UnicodeDecodeError, ValueError) as error:
+            raise PyJWKClientConnectionError("Tesla JWKS endpoint returned invalid JSON") from error
+        if self.jwk_set_cache is not None:
+            self.jwk_set_cache.put(cast(Any, document))
+        return document
 
 
 class TeslaOAuthClient:
