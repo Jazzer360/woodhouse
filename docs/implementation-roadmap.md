@@ -148,26 +148,30 @@ No real vehicle Fleet Telemetry configuration is applied in this phase.
 
 ---
 
-## Phase 8 — Broad Fleet Telemetry configuration
+## Phase 8 — Cost-conscious Fleet Telemetry configuration
 
-Implementation status: `broad-v1` is implemented from the 239-field documented
-schema with 225 passenger-vehicle fields, numeric/location deltas,
-per-vehicle capability projection, safe exact diff, signed
+Implementation status: `broad-v1` is implemented declaratively from the
+operator-supplied 93-field Tessie baseline with 13 reasoned overrides, 39
+additions, and 2 removals. The resulting 130-field passenger-vehicle profile
+explicitly accounts for all 239 catalog fields, uses opt-in deltas,
+per-vehicle capability projection, safe exact Tessie/current/desired diff, signed
 apply/verify/repair/remove, error inspection, audit, separate trust hashes, and
 a canary-first opted-in transport reconciler. The first real vehicle remains
 behind the required operator checkpoint in
 [`fleet-telemetry-configuration.md`](fleet-telemetry-configuration.md); CI never
 applies configuration.
 
-**Goal:** Configure each vehicle to send a broad, useful telemetry set at rational source intervals.
+**Goal:** Configure each vehicle with a useful Tessie-derived telemetry set at rational source intervals and measured cost.
 
-**Prompt:** `docs/prompt-pack.md` → **Prompt 8 — Broad Fleet Telemetry configuration**
+**Prompt:** `docs/prompt-pack.md` → **Prompt 8 — Cost-conscious Fleet Telemetry configuration**
 
 **Exit criteria:**
 
 - current Tesla available-data definitions were reviewed;
-- broad field coverage includes media and other analytical signals;
+- field coverage includes selected media and other analytically useful signals;
 - intentional omissions are documented;
+- baseline/override/addition/removal decisions are validated declaratively;
+- actual Fleet API usage is checked against the developer-discount target;
 - inspect/diff/apply/verify/remove/repair works per vehicle;
 - telemetry field/interval config and server trust-profile versions/hashes are
   persisted separately;

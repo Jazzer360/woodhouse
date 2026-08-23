@@ -6,10 +6,12 @@ import csv
 import hashlib
 import json
 import re
+import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.resources import files
 from io import StringIO
-from typing import Final
+from typing import Final, Literal, cast, overload
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -19,115 +21,9 @@ from tesla_personal_platform.tesla_client.requests import (
     FleetTelemetryField,
 )
 
-PROFILE_VERSION: Final = "broad-v1"
-SCHEMA_VERSION: Final = "fleet-telemetry-v0.9.4-2026-08-23"
-
-# These are the only documented fields deliberately absent from the passenger-
-# vehicle profile. Hardware-specific Cybertruck/Powershare fields remain in the
-# profile because a broad multi-vehicle application must not assume one model.
-INTENTIONAL_EXCLUSIONS: Final[dict[str, str]] = {
-    "LifetimeEnergyUsedDrive": "Tesla documents this as Semi-only.",
-    "SemitruckPassengerSeatFoldPosition": "Tesla documents this as Semi-only.",
-    "SemitruckTractorParkBrakeStatus": "Tesla documents this as Semi-only.",
-    "SemitruckTrailerParkBrakeStatus": "Tesla documents this as Semi-only.",
-    "SemitruckTpmsPressureRe1L0": "Tesla documents this as Semi-only.",
-    "SemitruckTpmsPressureRe1L1": "Tesla documents this as Semi-only.",
-    "SemitruckTpmsPressureRe1R0": "Tesla documents this as Semi-only.",
-    "SemitruckTpmsPressureRe1R1": "Tesla documents this as Semi-only.",
-    "SemitruckTpmsPressureRe2L0": "Tesla documents this as Semi-only.",
-    "SemitruckTpmsPressureRe2L1": "Tesla documents this as Semi-only.",
-    "SemitruckTpmsPressureRe2R0": "Tesla documents this as Semi-only.",
-    "SemitruckTpmsPressureRe2R1": "Tesla documents this as Semi-only.",
-    "PassengerSeatBelt": "Tesla documents this field as incorrectly reporting row-two center.",
-    "RouteLastUpdated": "Tesla documents this field as broken and not returning data.",
-}
-
 _SELF_DRIVING_FIELDS: Final = frozenset({"MilesSinceReset", "SelfDrivingMilesSinceReset"})
-_CATEGORY_INTERVALS: Final[dict[str, int]] = {
-    "Charging": 30,
-    "Climate": 30,
-    "Driving": 5,
-    "Location": 15,
-    "Media": 15,
-    "Powertrain": 10,
-    "Safety": 5,
-    "Service": 300,
-    "User Preference": 60,
-    "Vehicle Configuration": 3600,
-    "Vehicle State": 30,
-}
-_DISCRETE_INTERVALS: Final[dict[str, int]] = {
-    "Charging": 5,
-    "Climate": 5,
-    "Driving": 1,
-    "Location": 5,
-    "Media": 5,
-    "Powertrain": 5,
-    "Safety": 1,
-    "Service": 60,
-    "User Preference": 30,
-    "Vehicle Configuration": 300,
-    "Vehicle State": 5,
-}
-_REAL_DELTAS: Final[dict[str, float]] = {
-    "Charging": 0.1,
-    "Climate": 0.5,
-    "Driving": 0.1,
-    "Location": 0.1,
-    "Media": 1.0,
-    "Powertrain": 0.5,
-    "Safety": 1.0,
-    "Service": 0.05,
-    "Vehicle State": 0.1,
-}
-_INTERVAL_OVERRIDES: Final[dict[str, int]] = {
-    "BatteryLevel": 30,
-    "DestinationLocation": 5,
-    "DestinationName": 5,
-    "Gear": 1,
-    "GpsHeading": 5,
-    "Location": 5,
-    "Locked": 1,
-    "MediaNowPlayingElapsed": 15,
-    "MilesSinceReset": 30,
-    "Odometer": 30,
-    "OriginLocation": 5,
-    "RouteLine": 30,
-    "SelfDrivingMilesSinceReset": 30,
-    "Soc": 30,
-    "TpmsHardWarnings": 60,
-    "TpmsPressureFl": 300,
-    "TpmsPressureFr": 300,
-    "TpmsPressureRl": 300,
-    "TpmsPressureRr": 300,
-    "TpmsSoftWarnings": 60,
-    "VehicleSpeed": 5,
-}
-_DELTA_OVERRIDES: Final[dict[str, float]] = {
-    "BatteryLevel": 0.5,
-    "BrakePedalPos": 0.5,
-    "ChargerVoltage": 2.0,
-    "DestinationLocation": 25.0,
-    "GpsHeading": 5.0,
-    "Location": 10.0,
-    "MediaNowPlayingDuration": 1000.0,
-    "MediaNowPlayingElapsed": 5000.0,
-    "MilesSinceReset": 1.0,
-    "Odometer": 0.1,
-    "OriginLocation": 25.0,
-    "PackCurrent": 1.0,
-    "PackVoltage": 1.0,
-    "PedalPosition": 0.5,
-    "SelfDrivingMilesSinceReset": 1.0,
-    "Soc": 0.5,
-    "TimeToFullCharge": 0.05,
-    "TonneauOpenPercent": 1.0,
-    "TpmsPressureFl": 0.05,
-    "TpmsPressureFr": 0.05,
-    "TpmsPressureRl": 0.05,
-    "TpmsPressureRr": 0.05,
-    "VehicleSpeed": 1.0,
-}
+_BASELINE_RESOURCE: Final = "data/fleet_telemetry_tessie_baseline.toml"
+_PROFILE_RESOURCE: Final = "data/fleet_telemetry_woodhouse.toml"
 _SEMVER = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?")
 _PEM_CERTIFICATE = re.compile(
     rb"-----BEGIN CERTIFICATE-----\s+.*?-----END CERTIFICATE-----", re.DOTALL
@@ -146,9 +42,11 @@ class TelemetryFieldDefinition:
 class FleetTelemetryProfile:
     version: str
     schema_version: str
+    baseline_name: str
     fields: dict[str, FleetTelemetryField]
     excluded_fields: dict[str, str]
     capability_omissions: dict[str, str]
+    baseline_comparison: JsonObject
     alert_types: tuple[str, ...] = ("service", "customer", "service-fix")
     delivery_policy: str = "latest"
 
@@ -159,6 +57,7 @@ class FleetTelemetryProfile:
                 "alert_types": list(self.alert_types),
                 "delivery_policy": self.delivery_policy,
                 "fields": {name: field.to_payload() for name, field in sorted(self.fields.items())},
+                "baseline": self.baseline_name,
                 "schema_version": self.schema_version,
                 "version": self.version,
             }
@@ -249,42 +148,253 @@ def load_field_catalog() -> tuple[TelemetryFieldDefinition, ...]:
 
 
 def broad_profile(fleet_telemetry_version: str | None) -> FleetTelemetryProfile:
-    """Build the one broad profile, projected only for reported client capabilities."""
+    """Load the reviewed Tessie baseline plus explicit Woodhouse deviations."""
+    catalog = {definition.name: definition for definition in load_field_catalog()}
+    baseline_document = _load_toml_resource(_BASELINE_RESOURCE)
+    profile_document = _load_toml_resource(_PROFILE_RESOURCE)
+    baseline_meta = _require_table(baseline_document, "baseline")
+    profile_meta = _require_table(profile_document, "profile")
+    baseline_name = _require_string(baseline_meta, "name")
+    if _require_string(profile_meta, "baseline") != baseline_name:
+        raise RuntimeError("Woodhouse profile names a different Tessie baseline")
+    if _require_string(profile_meta, "delivery_policy") != _require_string(
+        baseline_meta, "delivery_policy"
+    ) or _require_alert_types(profile_meta) != _require_alert_types(baseline_meta):
+        raise RuntimeError("Transport policy changes require an explicit implementation decision")
+
+    baseline_fields = _load_field_section(
+        baseline_document, "fields", catalog, require_rationale=False
+    )
+    overrides = _load_field_section(profile_document, "overrides", catalog)
+    additions = _load_field_section(profile_document, "additions", catalog)
+    removals = _load_reason_section(profile_document, "removals", catalog)
+    omissions = _load_reason_section(profile_document, "omissions", catalog)
+    _validate_declarative_partition(
+        catalog=catalog,
+        baseline=baseline_fields,
+        overrides=overrides,
+        additions=additions,
+        removals=removals,
+        omissions=omissions,
+    )
+
+    configured = dict(baseline_fields)
+    for name in removals:
+        del configured[name]
+    configured.update({name: field for name, (field, _) in overrides.items()})
+    configured.update({name: field for name, (field, _) in additions.items()})
+
     supports_self_driving = _version_at_least(fleet_telemetry_version, (1, 2, 0))
     capability_omissions: dict[str, str] = {}
-    configured: dict[str, FleetTelemetryField] = {}
-    for definition in load_field_catalog():
-        if definition.name in INTENTIONAL_EXCLUSIONS:
-            continue
-        if definition.name in _SELF_DRIVING_FIELDS and not supports_self_driving:
-            capability_omissions[definition.name] = (
+    if not supports_self_driving:
+        for name in _SELF_DRIVING_FIELDS & configured.keys():
+            capability_omissions[name] = (
                 "Requires Fleet Telemetry client 1.2.0 and supported HW4 firmware."
             )
-            continue
-        default_interval = (
-            _DISCRETE_INTERVALS[definition.category]
-            if definition.value_type in {"boolean", "enum", "string", "time", "timestamp"}
-            else _CATEGORY_INTERVALS[definition.category]
-        )
-        interval = _INTERVAL_OVERRIDES.get(definition.name, default_interval)
-        delta: int | float | None = None
-        if definition.value_type == "integer":
-            delta = int(_DELTA_OVERRIDES.get(definition.name, 1))
-        elif definition.value_type == "real":
-            delta = _DELTA_OVERRIDES.get(definition.name, _REAL_DELTAS[definition.category])
-        elif definition.value_type == "Location":
-            delta = _DELTA_OVERRIDES.get(definition.name, 10.0)
-        configured[definition.name] = FleetTelemetryField(
-            interval_seconds=interval,
-            minimum_delta=delta,
-        )
-    return FleetTelemetryProfile(
-        version=PROFILE_VERSION,
-        schema_version=SCHEMA_VERSION,
-        fields=configured,
-        excluded_fields=dict(INTENTIONAL_EXCLUSIONS),
+            del configured[name]
+
+    excluded_fields = {**omissions, **removals}
+    baseline_comparison = _build_baseline_comparison(
+        baseline_name=baseline_name,
+        baseline_fields=baseline_fields,
+        configured_fields=configured,
+        overrides=overrides,
+        additions=additions,
+        removals=removals,
+        omissions=omissions,
         capability_omissions=capability_omissions,
     )
+    return FleetTelemetryProfile(
+        version=_require_string(profile_meta, "version"),
+        schema_version=_require_string(profile_meta, "schema_version"),
+        baseline_name=baseline_name,
+        fields=configured,
+        excluded_fields=excluded_fields,
+        capability_omissions=capability_omissions,
+        baseline_comparison=baseline_comparison,
+        alert_types=_require_alert_types(profile_meta),
+        delivery_policy=_require_string(profile_meta, "delivery_policy"),
+    )
+
+
+def _load_toml_resource(name: str) -> dict[str, object]:
+    resource = files("tesla_personal_platform.tesla_client").joinpath(name)
+    return cast(dict[str, object], tomllib.loads(resource.read_text(encoding="utf-8")))
+
+
+def _require_table(document: Mapping[str, object], key: str) -> dict[str, object]:
+    value = document.get(key)
+    if not isinstance(value, dict) or not all(isinstance(name, str) for name in value):
+        raise RuntimeError(f"Telemetry profile section [{key}] is missing or invalid")
+    return cast(dict[str, object], value)
+
+
+def _require_string(document: Mapping[str, object], key: str) -> str:
+    value = document.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"Telemetry profile value {key!r} must be a non-empty string")
+    return value
+
+
+def _require_alert_types(document: Mapping[str, object]) -> tuple[str, ...]:
+    value = document.get("alert_types")
+    allowed = {"service", "customer", "service-fix"}
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(item, str) and item in allowed for item in value)
+    ):
+        raise RuntimeError("Telemetry profile alert_types are invalid")
+    return tuple(cast(list[str], value))
+
+
+@overload
+def _load_field_section(
+    document: Mapping[str, object],
+    section: str,
+    catalog: Mapping[str, TelemetryFieldDefinition],
+    *,
+    require_rationale: Literal[False],
+) -> dict[str, FleetTelemetryField]: ...
+
+
+@overload
+def _load_field_section(
+    document: Mapping[str, object],
+    section: str,
+    catalog: Mapping[str, TelemetryFieldDefinition],
+    *,
+    require_rationale: Literal[True] = True,
+) -> dict[str, tuple[FleetTelemetryField, str]]: ...
+
+
+def _load_field_section(
+    document: Mapping[str, object],
+    section: str,
+    catalog: Mapping[str, TelemetryFieldDefinition],
+    *,
+    require_rationale: bool = True,
+) -> dict[str, tuple[FleetTelemetryField, str]] | dict[str, FleetTelemetryField]:
+    values = _require_table(document, section)
+    with_reasons: dict[str, tuple[FleetTelemetryField, str]] = {}
+    without_reasons: dict[str, FleetTelemetryField] = {}
+    for name, raw in values.items():
+        if name not in catalog:
+            raise RuntimeError(f"Telemetry profile field {name!r} is not in the pinned catalog")
+        if not isinstance(raw, dict):
+            raise RuntimeError(f"Telemetry profile field {name!r} must be a TOML inline table")
+        spec = cast(dict[str, object], raw)
+        allowed = {"interval_seconds", "minimum_delta"}
+        if require_rationale:
+            allowed.add("rationale")
+        unknown = set(spec) - allowed
+        if unknown:
+            raise RuntimeError(f"Telemetry profile field {name!r} has unknown keys: {unknown}")
+        interval = spec.get("interval_seconds")
+        if not isinstance(interval, int) or isinstance(interval, bool) or interval <= 0:
+            raise RuntimeError(f"Telemetry profile field {name!r} has an invalid interval")
+        minimum_delta = spec.get("minimum_delta")
+        if minimum_delta is not None:
+            if (
+                not isinstance(minimum_delta, (int, float))
+                or isinstance(minimum_delta, bool)
+                or minimum_delta <= 0
+            ):
+                raise RuntimeError(f"Telemetry profile field {name!r} has an invalid delta")
+            if catalog[name].value_type not in {"integer", "real", "Location"}:
+                raise RuntimeError(f"Telemetry profile field {name!r} cannot use minimum_delta")
+        field = FleetTelemetryField(interval_seconds=interval, minimum_delta=minimum_delta)
+        if require_rationale:
+            rationale = _require_string(spec, "rationale")
+            with_reasons[name] = (field, rationale)
+        else:
+            without_reasons[name] = field
+    return with_reasons if require_rationale else without_reasons
+
+
+def _load_reason_section(
+    document: Mapping[str, object],
+    section: str,
+    catalog: Mapping[str, TelemetryFieldDefinition],
+) -> dict[str, str]:
+    values = _require_table(document, section)
+    reasons: dict[str, str] = {}
+    for name, reason in values.items():
+        if name not in catalog:
+            raise RuntimeError(f"Telemetry profile field {name!r} is not in the pinned catalog")
+        if not isinstance(reason, str) or not reason.strip():
+            raise RuntimeError(f"Telemetry profile field {name!r} requires a rationale")
+        reasons[name] = reason
+    return reasons
+
+
+def _validate_declarative_partition(
+    *,
+    catalog: Mapping[str, TelemetryFieldDefinition],
+    baseline: Mapping[str, FleetTelemetryField],
+    overrides: Mapping[str, tuple[FleetTelemetryField, str]],
+    additions: Mapping[str, tuple[FleetTelemetryField, str]],
+    removals: Mapping[str, str],
+    omissions: Mapping[str, str],
+) -> None:
+    baseline_names = set(baseline)
+    if len(baseline_names) != 93:
+        raise RuntimeError("Pinned Tessie telemetry baseline must contain exactly 93 fields")
+    if not set(overrides) <= baseline_names:
+        raise RuntimeError("Woodhouse overrides must name Tessie baseline fields")
+    if not set(removals) <= baseline_names:
+        raise RuntimeError("Woodhouse removals must name Tessie baseline fields")
+    if set(overrides) & set(removals):
+        raise RuntimeError("A Tessie field cannot be both overridden and removed")
+    nonbaseline = set(catalog) - baseline_names
+    if set(additions) & baseline_names:
+        raise RuntimeError("Woodhouse additions must not already be in the Tessie baseline")
+    if set(omissions) & baseline_names:
+        raise RuntimeError("Catalog omissions must not name Tessie baseline fields")
+    if set(additions) & set(omissions):
+        raise RuntimeError("A non-baseline field cannot be both added and omitted")
+    if set(additions) | set(omissions) != nonbaseline:
+        missing = sorted(nonbaseline - set(additions) - set(omissions))
+        raise RuntimeError(f"Every non-baseline catalog field requires a decision: {missing}")
+
+
+def _build_baseline_comparison(
+    *,
+    baseline_name: str,
+    baseline_fields: Mapping[str, FleetTelemetryField],
+    configured_fields: Mapping[str, FleetTelemetryField],
+    overrides: Mapping[str, tuple[FleetTelemetryField, str]],
+    additions: Mapping[str, tuple[FleetTelemetryField, str]],
+    removals: Mapping[str, str],
+    omissions: Mapping[str, str],
+    capability_omissions: Mapping[str, str],
+) -> JsonObject:
+    override_document: JsonObject = {
+        name: {
+            "baseline": baseline_fields[name].to_payload(),
+            "woodhouse": field.to_payload(),
+            "rationale": rationale,
+        }
+        for name, (field, rationale) in sorted(overrides.items())
+    }
+    addition_document: JsonObject = {
+        name: {"woodhouse": field.to_payload(), "rationale": rationale}
+        for name, (field, rationale) in sorted(additions.items())
+    }
+    removal_document: JsonObject = {
+        name: {"baseline": baseline_fields[name].to_payload(), "rationale": rationale}
+        for name, rationale in sorted(removals.items())
+    }
+    return {
+        "baseline": baseline_name,
+        "baseline_field_count": len(baseline_fields),
+        "woodhouse_field_count": len(configured_fields),
+        "overrides": override_document,
+        "additions": addition_document,
+        "removals": removal_document,
+        "catalog_omissions": dict(sorted(omissions.items())),
+        "capability_omissions": dict(sorted(capability_omissions.items())),
+    }
 
 
 def supports_broad_profile(fleet_telemetry_version: str | None) -> bool:

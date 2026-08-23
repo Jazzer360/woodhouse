@@ -12,56 +12,91 @@ Endpoints documentation, and the pinned receiver version `v0.9.4`.
 
 ## Canonical profile
 
-The only default profile is `broad-v1`. It is capability-projected per vehicle;
-it is not a plan, quota, or storage tier.
+The only default profile is `broad-v1`. The name is retained for compatibility,
+but its policy is now **Tessie baseline plus explicit Woodhouse decisions**, not
+"subscribe to nearly everything." It is capability-projected per vehicle; it
+is not a plan, quota, or storage tier.
 
 - Source catalog: 239 documented fields.
-- Configured for a Fleet Telemetry 1.2.0+ passenger vehicle: 225 fields.
-- Fleet Telemetry 1.0/1.1 projection: 223 fields; the two HW4 self-driving
+- Operator-supplied Tessie baseline: 93 fields.
+- Woodhouse deviations: 13 overrides, 39 additions, and 2 removals.
+- Configured for a Fleet Telemetry 1.2.0+ passenger vehicle: 130 fields.
+- Fleet Telemetry 1.0/1.1 projection: 128 fields; the two HW4 self-driving
   counters are omitted because Tesla introduced them in client 1.2.0.
+- Remaining exclusions: 109 fields, comprising the 2 Tessie removals and 107
+  explicit decisions not to add a non-baseline catalog field.
 - `delivery_policy` is `latest`, so unacknowledged buffered data is resent.
 - Alert types are `service`, `customer`, and `service-fix`.
 - Location-bearing fields require the owner's `vehicle_location` grant.
-- The broad profile requires Fleet Telemetry client 1.0.0 or later because it
+- The profile requires Fleet Telemetry client 1.0.0 or later because it
   depends on location `minimum_delta` and `delivery_policy=latest`.
 
 The checked-in field catalog is
 [`fleet_streaming_fields_v0_9_4.csv`](../packages/tesla-client/src/tesla_personal_platform/tesla_client/data/fleet_streaming_fields_v0_9_4.csv).
-The configuration builder is
+The operator-supplied field snapshot is transcribed exactly in
+[`fleet_telemetry_tessie_baseline.toml`](../packages/tesla-client/src/tesla_personal_platform/tesla_client/data/fleet_telemetry_tessie_baseline.toml).
+Woodhouse decisions, with inline rationales, live in
+[`fleet_telemetry_woodhouse.toml`](../packages/tesla-client/src/tesla_personal_platform/tesla_client/data/fleet_telemetry_woodhouse.toml).
+The validating loader is
 [`telemetry.py`](../packages/tesla-client/src/tesla_personal_platform/tesla_client/telemetry.py).
-The operator screen always renders the exact desired/current field maps and
-hashes before it enables Apply.
+The loader refuses to start if a field is unknown, a deviation lacks a
+rationale, sections overlap, or any of the 239 catalog fields lacks an explicit
+decision. The operator screen renders the Tessie comparison, exact
+desired/current field maps, and hashes before it enables Apply.
 
-### Intentional exclusions
+The source `api-response.json` is not checked in. Its hostname, CA material,
+JWS claims/signature, sync state, identifiers, and timestamps are transport or
+potentially sensitive runtime data. Only the 93 field interval/delta settings
+were transcribed into the baseline.
 
-Only these documented fields are excluded:
+### Tessie overrides
 
-- `LifetimeEnergyUsedDrive` and the 11 `Semitruck*` fields: Tesla documents
-  them as Semi-only; Woodhouse's current tenant model is passenger vehicles.
-- `RouteLastUpdated`: Tesla documents it as broken and not returning data.
-- `PassengerSeatBelt`: Tesla documents it as incorrectly reporting the
-  second-row-center state. Keeping a knowingly mislabeled safety signal would
-  be worse than an explicit omission.
+These are every cadence/delta difference for a field already in Tessie:
 
-Cybertruck, Powershare, tonneau, off-road, and other hardware-specific fields
-remain included. A multi-vehicle platform must not infer model capability from
-the first vehicle; unsupported fields simply do not emit for that vehicle.
-Experimental, deprecated, and `Unknown` proto members are not in the 239-field
-documented catalog and are not subscribed.
+| Field(s) | Tessie | Woodhouse | Why |
+|---|---:|---:|---|
+| `Location` | 30 s / 3 m | 10 s / 10 m | Better trip shape at Tesla's economical example cadence, while filtering GPS drift more strongly. |
+| `VehicleSpeed` | 30 s / no delta | 10 s / 1 mph | Better trip chronology without recording one-mph fluctuations. |
+| `GpsHeading` | 60 s / 1° | 10 s / 5° | Align heading with trip cadence and ignore small directional jitter. |
+| Six media metadata/state fields | 60 s | 10 s | Capture short tracks, skips, and state/source changes; unchanged values do not emit. |
+| `TpmsSoftWarnings`, `TpmsHardWarnings` | 1,800 s | 60 s | Warning transitions are rare, so improved latency adds little normal volume. |
+| `HvacLeftTemperatureRequest` | 1 s | 5 s | Setpoint history does not need one-second polling or a numeric delta. |
+| `Odometer` | 30 s / 0.01 mi | 60 s / 0.01 mi | Retain Tessie's precision at a cheaper cadence. |
 
-### Tessie baseline and deviations
+Thus, Woodhouse is more responsive than Tessie for trip shape, media changes,
+and TPMS warning transitions; less aggressive for the HVAC setpoint and
+odometer. The higher location delta makes the faster location interval less
+sensitive to stationary jitter.
 
-The operator-supplied Tessie response contained 93 fields. It was used only as
-a cadence and delta reference; its hostname, CA, issuer, audience, and response
-metadata are not stored in this repository. Woodhouse keeps useful Tessie
-choices such as change-based 1-5 second security/state observation, 30-second
-battery values, temperature deltas, TPMS throttling, and location drift.
+### Woodhouse additions and removals
 
-Woodhouse deliberately expands beyond Tessie to preserve useful charging,
-climate, navigation, powertrain, safety, service, preferences, configuration,
-connectivity, and self-driving history. In particular, Tessie's sample omitted
-all 35 documented powertrain fields and most of the available driving and
-vehicle-configuration fields.
+The 39 additions are deliberately narrow groups rather than whole Tesla
+categories:
+
+- 12 charging/session fields for energy-in, charge state/rate, BMS state, port
+  conditions, preconditioning, scheduling, and completion estimates;
+- 10 climate state fields for HVAC mode/fan, right setpoint, defrost, seat
+  climate/ventilation, and cold-weather loads;
+- 4 low-churn driving fields: brake state (not pedal position), cruise set
+  speed, drive-ready state, and coarse traffic delay;
+- 5 location/context fields: GPS validity, Tesla's home/work/favorite
+  classification, and a 25-meter-gated route origin;
+- 2 safety/self-driving fields: driver seat belt and the counter denominator;
+- 6 rare vehicle-state fields for guest/service mode, hazards, key count, and
+  software-update duration.
+
+Woodhouse retains Tessie's `MediaAudioVolume` at 60 seconds because correlating
+volume changes with the current track can provide a weak but useful engagement
+signal. It removes `MediaAudioVolumeIncrement` and `MediaAudioVolumeMax` because
+those static UI range values add no comparable historical value.
+
+The 107 non-baseline omissions are individually commented in the Woodhouse
+TOML. Major choices include detailed powertrain engineering signals,
+acceleration and pedal-position streams, turn-signal/high-beam transitions,
+route geometry, static preferences/configuration, redundant fields, unsupported
+hardware families, Tesla's documented broken `RouteLastUpdated`, and its
+misreported `PassengerSeatBelt`. These can be reconsidered only with a concrete
+analytical use and a versioned, operator-reviewed change.
 
 ## Interval and minimum-delta policy
 
@@ -70,39 +105,45 @@ value has changed. A short interval for a boolean or enum therefore reduces
 transition latency without producing a constant sample stream. Numeric and
 location deltas add a second noise threshold.
 
-| Signal family | Normal interval | Delta policy and rationale |
+| Selected signal family | Normal interval | Delta policy and rationale |
 |---|---:|---|
-| Body, security, safety, gear | 1-5 s | Discrete change only; low latency matters and unchanged values are not emitted. |
-| Location | 5 s | 10 m movement; useful route shape without GPS jitter. Origin/destination use 25 m. |
-| Speed and driving dynamics | 5 s | Speed 1 mph; acceleration/pedal values use small meaningful deltas. |
-| Powertrain | 10 s | Per-value deltas (normally 0.5, with current/torque/voltage overrides) suppress sensor noise while retaining diagnostic resolution. |
-| Charging and battery | 30 s | Normally 0.1 units; SOC/BatteryLevel 0.5%, voltage 2 V, pack current/voltage 1. |
-| Climate numeric values | 30 s | Normally 0.5 degrees/units; discrete modes use 5 s. |
-| Media | 5-15 s | Metadata/playback is change-based; elapsed time uses a 5,000 ms delta and duration 1,000 ms. |
-| TPMS | 60-300 s | Warning state is prompt; pressure uses 0.05 bar drift. |
-| Service | 60-300 s | Slow-changing diagnostics; numeric noise is delta-gated. |
-| User preferences | 30-60 s | Change-based and operationally non-urgent. |
-| Vehicle configuration | 300 s | Change-based static metadata. |
+| Body, security, safety, gear | Tessie 1-5 s | Discrete change only; unchanged values do not emit. |
+| Location and speed | 10 s | 10 m and 1 mph respectively; route origin is 60 s / 25 m. |
+| Charging and battery | Mostly 30-120 s | Physical measurements use explicit defensible deltas; discrete state/settings do not receive artificial deltas. |
+| Climate | Tessie baseline plus 5 s added states | Temperatures inherit Tessie's deltas; modes, setpoints, fan levels, and switches are treated as changed values. |
+| Media | 10-60 s | Metadata/state is 10 s; elapsed/duration retain Tessie's slower, delta-gated behavior. |
+| TPMS | Pressure 900 s; warnings 60 s | Pressure inherits Tessie's 0.1 threshold; warning state prioritizes transition latency. |
+| Low-rate diagnostics/security inventory | 60-300 s | Only selected high-value fields are included. |
 
-Every documented integer, real, and Location field in the desired profile has
-a `minimum_delta`. Integer settings/counters default to 1. Real-valued defaults
-are category-specific, with named overrides in `telemetry.py`. This prevents
-small numeric drift from dominating the stream while keeping the field itself.
+`minimum_delta` is opt-in, not inferred from Tesla's numeric type. It is used
+for noisy physical values, distance/location, monotonic energy/odometer
+measurements, or a counter where the threshold has a clear unit. Numeric
+settings, enum-like levels, counts, and durations generally rely on Tesla's
+normal changed-value behavior. This avoids the earlier blanket-delta policy.
 
 High-volume considerations shown at the checkpoint:
 
-- the 35 powertrain fields can each emit at most once per 10 seconds when their
-  value also crosses its delta;
-- Location can emit at most once per 5 seconds after at least 10 m movement;
-- driving values can emit at most once per 5 seconds;
+- Location and speed can each emit at most once per 10 seconds after crossing
+  their respective delta;
+- detailed powertrain and high-churn acceleration/pedal telemetry are omitted;
+- charging measurements normally emit at most once per 60 seconds and usually
+  require a measurement delta;
 - slow/discrete fields normally emit only on a real state change or on the
   vehicle's initial telemetry snapshot.
 
-Tesla bills telemetry by signals, not only payloads. The exact cost depends on
-which supported values actually change. After the first real observation, use
-Cloud Monitoring and raw row counts to measure actual volume before changing
-the versioned profile. A field/frequency change always creates a new explicit
-profile version and operator diff; it is never an automatic maintenance edit.
+Tesla currently charges $1 per 150,000 streaming signals and applies a $10
+monthly developer discount across Fleet API usage categories. If telemetry
+were the only charge, that is 1.5 million signals/month, approximately 50,000
+per day; Woodhouse intentionally leaves margin for commands, wakes, and live
+reads. This is a target, not a guarantee: actual cost depends on supported
+fields and how often values change across every configured vehicle. Monitor the
+[Tesla Fleet API dashboard](https://developer.tesla.com/) after the first live
+apply and compare billing usage with receiver metrics/raw counts before adding
+fields or shortening intervals. Tesla's
+[billing-limit behavior](https://developer.tesla.com/docs/fleet-api/billing-and-limits)
+can remove telemetry configurations at the limit and does not automatically
+restore them, so alert below the limit. A field/frequency change always creates
+a versioned explicit operator diff; it is never automatic maintenance.
 
 ## Per-vehicle lifecycle
 

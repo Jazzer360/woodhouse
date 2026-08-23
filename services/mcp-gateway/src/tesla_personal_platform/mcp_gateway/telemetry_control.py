@@ -158,6 +158,7 @@ class FleetTelemetryControlService:
                 "port": self._trust.port,
             },
             "field_count": len(profile.fields),
+            "baseline_comparison": profile.baseline_comparison,
             "intentional_exclusions": json_object(profile.excluded_fields),
             "capability_omissions": json_object(profile.capability_omissions),
             "tesla": {
