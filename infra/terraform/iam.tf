@@ -106,6 +106,14 @@ resource "google_service_account_iam_member" "deployer_runtime_user" {
   member             = "serviceAccount:${google_service_account.platform["cloud_build_deployer"].email}"
 }
 
+resource "google_service_account_iam_member" "deployer_edge_runtime_user" {
+  count = var.enable_telemetry_edge_delivery ? 1 : 0
+
+  service_account_id = google_service_account.platform["telemetry_edge"].name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.platform["cloud_build_deployer"].email}"
+}
+
 resource "google_service_account_iam_member" "cloud_build_identity_token_creator" {
   for_each = toset(["cloud_build_validator", "cloud_build_deployer"])
 
