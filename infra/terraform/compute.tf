@@ -38,7 +38,7 @@ resource "google_compute_instance" "telemetry_edge" {
     enable-oslogin            = "TRUE"
     google-logging-enabled    = "true"
     google-monitoring-enabled = "true"
-    startup-script            = file("${path.module}/scripts/telemetry-edge-startup.sh")
+    startup-script            = replace(file("${path.module}/scripts/telemetry-edge-startup.sh"), "\r\n", "\n")
     telemetry-edge-commit     = ""
     telemetry-edge-image      = ""
     telemetry-edge-config = jsonencode(merge(
