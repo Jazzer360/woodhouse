@@ -62,7 +62,11 @@ def test_seed_documents_remain_present() -> None:
 def test_service_health_documents_match_implemented_phase(
     health: Callable[[], dict[str, str]], service: str
 ) -> None:
-    expected_phase = "typed-tesla-mcp" if service == "mcp-gateway" else "scaffold"
+    expected_phase = {
+        "mcp-gateway": "typed-tesla-mcp",
+        "telemetry-edge": "fleet-telemetry",
+        "telemetry-processor": "raw-telemetry-history",
+    }[service]
     assert health() == {"phase": expected_phase, "service": service, "status": "ok"}
 
 

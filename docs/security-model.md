@@ -203,6 +203,19 @@ Phase 4 also creates `vehicle_vin_index/{sha256(vin)}` transactionally with the
 vehicle record. A VIN already assigned to another platform `user_id` causes
 onboarding to fail closed instead of silently creating a second owner mapping.
 
+Phase 7 repeats the trusted chain during every telemetry delivery. The processor
+requires the SHA-256 VIN index, authoritative vehicle document, exactly one
+active allowlist record, and an opaque `tesla_u_*` dataset identifier to agree.
+A publisher cannot supply `user_id`, `vehicle_id`, or dataset. Disabled users,
+duplicate bindings, inconsistent VIN records, and malformed dataset IDs fail to
+the restricted quarantine path rather than a user dataset.
+
+Pub/Sub push has two authentication layers: Cloud Run IAM accepts only the
+`tpp-pubsub-push` invoker with the configured custom audience, and the
+application verifies the Google signature, exact audience, issuer, exact
+service-account email, and `email_verified`. A successful HTTP response is sent
+only after BigQuery accepts the raw append.
+
 ---
 
 ## 6. Multiple vehicles
@@ -338,3 +351,10 @@ telemetry-processor have no access. A separate signing service is the future
 hardening option if the trust population expands.
 
 Analytics job metadata may record bytes processed, duration, tables referenced, and user/vehicle scope; do not dump query results into general logs.
+
+Telemetry processor logs contain disposition, record type, internal opaque
+user/vehicle IDs when resolved, Pub/Sub message ID, and bounded error category.
+They do not contain VIN, decoded payload, coordinates, or credentials. The
+complete payload and VIN are retained only in the correct restricted BigQuery
+destination. The official edge uses JSON operational logging with verbose
+payload logging disabled.

@@ -1,7 +1,7 @@
 [project]
 name = "tpp-telemetry-edge"
 version = "0.0.0"
-description = "Telemetry edge service scaffold"
+description = "Repository checks for the pinned official Tesla telemetry edge"
 requires-python = ">=3.12,<3.13"
 dependencies = []
 

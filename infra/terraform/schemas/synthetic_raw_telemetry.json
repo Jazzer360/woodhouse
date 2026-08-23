@@ -1,0 +1,21 @@
+[
+  {"name":"source_timestamp","type":"TIMESTAMP","mode":"REQUIRED","description":"Timestamp in the non-vehicle fixture."},
+  {"name":"ingested_at","type":"TIMESTAMP","mode":"REQUIRED","description":"Synthetic ingress timestamp."},
+  {"name":"processed_at","type":"TIMESTAMP","mode":"REQUIRED","description":"Processor handling timestamp."},
+  {"name":"vehicle_id","type":"STRING","mode":"NULLABLE","description":"Always null for a non-vehicle fixture."},
+  {"name":"vin","type":"STRING","mode":"NULLABLE","description":"Non-vehicle fixture marker only; never an ownership claim."},
+  {"name":"tesla_vehicle_id","type":"STRING","mode":"NULLABLE","description":"Always null for a non-vehicle fixture."},
+  {"name":"record_type","type":"STRING","mode":"REQUIRED","description":"Synthetic fixture record type."},
+  {"name":"payload","type":"JSON","mode":"REQUIRED","description":"Complete synthetic payload."},
+  {"name":"telemetry_config_version","type":"STRING","mode":"NULLABLE","description":"Always null for a synthetic fixture."},
+  {"name":"telemetry_config_hash","type":"STRING","mode":"NULLABLE","description":"Always null for a synthetic fixture."},
+  {"name":"transport_message_id","type":"STRING","mode":"NULLABLE","description":"Optional fixture transport marker."},
+  {"name":"pubsub_message_id","type":"STRING","mode":"REQUIRED","description":"Google Pub/Sub message ID."},
+  {"name":"pubsub_publish_time","type":"TIMESTAMP","mode":"NULLABLE","description":"Google Pub/Sub publish timestamp."},
+  {"name":"pubsub_delivery_attempt","type":"INTEGER","mode":"NULLABLE","description":"Approximate Pub/Sub delivery attempt when supplied."},
+  {"name":"telemetry_client_version","type":"STRING","mode":"NULLABLE","description":"Always null for a synthetic fixture."},
+  {"name":"telemetry_receiver_version","type":"STRING","mode":"REQUIRED","description":"Processor's configured receiver compatibility version."},
+  {"name":"receiver_record_version","type":"INTEGER","mode":"NULLABLE","description":"Optional fixture receiver record version."},
+  {"name":"fixture_id","type":"STRING","mode":"REQUIRED","description":"Bounded Phase 7 fixture identifier."},
+  {"name":"first_failure_recorded","type":"BOOLEAN","mode":"REQUIRED","description":"True only after the guarded fixture's deliberate first persistence failure was recorded."}
+]

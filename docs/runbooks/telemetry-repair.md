@@ -1,7 +1,53 @@
 # Telemetry Repair
 
-**Status:** Placeholder; complete during Phases 7-8 and verify during Phase 11.
+**Status:** Phase 7 receiver/storage procedure; per-vehicle configuration repair
+is completed in Phase 8 and re-verified during Phase 11.
 
-This runbook will cover per-vehicle receiver diagnostics, ownership registry repair, restricted unknown-VIN quarantine, desired-versus-current configuration repair, replay safety, and proof that raw history was not sampled or discarded.
+## Triage order
 
-No telemetry operation is implemented in Phase 1.
+1. Do not change a real vehicle configuration until the receiver, transport,
+   and storage layers are independently healthy.
+2. Check VM guest attribute `telemetry-edge/status`, then local receiver
+   `/status` and Prometheus metrics through IAP.
+3. Check the four subscriptions
+   `tpp-raw-telemetry-{v,alerts,connectivity,errors}-processor` for oldest
+   unacknowledged age. Do not purge, seek, detach, or recreate a subscription as
+   a repair shortcut.
+4. Check Cloud Run `telemetry-processor` revision readiness and structured logs
+   for `telemetry_persistence_retry`, `telemetry_processing_failed`, and
+   `unknown_vehicle_telemetry`.
+5. Run the guarded non-vehicle verification only after the deployed TLS path is
+   healthy. It proves duplicate preservation, retry/no-loss behavior, and
+   unknown-VIN quarantine without touching a car.
+
+## Unknown VIN
+
+Records in `tesla_system_quarantine.raw_unknown_telemetry` must never be copied
+into a user dataset by guessing. Compare the VIN's SHA-256 index document,
+authoritative `vehicles/{vehicle_id}` record, active `allowed_users` binding,
+and actual Tesla account discovery. Repair the registry only through the
+reviewed onboarding/admin path. Preserve quarantine rows permanently even after
+the mapping is repaired; a future explicit replay tool may append corrected
+copies while retaining provenance.
+
+## Retry and backlog
+
+The processor acknowledges only after BigQuery accepts a row. A `503` is a
+negative acknowledgement and Pub/Sub redelivers. Exact redeliveries are valid
+raw provenance and are not manually removed. Diagnose BigQuery permissions,
+table existence, invalid schema changes, Cloud Run auth audience, and Firestore
+availability. Re-run `add-user` for the affected approved user to repair the
+dataset/table/ACL contract; it must not delete history.
+
+## Receiver diagnostics
+
+The edge identity can publish only to the receiver's four Terraform-owned
+topics and cannot reach Firestore, BigQuery, Tesla OAuth, command secrets, or
+the operator fixture topic. Receiver logs are JSON but must not be changed to a
+payload-verbose mode in production. Use record type, transaction/message IDs,
+client/receiver version, source/ingestion timestamps, and backlog metrics for
+diagnosis without dumping location payloads into logs.
+
+Phase 8 adds desired/current per-vehicle config inspection, sync/error checks,
+and explicit apply/remove repair. Never use configuration throttling to hide a
+downstream persistence problem.

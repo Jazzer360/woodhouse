@@ -19,23 +19,46 @@ output "cloud_run_service_uris" {
 }
 
 output "raw_telemetry_topic" {
-  description = "Pub/Sub topic receiving every valid decoded telemetry record."
+  description = "Operator-only raw topic used for safe synthetic and unknown-VIN validation."
   value       = google_pubsub_topic.raw_telemetry.id
 }
 
+output "fleet_raw_telemetry_topics" {
+  description = "Tesla receiver-native Pub/Sub topics for every supported record type."
+  value       = { for key, topic in google_pubsub_topic.fleet_raw_telemetry : key => topic.id }
+}
+
 output "raw_telemetry_subscription" {
-  description = "Authenticated push subscription for telemetry-processor."
+  description = "Authenticated synthetic-check push subscription for telemetry-processor."
   value       = google_pubsub_subscription.telemetry_processor.id
 }
 
+output "fleet_raw_telemetry_subscriptions" {
+  description = "Authenticated processor push subscriptions for Tesla receiver topics."
+  value = {
+    for key, subscription in google_pubsub_subscription.fleet_telemetry_processor :
+    key => subscription.id
+  }
+}
+
 output "telemetry_edge_public_ip" {
-  description = "Reserved public IPv4 for the future Fleet Telemetry receiver."
+  description = "Reserved public IPv4 for the Fleet Telemetry receiver."
   value       = google_compute_address.telemetry_edge.address
 }
 
 output "quarantine_table" {
   description = "Restricted table for telemetry with no trusted owner mapping."
   value       = "${var.project_id}.${google_bigquery_dataset.quarantine.dataset_id}.${google_bigquery_table.quarantine_raw_telemetry.table_id}"
+}
+
+output "synthetic_telemetry_table" {
+  description = "Restricted non-vehicle destination for Phase 7 end-to-end fixtures."
+  value       = "${var.project_id}.${google_bigquery_dataset.quarantine.dataset_id}.${google_bigquery_table.synthetic_raw_telemetry.table_id}"
+}
+
+output "telemetry_hostname" {
+  description = "Public Fleet Telemetry receiver hostname requiring an operator-managed DNS A record."
+  value       = var.telemetry_hostname
 }
 
 output "runtime_service_accounts" {

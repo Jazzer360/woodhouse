@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Run the guarded Phase 7 non-vehicle telemetry verification."""
+
+from tesla_personal_platform.telemetry_processor.operator_check import main
+
+raise SystemExit(main())

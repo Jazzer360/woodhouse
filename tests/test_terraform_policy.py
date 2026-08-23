@@ -100,11 +100,16 @@ def test_oauth_callback_request_urls_are_excluded_from_cloud_logging() -> None:
     assert 'httpRequest.requestUrl=~"/(auth|oauth)/callback\\\\?"' in monitoring
 
 
-def test_pubsub_oidc_audience_matches_the_exact_push_endpoint() -> None:
+def test_pubsub_oidc_audience_is_path_scoped_and_accepted_by_cloud_run() -> None:
     pubsub = (TERRAFORM_ROOT / "pubsub.tf").read_text(encoding="utf-8")
+    cloud_run = (TERRAFORM_ROOT / "cloud_run.tf").read_text(encoding="utf-8")
 
     assert "push_endpoint = local.telemetry_processor_push_endpoint" in pubsub
-    assert "audience              = local.telemetry_processor_push_endpoint" in pubsub
+    assert "audience              = local.telemetry_processor_push_audience" in pubsub
+    assert 'telemetry_processor_push_audience = "https://' in pubsub
+    assert '/pubsub/push"' in pubsub
+    assert "custom_audiences" in cloud_run
+    assert "PUBSUB_PUSH_AUDIENCE        = local.telemetry_processor_push_audience" in cloud_run
 
 
 def test_mcp_external_route_is_fail_closed_until_oidc_is_configured() -> None:
@@ -175,6 +180,33 @@ def test_command_proxy_is_digest_pinned_non_ingress_and_kept_off_telemetry_edge(
     assert "tesla-command-private-key" not in compute
 
 
+def test_telemetry_edge_has_only_receiver_topics_and_gated_tls_secrets() -> None:
+    pubsub = (TERRAFORM_ROOT / "pubsub.tf").read_text(encoding="utf-8")
+    secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")
+    iam = (TERRAFORM_ROOT / "iam.tf").read_text(encoding="utf-8")
+
+    assert 'toset(["V", "alerts", "connectivity", "errors"])' in pubsub
+    edge_binding = pubsub[
+        pubsub.index(
+            'resource "google_pubsub_topic_iam_member" "telemetry_edge_publisher"'
+        ) : pubsub.index(
+            'resource "google_pubsub_topic_iam_member" "telemetry_operator_fixture_publisher"'
+        )
+    ]
+    assert "google_pubsub_topic.fleet_raw_telemetry" in edge_binding
+    assert "google_pubsub_topic.raw_telemetry" not in edge_binding
+    assert "var.enable_telemetry_edge_delivery ? toset" in secrets
+    edge_secret_binding = secrets[
+        secrets.index(
+            'resource "google_secret_manager_secret_iam_member" "telemetry_edge_tls_accessor"'
+        ) : secrets.index('resource "google_secret_manager_secret" "platform"')
+    ]
+    assert '"telemetry_edge_tls_cert"' in edge_secret_binding
+    assert '"telemetry_edge_tls_key"' in edge_secret_binding
+    assert "tesla_client_secret" not in edge_secret_binding
+    assert 'permissions = ["pubsub.topics.get"]' in iam
+
+
 def test_abandoned_oauth_states_and_sessions_have_firestore_ttl() -> None:
     firestore = (TERRAFORM_ROOT / "firestore.tf").read_text(encoding="utf-8")
 
@@ -184,8 +216,8 @@ def test_abandoned_oauth_states_and_sessions_have_firestore_ttl() -> None:
         "platform_web_sessions",
     ):
         assert f'collection = "{collection}"' in firestore
-    assert firestore.count('field      = "expires_at"') == 3
-    assert firestore.count("ttl_config {}") == 3
+    assert firestore.count('field      = "expires_at"') == 4
+    assert firestore.count("ttl_config {}") == 4
 
 
 def test_partner_admin_is_keyless_and_has_no_project_role() -> None:
@@ -218,7 +250,10 @@ def test_user_admin_has_no_key_and_only_dataset_provisioning_permissions() -> No
     assert '"bigquery.datasets.get"' in custom_role
     assert '"bigquery.datasets.update"' in custom_role
     assert "bigquery.jobs" not in custom_role
-    assert "bigquery.tables" not in custom_role
+    assert '"bigquery.tables.create"' in custom_role
+    assert '"bigquery.tables.get"' in custom_role
+    assert '"bigquery.tables.update"' in custom_role
+    assert '"bigquery.tables.delete"' not in custom_role
     assert 'account_id   = "tpp-dataset-owner"' in service_accounts
     impersonation = iam[
         iam.index('resource "google_service_account_iam_member" "user_admin_impersonator"') :

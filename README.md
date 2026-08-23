@@ -2,10 +2,12 @@
 
 Personal-first Tesla platform monorepo for authenticated live vehicle access,
 permanent telemetry history, generic analytics, and optional semantic events.
-The repository Markdown is the implementation source of truth. Through Phase 6
+The repository Markdown is the implementation source of truth. Through Phase 7
 the platform includes per-user authentication/Tesla OAuth, complete typed Fleet
 API coverage, a loopback-only official Vehicle Command Proxy, and the approved
-typed live MCP surface. Fleet Telemetry remains the next phase.
+typed live MCP surface. The official Tesla Fleet Telemetry receiver and
+permanent, isolated raw-history pipeline are implemented; deployment is paused
+at the Phase 7 operator checkpoint before any real vehicle configuration.
 
 ## Source of truth
 
@@ -28,7 +30,11 @@ stateless MCP JSON-RPC boundary rather than another framework. Tesla command
 signing uses Tesla's official proxy image as a private sidecar; no second
 application language is maintained in this repository.
 
-`telemetry-edge` is only a health-checkable container placeholder. Phase 7 must re-evaluate its implementation against Tesla's current official Fleet Telemetry receiver; adopting the official receiver or a small Go adapter then is preferable to introducing a second language now.
+`telemetry-edge` uses Tesla's official Fleet Telemetry `v0.9.4` image pinned by
+multi-platform digest. Its native Google Pub/Sub dispatcher is the minimal
+adapter, so the repository contains no custom implementation of Tesla's wire
+protocol. Python remains the application runtime for the authenticated
+telemetry processor and safe operator verification.
 
 ## Layout
 
@@ -71,9 +77,10 @@ docker build -f services/telemetry-edge/Dockerfile .
 The shared-root speculative plan is generated from a backend-free temporary copy in `cloudbuild.pr.yaml`. Authoritative local plans use the bootstrapped GCS backend described in [deployment notes](docs/deployment.md).
 
 The Cloud Build PR configuration runs the same categories without deploying or
-contacting real vehicles. `cloudbuild.main.yaml` delivers only affected Cloud
-Run services from `main` by full commit tag and resolved image digest, preserves
-the gateway command-proxy sidecar, and performs readiness/health verification.
-Terraform apply remains a separate reviewed operator action, and telemetry-edge
-delivery remains deferred until Phase 7 implements its real receiver and VM
-rollback path.
+contacting real vehicles. `cloudbuild.main.yaml` delivers affected Cloud Run
+services and telemetry-edge from `main` by full commit tag and resolved image
+digest, preserves the gateway command-proxy sidecar, and performs
+readiness/health verification. Terraform apply remains a separate reviewed
+operator action. Telemetry-edge delivery is intentionally opt-in until DNS and
+certificate prerequisites pass the
+[Phase 7 operator checkpoint](docs/deployment.md#phase-7-operator-checkpoint).

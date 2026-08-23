@@ -1,14 +1,21 @@
+FROM ghcr.io/astral-sh/uv:0.9.26-python3.12-bookworm-slim AS builder
+
+WORKDIR /app
+COPY pyproject.toml uv.lock /app/
+COPY packages /app/packages
+COPY services /app/services
+RUN uv sync --frozen --package tpp-telemetry-processor --no-dev --no-editable
+
 FROM python:3.12-slim-bookworm
 
 RUN groupadd --system app && useradd --system --gid app --home-dir /app app
 WORKDIR /app
-
-COPY services/telemetry-processor/src /app/src
+COPY --from=builder /app/.venv /app/.venv
 
 ENV HOST=0.0.0.0 \
+    PATH=/app/.venv/bin:$PATH \
     PORT=8080 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1
 
 USER app

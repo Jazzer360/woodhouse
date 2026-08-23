@@ -67,3 +67,41 @@ resource "google_monitoring_alert_policy" "raw_telemetry_backlog" {
 
   depends_on = [google_project_service.required]
 }
+
+resource "google_monitoring_alert_policy" "fleet_raw_telemetry_backlog" {
+  for_each = google_pubsub_subscription.fleet_telemetry_processor
+
+  project      = var.project_id
+  display_name = "TPP ${each.key} telemetry backlog is stale"
+  combiner     = "OR"
+  enabled      = true
+
+  documentation {
+    content   = "The oldest unacknowledged ${each.key} telemetry message is over ten minutes old. Investigate without discarding or sampling records."
+    mime_type = "text/markdown"
+  }
+
+  conditions {
+    display_name = "Oldest unacknowledged ${each.key} message exceeds ten minutes"
+
+    condition_threshold {
+      filter          = <<-EOT
+        resource.type = "pubsub_subscription"
+        AND resource.labels.subscription_id = "${each.value.name}"
+        AND metric.type = "pubsub.googleapis.com/subscription/oldest_unacked_message_age"
+      EOT
+      comparison      = "COMPARISON_GT"
+      duration        = "300s"
+      threshold_value = 600
+
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_MAX"
+      }
+    }
+  }
+
+  notification_channels = var.monitoring_notification_channels
+
+  depends_on = [google_project_service.required]
+}

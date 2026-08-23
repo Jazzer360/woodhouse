@@ -1,9 +1,10 @@
 # Terraform
 
 This root defines the shared GCP baseline for project `woodhouse-506215` in
-`us-central1`. Phase 6 adds optional instance-local Vehicle Command Proxy sidecar
-configuration and two empty TLS secret containers. Terraform still creates no
-per-user BigQuery datasets and no secret values.
+`us-central1`. Phase 7 adds the official receiver path, authenticated Pub/Sub
+delivery, restricted system tables, exact-digest VM deployment, and two empty
+edge TLS secret containers. Terraform still creates no per-user BigQuery
+datasets and no secret values.
 
 Set `user_admin_principals` for operators who may impersonate
 `tpp-user-admin`. Set `oidc_audience` to the Google OAuth client ID, then set
@@ -82,6 +83,14 @@ the intended deployment without making a bare `terraform apply` target the real
 project automatically.
 
 Review saved plans before applying. Never commit plan or state files. See [deployment.md](../../docs/deployment.md) for resources, IAM, bootstrap permissions, imports, and operating boundaries.
+
+Phase 7 telemetry-edge delivery is a two-apply checkpoint. Keep
+`enable_telemetry_edge_delivery=false` while creating topics, tables, TLS
+secret containers, and processor configuration. After DNS resolves directly to
+`telemetry_edge_public_ip` and validated certificate/key versions exist, set it
+to `true` to grant only edge TLS access and create the exact-digest deployment
+trigger. See the complete
+[operator checkpoint](../../docs/deployment.md#phase-7-operator-checkpoint).
 
 Manual Cloud Build submissions must stage source in the dedicated private
 `${project_id}-tpp-cloudbuild-source` bucket. Pass its `source` prefix through

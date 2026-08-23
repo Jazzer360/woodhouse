@@ -45,6 +45,14 @@ locals {
       var.platform_oidc_redirect_uri == null ? "" : var.platform_oidc_redirect_uri
     )
   }
+
+  telemetry_processor_environment = {
+    PUBSUB_PUSH_AUDIENCE        = local.telemetry_processor_push_audience
+    PUBSUB_PUSH_SERVICE_ACCOUNT = google_service_account.platform["pubsub_push"].email
+    QUARANTINE_TABLE            = "${var.project_id}.${google_bigquery_dataset.quarantine.dataset_id}.${google_bigquery_table.quarantine_raw_telemetry.table_id}"
+    SYNTHETIC_TELEMETRY_TABLE   = "${var.project_id}.${google_bigquery_dataset.quarantine.dataset_id}.${google_bigquery_table.synthetic_raw_telemetry.table_id}"
+    TELEMETRY_RECEIVER_VERSION  = var.fleet_telemetry_receiver_version
+  }
 }
 
 resource "google_cloud_run_v2_service" "platform" {
@@ -55,6 +63,9 @@ resource "google_cloud_run_v2_service" "platform" {
   location            = var.region
   ingress             = each.value.ingress
   deletion_protection = true
+  custom_audiences = (
+    each.key == "telemetry_processor" ? [local.telemetry_processor_push_audience] : []
+  )
 
   template {
     service_account                  = google_service_account.platform[each.key].email
@@ -92,6 +103,14 @@ resource "google_cloud_run_v2_service" "platform" {
       env {
         name  = "GOOGLE_CLOUD_PROJECT"
         value = var.project_id
+      }
+
+      dynamic "env" {
+        for_each = each.key == "telemetry_processor" ? local.telemetry_processor_environment : {}
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
 
       dynamic "env" {
