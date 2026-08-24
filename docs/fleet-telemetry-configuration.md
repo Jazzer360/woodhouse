@@ -23,9 +23,10 @@ is not a plan, quota, or storage tier.
 - Configured for a Fleet Telemetry 1.2.0+ passenger vehicle: 131 fields.
 - Fleet Telemetry 1.0/1.1 projection: 129 fields; the two HW4 self-driving
   counters are omitted because Tesla introduced them in client 1.2.0.
-- Fleet Telemetry 1.3.0+ additionally synchronizes longitudinal acceleration
-  into qualifying speed payloads using `include_fields`; earlier clients keep
-  both fields independently configured and omit only that synchronization.
+- Fleet Telemetry 1.3.0+ additionally uses reciprocal `include_fields` so
+  qualifying speed carries acceleration and meaningful acceleration changes
+  carry current speed; earlier clients keep both fields independently
+  configured and omit only that synchronization.
 - Remaining exclusions: 108 fields, comprising the 2 Tessie removals and 106
   explicit decisions not to add a non-baseline catalog field.
 - `delivery_policy` is `latest`, so unacknowledged buffered data is resent.
@@ -59,7 +60,7 @@ These are every cadence/delta difference for a field already in Tessie:
 | Field(s) | Tessie | Woodhouse | Why |
 |---|---:|---:|---|
 | `Location` | 30 s / 3 m | 10 s / 10 m | Better trip shape at Tesla's economical example cadence, while filtering GPS drift more strongly. |
-| `VehicleSpeed` | 30 s / no delta | 1 s / 2 mph | Preserve acceleration/deceleration traces and approximate launch timing; the two-mph delta suppresses cruising jitter. On client 1.3+, include longitudinal acceleration in the same payload. |
+| `VehicleSpeed` | 30 s / no delta | 1 s / 1 mph | Preserve one-mph cruising changes plus acceleration/deceleration traces and approximate launch timing. On client 1.3+, include longitudinal acceleration in the same payload. |
 | `GpsHeading` | 60 s / 1° | 10 s / 5° | Align heading with trip cadence and ignore small directional jitter. |
 | Six media metadata/state fields | 60 s | 10 s | Capture short tracks, skips, and state/source changes; unchanged values do not emit. |
 | `TpmsSoftWarnings`, `TpmsHardWarnings` | 1,800 s | 60 s | Warning transitions are rare, so improved latency adds little normal volume. |
@@ -112,7 +113,7 @@ location deltas add a second noise threshold.
 |---|---:|---|
 | Body, security, safety, gear | Tessie 1-5 s | Discrete change only; unchanged values do not emit. |
 | Location | 10 s | 10 m; route origin is 60 s / 25 m. |
-| Speed and longitudinal acceleration | 1 s | 2 mph and 1 m/s² respectively; acceleration is also included with qualifying speed on client 1.3+. |
+| Speed and longitudinal acceleration | 1 s | 1 mph and 1 m/s² respectively; on client 1.3+ each field includes the other when it independently qualifies. |
 | Charging and battery | Mostly 30-120 s | Physical measurements use explicit defensible deltas; discrete state/settings do not receive artificial deltas. |
 | Climate | Tessie baseline plus 5 s added states | Temperatures inherit Tessie's deltas; modes, setpoints, fan levels, and switches are treated as changed values. |
 | Media | 10-60 s | Metadata/state is 10 s; elapsed/duration retain Tessie's slower, delta-gated behavior. |
@@ -156,27 +157,41 @@ a versioned explicit operator diff; it is never automatic maintenance.
 The profile deliberately spends additional signal budget on reconstructable
 driving dynamics:
 
-- `VehicleSpeed`: 1 second, 2 mph minimum delta;
+- `VehicleSpeed`: 1 second, 1 mph minimum delta;
 - `LongitudinalAcceleration`: 1 second, 1 m/s² minimum delta;
 - `BrakePedal`: 1 second, change-based boolean;
 - on Fleet Telemetry client 1.3.0+, `VehicleSpeed.include_fields` contains
-  `LongitudinalAcceleration`.
+  `LongitudinalAcceleration` and `LongitudinalAcceleration.include_fields`
+  contains `VehicleSpeed`.
 
 Tesla guarantees that an included field is carried in the same payload whenever
 its parent publishes, even when the included value has not changed. This gives
 speed and acceleration a shared delivery event, but it does not guarantee the
 underlying sensors were sampled atomically at an identical physical instant.
-The top-level acceleration field remains configured because included-field
-delivery does not reset its timer and because its independent change event is
-useful for detecting acceleration onset. Clients before 1.3.0 safely omit the
-include relationship while retaining both top-level fields.
+Both remain top-level fields because included-field delivery does not reset the
+included field's timer. Their independent timers allow a meaningful
+acceleration change to add a current-speed observation between regular speed
+events, when their triggers happen in different collector buckets. This can
+produce useful payloads about 500 milliseconds apart, but sub-second resolution
+is opportunistic rather than guaranteed. Clients before 1.3.0 safely omit both
+include relationships while retaining both top-level fields.
 
-At the current streaming price, speed plus synchronized acceleration has a
-theoretical ceiling of 120 signals/minute while speed changes by at least 2 mph
-each second. Independently triggered acceleration can add up to 60/minute in an
-extreme continuously changing trace; brake transitions are normally negligible.
-That conservative three-signal ceiling is $0.072/driving hour. Actual volume
-should be lower, but it must be measured across all enrolled vehicles.
+At the current streaming price, top-level speed and its included acceleration
+can contribute up to 120 signals/minute. Independently triggered acceleration
+plus its included speed can contribute another 120/minute in the conservative
+case where Tesla bills both values and the two triggers do not coalesce; brake
+transitions are normally negligible. That 240-signal ceiling is $0.096/driving
+hour. Actual volume should be materially lower because changes must cross their
+deltas and 500-millisecond collector buckets may coalesce activity, but it must
+be measured across all enrolled vehicles.
+
+`minimum_delta=1` does not round or quantize speed to whole one-mph steps. Tesla
+sends the actual current value once its change from the last published speed
+crosses the threshold. The threshold does mean sub-one-mph cruising variation
+can remain unreported; one mph is the selected balance for time-weighted cruise
+statistics. No `resend_interval_seconds` is configured because unchanged speed
+can be carried forward analytically until the next state transition without
+paying for periodic repeats.
 
 Phase 9 analytics may derive acceleration events and approximate 0-60 runs from
 the permanent raw observations. It must use source timestamps, require a

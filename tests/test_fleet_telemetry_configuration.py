@@ -276,10 +276,11 @@ def test_profile_uses_deltas_only_for_defensible_measurements() -> None:
     assert profile.fields["Location"].interval_seconds == 10
     assert profile.fields["Location"].minimum_delta == 10
     assert profile.fields["VehicleSpeed"].interval_seconds == 1
-    assert profile.fields["VehicleSpeed"].minimum_delta == 2
+    assert profile.fields["VehicleSpeed"].minimum_delta == 1
     assert profile.fields["VehicleSpeed"].include_fields == ("LongitudinalAcceleration",)
     assert profile.fields["LongitudinalAcceleration"].interval_seconds == 1
     assert profile.fields["LongitudinalAcceleration"].minimum_delta == 1.0
+    assert profile.fields["LongitudinalAcceleration"].include_fields == ("VehicleSpeed",)
     assert profile.fields["BrakePedal"].interval_seconds == 1
     assert profile.fields["SelfDrivingMilesSinceReset"].minimum_delta == 1
     assert profile.fields["HvacFanSpeed"].minimum_delta is None
@@ -311,6 +312,7 @@ def test_capability_projection_handles_self_driving_and_synchronized_includes() 
     assert profile.fields["VehicleSpeed"].include_fields == ()
     assert "LongitudinalAcceleration" in profile.fields
     assert set(profile.capability_omissions) == {
+        "LongitudinalAcceleration.include_fields",
         "MilesSinceReset",
         "SelfDrivingMilesSinceReset",
         "VehicleSpeed.include_fields",
@@ -318,10 +320,15 @@ def test_capability_projection_handles_self_driving_and_synchronized_includes() 
 
     version_1_2 = broad_profile("1.2.0")
     assert version_1_2.fields["VehicleSpeed"].include_fields == ()
-    assert set(version_1_2.capability_omissions) == {"VehicleSpeed.include_fields"}
+    assert version_1_2.fields["LongitudinalAcceleration"].include_fields == ()
+    assert set(version_1_2.capability_omissions) == {
+        "LongitudinalAcceleration.include_fields",
+        "VehicleSpeed.include_fields",
+    }
 
     version_1_3 = broad_profile("1.3.0")
     assert version_1_3.fields["VehicleSpeed"].include_fields == ("LongitudinalAcceleration",)
+    assert version_1_3.fields["LongitudinalAcceleration"].include_fields == ("VehicleSpeed",)
     assert version_1_3.capability_omissions == {}
 
 
@@ -384,6 +391,9 @@ def test_diff_detects_missing_synchronized_include_fields() -> None:
         fields={
             **desired.fields,
             "VehicleSpeed": replace(desired.fields["VehicleSpeed"], include_fields=()),
+            "LongitudinalAcceleration": replace(
+                desired.fields["LongitudinalAcceleration"], include_fields=()
+            ),
         },
     )
 
@@ -395,11 +405,19 @@ def test_diff_detects_missing_synchronized_include_fields() -> None:
     changed = fields["changed"]
     assert isinstance(changed, dict)
     assert changed["VehicleSpeed"] == {
-        "current": {"interval_seconds": 1, "minimum_delta": 2},
+        "current": {"interval_seconds": 1, "minimum_delta": 1},
         "desired": {
             "interval_seconds": 1,
-            "minimum_delta": 2,
+            "minimum_delta": 1,
             "include_fields": ["LongitudinalAcceleration"],
+        },
+    }
+    assert changed["LongitudinalAcceleration"] == {
+        "current": {"interval_seconds": 1, "minimum_delta": 1.0},
+        "desired": {
+            "interval_seconds": 1,
+            "minimum_delta": 1.0,
+            "include_fields": ["VehicleSpeed"],
         },
     }
 

@@ -205,9 +205,12 @@ No dedicated playlist endpoint is required.
 
 Raw `VehicleSpeed`, `LongitudinalAcceleration`, `BrakePedal`, and `Gear`
 observations support rebuildable acceleration/deceleration analysis. Fleet
-Telemetry 1.3.0+ may deliver longitudinal acceleration in the same payload as
-qualifying speed through `include_fields`; that is synchronized delivery, not a
-claim that separate vehicle sensors sampled at the exact same instant.
+Telemetry 1.3.0+ reciprocally includes longitudinal acceleration with
+qualifying speed and current speed with meaningful acceleration changes. This
+is synchronized delivery, not a claim that separate vehicle sensors sampled at
+the exact same instant. Independent one-second parent timers may yield useful
+paired observations in adjacent 500-millisecond collector buckets, but derived
+logic must never assume or promise a sub-second cadence.
 
 Derived `acceleration_events` should:
 
