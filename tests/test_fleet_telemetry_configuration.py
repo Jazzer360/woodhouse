@@ -283,12 +283,8 @@ def test_profile_uses_deltas_only_for_defensible_measurements() -> None:
     assert profile.fields["LongitudinalAcceleration"].include_fields == ("VehicleSpeed",)
     assert profile.fields["BrakePedal"].interval_seconds == 1
     assert profile.fields["SelfDrivingMilesSinceReset"].minimum_delta == 1
-    assert profile.fields["SelfDrivingMilesSinceReset"].include_fields == (
-        "MilesSinceReset",
-    )
-    assert profile.fields["MilesSinceReset"].include_fields == (
-        "SelfDrivingMilesSinceReset",
-    )
+    assert profile.fields["SelfDrivingMilesSinceReset"].include_fields == ("MilesSinceReset",)
+    assert profile.fields["MilesSinceReset"].include_fields == ("SelfDrivingMilesSinceReset",)
     assert profile.fields["HvacFanSpeed"].minimum_delta is None
     assert profile.fields["ChargeCurrentRequest"].minimum_delta is None
     assert profile.fields["MediaAudioVolume"].interval_seconds == 60
@@ -338,12 +334,8 @@ def test_capability_projection_handles_self_driving_and_synchronized_includes() 
     version_1_3 = broad_profile("1.3.0")
     assert version_1_3.fields["VehicleSpeed"].include_fields == ("LongitudinalAcceleration",)
     assert version_1_3.fields["LongitudinalAcceleration"].include_fields == ("VehicleSpeed",)
-    assert version_1_3.fields["SelfDrivingMilesSinceReset"].include_fields == (
-        "MilesSinceReset",
-    )
-    assert version_1_3.fields["MilesSinceReset"].include_fields == (
-        "SelfDrivingMilesSinceReset",
-    )
+    assert version_1_3.fields["SelfDrivingMilesSinceReset"].include_fields == ("MilesSinceReset",)
+    assert version_1_3.fields["MilesSinceReset"].include_fields == ("SelfDrivingMilesSinceReset",)
     assert version_1_3.capability_omissions == {}
 
 
