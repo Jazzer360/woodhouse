@@ -10,9 +10,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
-from tesla_personal_platform.auth import UserContext
+from tesla_personal_platform.auth import CrossUserAccessError, UserContext
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
     TeslaConnection,
+    TeslaOnboardingError,
     VehicleRecord,
 )
 from tesla_personal_platform.tesla_client import (
@@ -21,6 +22,7 @@ from tesla_personal_platform.tesla_client import (
     TeslaAccessProvider,
     TeslaAPIError,
     TeslaFleetClient,
+    TeslaReauthorizationRequired,
     broad_profile,
     config_diff,
     parse_tesla_config,
@@ -325,6 +327,12 @@ class FleetTelemetryControlService:
                     source="transport-reconciler",
                 )
                 results.append(result)
+            except (
+                CrossUserAccessError,
+                TeslaOnboardingError,
+                TeslaReauthorizationRequired,
+            ):
+                raise
             except Exception as error:
                 results.append(
                     {
@@ -506,6 +514,12 @@ def _has_relevant_errors(value: JsonValue) -> bool:
 def _error_category(error: Exception) -> str:
     if isinstance(error, TelemetryConfigurationError):
         return error.category
+    if isinstance(error, CrossUserAccessError):
+        return "cross_user_access_denied"
+    if isinstance(error, TeslaReauthorizationRequired):
+        return "reauthorization_required"
+    if isinstance(error, TeslaOnboardingError):
+        return "onboarding_error"
     if isinstance(error, TeslaAPIError):
         return error.category
     return "unexpected_error"

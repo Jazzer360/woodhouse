@@ -656,17 +656,17 @@ class _Handler(BaseHTTPRequestHandler):
                 confirm=form.get("confirm") == "yes",
                 transport_maintenance_opt_in=(form.get("transport_maintenance_opt_in") == "yes"),
             )
-        except (CrossUserAccessError, TelemetryConfigurationError, TeslaAPIError) as error:
-            category = getattr(error, "category", "telemetry_apply_failed")
-            self._send_html(
-                HTTPStatus.BAD_GATEWAY,
-                error_page(
-                    "Telemetry configuration failed",
-                    f"The operation stopped safely ({category}). "
-                    "Inspect the plan and Tesla errors.",
-                    retry_path=f"/onboarding/vehicles/{vehicle_id}/telemetry",
-                ),
+        except (
+            CrossUserAccessError,
+            TelemetryConfigurationError,
+            TeslaAPIError,
+            TeslaOnboardingError,
+        ) as error:
+            status, body = _browser_telemetry_failure(
+                error,
+                retry_path=f"/onboarding/vehicles/{vehicle_id}/telemetry",
             )
+            self._send_html(status, body)
             return
         self._redirect(
             f"/onboarding/vehicles/{vehicle_id}/telemetry?configured=1",
@@ -685,15 +685,17 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             runtime.telemetry.remove(context, vehicle_id, confirm=form.get("confirm") == "yes")
-        except (CrossUserAccessError, TelemetryConfigurationError, TeslaAPIError):
-            self._send_html(
-                HTTPStatus.BAD_GATEWAY,
-                error_page(
-                    "Telemetry removal failed",
-                    "No local success state was recorded. Inspect Tesla before retrying.",
-                    retry_path=f"/onboarding/vehicles/{vehicle_id}/telemetry",
-                ),
+        except (
+            CrossUserAccessError,
+            TelemetryConfigurationError,
+            TeslaAPIError,
+            TeslaOnboardingError,
+        ) as error:
+            status, body = _browser_telemetry_failure(
+                error,
+                retry_path=f"/onboarding/vehicles/{vehicle_id}/telemetry",
             )
+            self._send_html(status, body)
             return
         self._redirect(
             f"/onboarding/vehicles/{vehicle_id}/telemetry?removed=1",
@@ -724,8 +726,18 @@ class _Handler(BaseHTTPRequestHandler):
             result = runtime.telemetry.reconcile_opted_in_transport(
                 context, canary_vehicle_id=vehicle_id
             )
-        except (CrossUserAccessError, TelemetryConfigurationError, TeslaAPIError):
-            result = {"status": "blocked"}
+        except (
+            CrossUserAccessError,
+            TelemetryConfigurationError,
+            TeslaAPIError,
+            TeslaOnboardingError,
+        ) as error:
+            status, body = _browser_telemetry_failure(
+                error,
+                retry_path=f"/onboarding/vehicles/{vehicle_id}/telemetry",
+            )
+            self._send_html(status, body)
+            return
         if result.get("status") != "ready_for_server_cutover":
             self._send_html(
                 HTTPStatus.CONFLICT,
@@ -1097,6 +1109,64 @@ def _single_optional_query_value(query: dict[str, list[str]], name: str) -> str 
         return _single_query_value(query, name)
     except InvalidOAuthStateError:
         return None
+
+
+def _browser_telemetry_failure(
+    error: CrossUserAccessError
+    | TelemetryConfigurationError
+    | TeslaAPIError
+    | TeslaOnboardingError,
+    *,
+    retry_path: str,
+) -> tuple[HTTPStatus, bytes]:
+    """Map safe telemetry control failures to actionable browser responses."""
+    if isinstance(error, CrossUserAccessError):
+        return (
+            HTTPStatus.FORBIDDEN,
+            error_page(
+                "Vehicle unavailable",
+                "That vehicle is not available to this account.",
+                retry_path="/onboarding",
+            ),
+        )
+    if isinstance(error, TeslaReauthorizationRequired):
+        return (
+            HTTPStatus.UNAUTHORIZED,
+            error_page(
+                "Tesla reconnection required",
+                "Authorize Tesla again before changing telemetry configuration.",
+                retry_path="/onboarding",
+            ),
+        )
+    if isinstance(error, TelemetryConfigurationError):
+        return (
+            HTTPStatus.CONFLICT,
+            error_page(
+                "Telemetry operation stopped safely",
+                f"Woodhouse rejected the operation ({error.category}). "
+                "Inspect the current plan and Tesla errors before retrying.",
+                retry_path=retry_path,
+            ),
+        )
+    if isinstance(error, TeslaOnboardingError):
+        return (
+            HTTPStatus.BAD_GATEWAY,
+            error_page(
+                "Telemetry setup unavailable",
+                "Woodhouse could not resolve a usable Tesla connection or vehicle record. "
+                "Refresh onboarding before retrying.",
+                retry_path="/onboarding",
+            ),
+        )
+    return (
+        HTTPStatus.BAD_GATEWAY,
+        error_page(
+            "Tesla telemetry operation failed",
+            f"Tesla did not complete the operation ({error.category}). "
+            "Inspect Tesla telemetry errors before retrying.",
+            retry_path=retry_path,
+        ),
+    )
 
 
 def _session_token(cookie_header: str | None) -> str | None:

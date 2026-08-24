@@ -254,6 +254,12 @@ never accepts a caller-provided VIN or owner.
 One vehicle's failure does not prevent inspection or repair of another. Every
 apply, repair, automated transport reconciliation, and removal has an attempted
 audit row written before the Tesla call and a terminal result/error category.
+The browser control path distinguishes an out-of-boundary vehicle (`403`), a
+Tesla connection requiring renewed authorization (`401`), safe configuration
+conflicts (`409`), and onboarding/upstream failures (`502`). Audit rows preserve
+stable `cross_user_access_denied`, `reauthorization_required`, and
+`onboarding_error` categories instead of collapsing these operator actions into
+generic failures.
 
 ## Server trust and certificate renewal
 

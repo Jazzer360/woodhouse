@@ -10,7 +10,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
-from tesla_personal_platform.auth import UserContext
+from tesla_personal_platform.auth import CrossUserAccessError, UserContext
 from tesla_personal_platform.mcp_gateway.telemetry_control import (
     FleetTelemetryControlService,
     TelemetryConfigurationError,
@@ -18,12 +18,14 @@ from tesla_personal_platform.mcp_gateway.telemetry_control import (
 )
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
     TeslaConnection,
+    TeslaOnboardingError,
     VehicleRecord,
 )
 from tesla_personal_platform.tesla_client import (
     ObjectResponse,
     ServerTrustProfile,
     TeslaAccessContext,
+    TeslaReauthorizationRequired,
     ValueResponse,
     broad_profile,
     ca_profile_from_served_chain,
@@ -189,6 +191,7 @@ class Fleet:
         self.created: list[FleetTelemetryConfigRequest] = []
         self.fail_vins: set[str] = set()
         self.malformed_vins: set[str] = set()
+        self.create_error: Exception | None = None
 
     def fleet_telemetry_config_get(
         self, access_token: str, *, base_url: str, vin: str
@@ -213,6 +216,8 @@ class Fleet:
     def fleet_telemetry_config_create(
         self, access_token: str, *, base_url: str, request: FleetTelemetryConfigRequest
     ) -> ObjectResponse:
+        if self.create_error is not None:
+            raise self.create_error
         self.created.append(request)
         vin = request.vins[0]
         if vin in self.fail_vins:
@@ -550,6 +555,41 @@ def test_transport_reconciler_canaries_and_does_not_block_independent_vehicles()
     }
     assert statuses == {"veh_one": "synced", "veh_two": "failed"}
     assert store.states["veh_one"].status == "synced"
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_category"),
+    [
+        (TeslaReauthorizationRequired("expired"), "reauthorization_required"),
+        (TeslaOnboardingError("invalid connection"), "onboarding_error"),
+        (CrossUserAccessError("outside boundary"), "cross_user_access_denied"),
+    ],
+)
+def test_transport_reconciler_propagates_control_plane_failures_with_audit_category(
+    failure: Exception, expected_category: str
+) -> None:
+    store = MemoryStore()
+    fleet = Fleet()
+    controller, _, _ = service(store, fleet)
+    profile = broad_profile("1.2.0")
+    store.states["veh_one"] = TelemetryConfigurationState(
+        vehicle_id="veh_one",
+        profile_version=profile.version,
+        config_hash="old",
+        field_config_hash=profile.field_config_hash,
+        trust_profile_id="old",
+        trust_profile_hash="old",
+        status="synced",
+        transport_maintenance_opt_in=True,
+    )
+    fleet.create_error = failure
+
+    with pytest.raises(type(failure)):
+        controller.reconcile_opted_in_transport(context(), canary_vehicle_id="veh_one")
+
+    audit = list(store.audits.values())[0]
+    assert audit["result"] == "failed"
+    assert audit["error_category"] == expected_category
 
 
 def test_remove_is_explicit_and_vehicle_scoped() -> None:
