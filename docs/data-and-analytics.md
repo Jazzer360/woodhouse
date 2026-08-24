@@ -231,7 +231,30 @@ if the detection/interpolation method changes later.
 
 ---
 
-## 10. Generic analytics MCP tools
+## 10. Self-driving mileage analysis
+
+`SelfDrivingMilesSinceReset` is an HW4 cumulative statistic, not a live FSD
+engagement state. Analyze it together with `MilesSinceReset`, its total-mile
+denominator. Fleet Telemetry 1.3.0+ can deliver either counter with the other in
+the same payload; client 1.2 can deliver them as independent observations.
+
+A derived `self_driving_summary` should:
+
+- align counter observations by source timestamp and vehicle/config version;
+- begin a new reset epoch whenever either cumulative counter decreases;
+- calculate FSD miles and share from counter deltas only within one epoch;
+- preserve the source observations used, their time span, and any pairing gap;
+- classify missing HW4/client support as unavailable rather than zero; and
+- avoid claiming trip-level FSD engagement or exact transition times from
+  one-mile-delta cumulative counters.
+
+Tesla may reset the statistics after software updates, computer replacement,
+factory reset, or other triggers. Raw observations remain authoritative so
+epoch and pairing logic can be rebuilt if Tesla's behavior changes.
+
+---
+
+## 11. Generic analytics MCP tools
 
 ### `get_analytics_schema`
 
@@ -266,7 +289,7 @@ The safety cap prevents accidental giant queries. It is not a per-user commercia
 
 ---
 
-## 11. Current state does not belong in the history path
+## 12. Current state does not belong in the history path
 
 Ordinary questions about current vehicle state should use Tesla Fleet API via MCP.
 
@@ -276,7 +299,7 @@ Use BigQuery for history, trends, correlations, reconstructed sessions, and open
 
 ---
 
-## 12. Unknown vehicle routing
+## 13. Unknown vehicle routing
 
 The processor resolves raw telemetry VIN against the Firestore vehicle registry.
 
@@ -293,7 +316,7 @@ claim a user or vehicle and never writes to a per-user dataset.
 
 ---
 
-## 13. Future broader personal analytics MCP
+## 14. Future broader personal analytics MCP
 
 Design BigQuery schemas cleanly because Tesla data may later be queried beside other personal datasets (music APIs, finance, health/wellness, home energy, etc.).
 

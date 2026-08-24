@@ -324,6 +324,13 @@ def _load_field_section(
             raise RuntimeError(
                 f"Telemetry profile field {name!r} includes invalid fields: {invalid_includes}"
             )
+        for included_name in include_fields:
+            if (
+                name in _SELF_DRIVING_FIELDS or included_name in _SELF_DRIVING_FIELDS
+            ) and {name, included_name} != _SELF_DRIVING_FIELDS:
+                raise RuntimeError(
+                    "Tesla permits self-driving statistic fields to include only each other"
+                )
         field = FleetTelemetryField(
             interval_seconds=interval,
             minimum_delta=minimum_delta,

@@ -264,7 +264,7 @@ def test_profile_is_a_complete_declarative_tessie_comparison() -> None:
     assert profile.capability_omissions == {}
     assert comparison["baseline_field_count"] == 93
     assert comparison["woodhouse_field_count"] == 131
-    assert len(comparison["overrides"]) == 13  # type: ignore[arg-type]
+    assert len(comparison["overrides"]) == 14  # type: ignore[arg-type]
     assert len(comparison["additions"]) == 40  # type: ignore[arg-type]
     assert len(comparison["removals"]) == 2  # type: ignore[arg-type]
     assert len(comparison["catalog_omissions"]) == 106  # type: ignore[arg-type]
@@ -283,6 +283,12 @@ def test_profile_uses_deltas_only_for_defensible_measurements() -> None:
     assert profile.fields["LongitudinalAcceleration"].include_fields == ("VehicleSpeed",)
     assert profile.fields["BrakePedal"].interval_seconds == 1
     assert profile.fields["SelfDrivingMilesSinceReset"].minimum_delta == 1
+    assert profile.fields["SelfDrivingMilesSinceReset"].include_fields == (
+        "MilesSinceReset",
+    )
+    assert profile.fields["MilesSinceReset"].include_fields == (
+        "SelfDrivingMilesSinceReset",
+    )
     assert profile.fields["HvacFanSpeed"].minimum_delta is None
     assert profile.fields["ChargeCurrentRequest"].minimum_delta is None
     assert profile.fields["MediaAudioVolume"].interval_seconds == 60
@@ -303,6 +309,7 @@ def test_tessie_removals_and_woodhouse_additions_are_operator_visible() -> None:
     assert "DriverSeatBelt" in comparison["additions"]  # type: ignore[operator]
     assert "LongitudinalAcceleration" in comparison["additions"]  # type: ignore[operator]
     assert "Location" in comparison["overrides"]  # type: ignore[operator]
+    assert "SelfDrivingMilesSinceReset" in comparison["overrides"]  # type: ignore[operator]
 
 
 def test_capability_projection_handles_self_driving_and_synchronized_includes() -> None:
@@ -323,12 +330,20 @@ def test_capability_projection_handles_self_driving_and_synchronized_includes() 
     assert version_1_2.fields["LongitudinalAcceleration"].include_fields == ()
     assert set(version_1_2.capability_omissions) == {
         "LongitudinalAcceleration.include_fields",
+        "MilesSinceReset.include_fields",
+        "SelfDrivingMilesSinceReset.include_fields",
         "VehicleSpeed.include_fields",
     }
 
     version_1_3 = broad_profile("1.3.0")
     assert version_1_3.fields["VehicleSpeed"].include_fields == ("LongitudinalAcceleration",)
     assert version_1_3.fields["LongitudinalAcceleration"].include_fields == ("VehicleSpeed",)
+    assert version_1_3.fields["SelfDrivingMilesSinceReset"].include_fields == (
+        "MilesSinceReset",
+    )
+    assert version_1_3.fields["MilesSinceReset"].include_fields == (
+        "SelfDrivingMilesSinceReset",
+    )
     assert version_1_3.capability_omissions == {}
 
 

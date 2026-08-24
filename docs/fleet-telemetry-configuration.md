@@ -19,14 +19,16 @@ is not a plan, quota, or storage tier.
 
 - Source catalog: 239 documented fields.
 - Operator-supplied Tessie baseline: 93 fields.
-- Woodhouse deviations: 13 overrides, 40 additions, and 2 removals.
+- Woodhouse deviations: 14 overrides, 40 additions, and 2 removals.
 - Configured for a Fleet Telemetry 1.2.0+ passenger vehicle: 131 fields.
 - Fleet Telemetry 1.0/1.1 projection: 129 fields; the two HW4 self-driving
   counters are omitted because Tesla introduced them in client 1.2.0.
-- Fleet Telemetry 1.3.0+ additionally uses reciprocal `include_fields` so
-  qualifying speed carries acceleration and meaningful acceleration changes
-  carry current speed; earlier clients keep both fields independently
-  configured and omit only that synchronization.
+- Fleet Telemetry 1.3.0+ additionally uses reciprocal `include_fields` for two
+  analytical pairs: qualifying speed carries acceleration and meaningful
+  acceleration changes carry current speed; either self-driving mileage
+  counter carries its matching total/self-driving counter. Earlier clients
+  keep the supported top-level fields independently configured and omit only
+  that synchronization.
 - Remaining exclusions: 108 fields, comprising the 2 Tessie removals and 106
   explicit decisions not to add a non-baseline catalog field.
 - `delivery_policy` is `latest`, so unacknowledged buffered data is resent.
@@ -66,6 +68,7 @@ These are every cadence/delta difference for a field already in Tessie:
 | `TpmsSoftWarnings`, `TpmsHardWarnings` | 1,800 s | 60 s | Warning transitions are rare, so improved latency adds little normal volume. |
 | `HvacLeftTemperatureRequest` | 1 s | 5 s | Setpoint history does not need one-second polling or a numeric delta. |
 | `Odometer` | 30 s / 0.01 mi | 60 s / 0.01 mi | Retain Tessie's precision at a cheaper cadence. |
+| `SelfDrivingMilesSinceReset` | 30 s / 1 mi | 30 s / 1 mi, paired | Retain Tessie's Tesla-required threshold; on client 1.3+, carry the total-mile denominator in the same payload. |
 
 Thus, Woodhouse is more responsive than Tessie for trip shape, media changes,
 and TPMS warning transitions; less aggressive for the HVAC setpoint and
@@ -201,6 +204,31 @@ gap, capability mode, and an uncertainty/confidence label. A gap over roughly
 1.5 seconds or a rolling start should invalidate a high-confidence result. This
 is useful personal telemetry, not drag-strip timing equipment; do not present
 tenths of a second without the accompanying uncertainty evidence.
+
+## Self-driving mileage policy
+
+`SelfDrivingMilesSinceReset` is Tesla's cumulative count of miles driven using
+FSD since Tesla last reset its self-driving statistics. It is not a live
+indicator that FSD is currently engaged. Tesla documents the field as HW4-only,
+introduced in Fleet Telemetry client 1.2.0, and requires
+`minimum_delta >= 1`. Woodhouse therefore retains Tessie's 30-second,
+one-mile configuration and adds `MilesSinceReset` at the same cadence and
+threshold as the required total-mile denominator.
+
+On client 1.3.0+, the two fields reciprocally include each other so a change to
+either counter carries the matching value in the same payload. Tesla permits
+these two statistic fields to include only each other, which the declarative
+profile loader enforces. Client 1.2 retains both independent top-level fields
+without `include_fields`; earlier clients omit both unsupported fields.
+
+Tesla may reset these counters after some software updates, car-computer
+replacement, a factory reset, or other internal triggers. Analytics must treat
+any decrease in either counter as a new reset epoch and must never subtract
+across that boundary. FSD share is derived from paired counter **deltas within
+one epoch** (`delta(SelfDrivingMilesSinceReset) / delta(MilesSinceReset)`), not
+from a single instantaneous ratio. Missing counters on an unsupported vehicle
+mean unavailable, not zero. The one-mile delta makes this suitable for
+cumulative and multi-mile analysis, not precise trip-level engagement timing.
 
 ## Per-vehicle lifecycle
 
