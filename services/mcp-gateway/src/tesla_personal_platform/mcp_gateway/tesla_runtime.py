@@ -7,11 +7,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from google.cloud import firestore
 from tesla_personal_platform.mcp_gateway.mcp_tools import MCPProtocol, TeslaMCPService
+from tesla_personal_platform.mcp_gateway.telemetry_control import FleetTelemetryControlService
 from tesla_personal_platform.mcp_gateway.tesla_firestore import FirestoreTeslaOnboardingStore
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import TeslaOnboardingService
 from tesla_personal_platform.mcp_gateway.token_crypto import TokenCipher
 from tesla_personal_platform.tesla_client import (
     LocalCommandProxyTransport,
+    ServerTrustProfile,
     TeslaFleetClient,
     TeslaIDTokenVerifier,
     TeslaOAuthClient,
@@ -27,6 +29,7 @@ class TeslaRuntime:
     onboarding: TeslaOnboardingService
     public_key_pem: bytes
     mcp: MCPProtocol | None = None
+    telemetry: FleetTelemetryControlService | None = None
 
 
 def build_tesla_runtime(
@@ -70,38 +73,50 @@ def build_tesla_runtime(
     )
     fleet = TeslaFleetClient(transport)
     onboarding = TeslaOnboardingService(oauth, fleet, store, values["TESLA_APP_DOMAIN"])
-    mcp = _build_mcp_runtime(
-        fleet,
-        onboarding,
-        store,
-        oauth_protected=oauth_protected,
+    command_fleet = _build_command_fleet()
+    mcp = (
+        _build_mcp_runtime(
+            fleet,
+            command_fleet,
+            onboarding,
+            store,
+            oauth_protected=oauth_protected,
+        )
+        if command_fleet is not None
+        else None
     )
+    telemetry = _build_telemetry_runtime(fleet, command_fleet, onboarding, store)
     return TeslaRuntime(
         onboarding=onboarding,
         public_key_pem=public_key_pem,
         mcp=mcp,
+        telemetry=telemetry,
     )
 
 
-def _build_mcp_runtime(
-    fleet: TeslaFleetClient,
-    onboarding: TeslaOnboardingService,
-    store: FirestoreTeslaOnboardingStore,
-    *,
-    oauth_protected: bool,
-) -> MCPProtocol | None:
+def _build_command_fleet() -> TeslaFleetClient | None:
     enabled = os.environ.get("TESLA_COMMAND_PROXY_ENABLED", "false").strip().casefold()
     if enabled not in {"true", "1"}:
         return None
     ca_file = os.environ.get("TESLA_COMMAND_PROXY_CA_FILE", "").strip()
     if not ca_file:
         raise RuntimeError("TESLA_COMMAND_PROXY_CA_FILE must be configured")
-    command_fleet = TeslaFleetClient(
+    return TeslaFleetClient(
         LocalCommandProxyTransport(
             proxy_origin=os.environ.get("TESLA_COMMAND_PROXY_ORIGIN", "https://localhost:4443"),
             ca_file=ca_file,
         )
     )
+
+
+def _build_mcp_runtime(
+    fleet: TeslaFleetClient,
+    command_fleet: TeslaFleetClient,
+    onboarding: TeslaOnboardingService,
+    store: FirestoreTeslaOnboardingStore,
+    *,
+    oauth_protected: bool,
+) -> MCPProtocol | None:
     return MCPProtocol(
         TeslaMCPService(
             fleet=fleet,
@@ -111,6 +126,36 @@ def _build_mcp_runtime(
             audit_store=store,
             oauth_protected=oauth_protected,
         )
+    )
+
+
+def _build_telemetry_runtime(
+    fleet: TeslaFleetClient,
+    command_fleet: TeslaFleetClient | None,
+    onboarding: TeslaOnboardingService,
+    store: FirestoreTeslaOnboardingStore,
+) -> FleetTelemetryControlService | None:
+    enabled = os.environ.get("FLEET_TELEMETRY_CONTROL_ENABLED", "false").strip().casefold()
+    if enabled not in {"true", "1"}:
+        return None
+    if command_fleet is None:
+        raise RuntimeError("Fleet Telemetry control requires the Vehicle Command Proxy")
+    ca_pem = os.environ.get("TELEMETRY_SERVER_CA_PEM", "").strip()
+    profile_id = os.environ.get("TELEMETRY_TRUST_PROFILE_ID", "").strip()
+    hostname = os.environ.get("TELEMETRY_HOSTNAME", "").strip()
+    if not all((ca_pem, profile_id, hostname)):
+        raise RuntimeError("Fleet Telemetry trust profile configuration is incomplete")
+    try:
+        port = int(os.environ.get("TELEMETRY_PORT", "443"))
+    except ValueError as error:
+        raise RuntimeError("TELEMETRY_PORT must be an integer") from error
+    trust = ServerTrustProfile.from_pem(profile_id, hostname, port, ca_pem)
+    return FleetTelemetryControlService(
+        fleet=fleet,
+        signed_fleet=command_fleet,
+        credentials=onboarding,
+        store=store,
+        trust_profile=trust,
     )
 
 

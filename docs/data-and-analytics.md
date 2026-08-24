@@ -57,6 +57,13 @@ This allows questions such as:
 
 ## 4. Raw telemetry table
 
+The trusted vehicle registry receives `telemetry_config_version` and
+`telemetry_config_hash` only after Tesla reports the exact per-vehicle desired
+configuration as `synced=true` with no relevant telemetry errors. The field
+selection hash and server trust-profile ID/hash are stored separately so a
+compatible leaf renewal cannot masquerade as a field/frequency change. See
+[`fleet-telemetry-configuration.md`](fleet-telemetry-configuration.md).
+
 Recommended baseline:
 
 ```text
@@ -148,6 +155,7 @@ Initial useful concepts:
 drives
 charge_sessions
 media_history
+acceleration_events
 semantic_events
 vehicle_state_changes
 daily_vehicle_summary
@@ -193,7 +201,60 @@ No dedicated playlist endpoint is required.
 
 ---
 
-## 9. Generic analytics MCP tools
+## 9. Acceleration and launch analysis
+
+Raw `VehicleSpeed`, `LongitudinalAcceleration`, `BrakePedal`, and `Gear`
+observations support rebuildable acceleration/deceleration analysis. Fleet
+Telemetry 1.3.0+ reciprocally includes longitudinal acceleration with
+qualifying speed and current speed with meaningful acceleration changes. This
+is synchronized delivery, not a claim that separate vehicle sensors sampled at
+the exact same instant. Independent one-second parent timers may yield useful
+paired observations in adjacent 500-millisecond collector buckets, but derived
+logic must never assume or promise a sub-second cadence.
+
+Derived `acceleration_events` should:
+
+- order observations by source timestamp and retain ingestion timestamps only
+  for transport diagnostics;
+- identify stationary, forward-gear starts and reject rolling starts;
+- use independent longitudinal-acceleration changes to estimate event onset;
+- interpolate threshold crossings between surrounding speed observations;
+- retain acceleration and braking sign/magnitude plus brake-pedal context;
+- record sample count, largest source-time gap, telemetry client/config hash,
+  and a quality/uncertainty classification;
+- reject or clearly downgrade attempts with missing/out-of-order samples rather
+  than inventing precision.
+
+Approximate 0-60 results are personal analytical estimates, not certified
+performance measurements. Raw observations remain authoritative and permanent
+if the detection/interpolation method changes later.
+
+---
+
+## 10. Self-driving mileage analysis
+
+`SelfDrivingMilesSinceReset` is an HW4 cumulative statistic, not a live FSD
+engagement state. Analyze it together with `MilesSinceReset`, its total-mile
+denominator. Fleet Telemetry 1.3.0+ can deliver either counter with the other in
+the same payload; client 1.2 can deliver them as independent observations.
+
+A derived `self_driving_summary` should:
+
+- align counter observations by source timestamp and vehicle/config version;
+- begin a new reset epoch whenever either cumulative counter decreases;
+- calculate FSD miles and share from counter deltas only within one epoch;
+- preserve the source observations used, their time span, and any pairing gap;
+- classify missing HW4/client support as unavailable rather than zero; and
+- avoid claiming trip-level FSD engagement or exact transition times from
+  one-mile-delta cumulative counters.
+
+Tesla may reset the statistics after software updates, computer replacement,
+factory reset, or other triggers. Raw observations remain authoritative so
+epoch and pairing logic can be rebuilt if Tesla's behavior changes.
+
+---
+
+## 11. Generic analytics MCP tools
 
 ### `get_analytics_schema`
 
@@ -228,7 +289,7 @@ The safety cap prevents accidental giant queries. It is not a per-user commercia
 
 ---
 
-## 10. Current state does not belong in the history path
+## 12. Current state does not belong in the history path
 
 Ordinary questions about current vehicle state should use Tesla Fleet API via MCP.
 
@@ -238,7 +299,7 @@ Use BigQuery for history, trends, correlations, reconstructed sessions, and open
 
 ---
 
-## 11. Unknown vehicle routing
+## 13. Unknown vehicle routing
 
 The processor resolves raw telemetry VIN against the Firestore vehicle registry.
 
@@ -255,7 +316,7 @@ claim a user or vehicle and never writes to a per-user dataset.
 
 ---
 
-## 12. Future broader personal analytics MCP
+## 14. Future broader personal analytics MCP
 
 Design BigQuery schemas cleanly because Tesla data may later be queried beside other personal datasets (music APIs, finance, health/wellness, home energy, etc.).
 

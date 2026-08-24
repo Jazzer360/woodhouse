@@ -801,6 +801,108 @@ After these checks, report the checkpoint evidence and stop. Phase 8 separately
 requires an exact desired/current config diff and explicit approval for each
 real vehicle before making any Tesla telemetry configuration call.
 
+## Phase 8 Fleet Telemetry configuration checkpoint
+
+Prepare the versioned CA-only vehicle trust profile from the currently served
+TLS chain. This retains issuing CA certificates and deliberately drops the
+expiring leaf; it refuses to overwrite an existing output file:
+
+```bash
+uv run python scripts/admin/prepare-telemetry-trust-profile \
+  --hostname telemetry.woodhouse.derekjass.com \
+  --profile-id lets-encrypt-current-2026-08 \
+  --output /tmp/woodhouse-telemetry-ca-profile.pem
+```
+
+The command prints only the public profile ID, hash, count, hostname, port, and
+output path. Inspect the CA subjects and validity, then add the CA-only PEM as a
+new secret version. Never upload the leaf or any private key to this secret:
+
+```bash
+openssl crl2pkcs7 -nocrl -certfile /tmp/woodhouse-telemetry-ca-profile.pem \
+  | openssl pkcs7 -print_certs -noout
+gcloud secrets versions add telemetry-server-ca-profile \
+  --project=woodhouse-506215 \
+  --data-file=/tmp/woodhouse-telemetry-ca-profile.pem
+```
+
+The new secret containers are Terraform-owned, so bootstrap them in two safe
+applies. First set the trust-profile ID while keeping telemetry control disabled
+and the existing certificate schedule paused:
+
+```hcl
+enable_fleet_telemetry_control       = false
+telemetry_trust_profile_id           = "lets-encrypt-current-2026-08"
+telemetry_certificate_schedule_paused = true
+```
+
+Review a no-destroy plan and apply it. This creates the empty containers and
+updates the renewal job without allowing a scheduled run against empty values.
+Then upload the CA profile as shown above.
+
+For the initial profile, no vehicle is configured yet. Create the separate,
+non-secret cutover-readiness manifest using the exact SHA-256 printed by the
+preparation command, then add it as a secret version:
+
+```bash
+printf '%s' \
+  '{"ready":true,"required_vehicle_count":0,"trust_profile_id":"lets-encrypt-current-2026-08","trust_profile_sha256":"REPLACE_WITH_PRINTED_SHA256"}' \
+  >/tmp/woodhouse-telemetry-trust-readiness.json
+gcloud secrets versions add telemetry-trust-readiness \
+  --project=woodhouse-506215 \
+  --data-file=/tmp/woodhouse-telemetry-trust-readiness.json
+```
+
+For a later CA migration, do not publish a matching readiness version until
+the canary and every required vehicle have synchronized the overlap/new trust
+profile. The renewal job compares both ID and hash and therefore cannot cut the
+server over early. Routine leaf renewal under the already-active profile does
+not require a new readiness version or any Tesla call.
+
+After both secret versions exist, set these non-secret Terraform values, review
+a second no-destroy plan, and apply:
+
+```hcl
+enable_fleet_telemetry_control = true
+telemetry_trust_profile_id     = "lets-encrypt-current-2026-08"
+telemetry_certificate_schedule_paused = true
+```
+
+The certificate-renewal job now requires the exact profile and fails closed if
+an ACME candidate is not compatible. Run it once manually after the second
+apply and confirm the release manifest records the expected trust-profile
+ID/hash. Only after that succeeds may a final Terraform apply set
+`telemetry_certificate_schedule_paused = false`.
+
+Open `https://woodhouse.derekjass.com/onboarding`, select one paired vehicle,
+and click **Inspect telemetry configuration**. Save the complete safe diff and
+review the volume notes in
+[`fleet-telemetry-configuration.md`](fleet-telemetry-configuration.md). Do not
+check Apply until the operator has selected that exact vehicle and approved the
+displayed config hash. Apply processes one VIN, waits for `synced=true`, checks
+Tesla telemetry errors, and persists trusted hashes only after verification.
+
+After explicit approval and apply, verify one genuine observation without
+printing VIN, location, or payload data:
+
+```bash
+bq query --use_legacy_sql=false --parameter='vehicle_id:STRING:VEHICLE_ID' '
+SELECT
+  COUNT(*) AS observation_count,
+  COUNTIF(source_timestamp IS NOT NULL) AS with_source_timestamp,
+  COUNTIF(ingested_at IS NOT NULL) AS with_ingestion_timestamp,
+  ANY_VALUE(telemetry_config_version) AS config_version,
+  ANY_VALUE(telemetry_config_hash) AS config_hash
+FROM `woodhouse-506215.USER_DATASET.raw_telemetry_events`
+WHERE vehicle_id = @vehicle_id
+  AND ingested_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 MINUTE)'
+```
+
+Confirm the counts are nonzero, hashes match the synchronized vehicle record,
+and both dataset/table expiration remain unset. Until then the first live
+vehicle checkpoint is incomplete. CI and main-branch deploys never call Apply
+or Remove.
+
 ## Secret handling
 
 Terraform creates these empty containers:
@@ -817,6 +919,8 @@ Terraform creates these empty containers:
 - `telemetry-edge-tls-key`
 - `telemetry-edge-tls-release`
 - `telemetry-acme-state`
+- `telemetry-server-ca-profile`
+- `telemetry-trust-readiness`
 - `cloudflare-dns-api-token`
 - `webhook-hmac-key`
 

@@ -60,6 +60,9 @@ class Settings:
     key_secret: str
     state_secret: str
     release_secret: str
+    trust_profile_secret: str
+    trust_profile_id: str
+    trust_readiness_secret: str
     renewal_minimum_days: int = 45
     deployment_timeout_seconds: int = 600
 
@@ -82,6 +85,9 @@ class Settings:
             key_secret=_required_env("TLS_KEY_SECRET"),
             state_secret=_required_env("ACME_STATE_SECRET"),
             release_secret=_required_env("TLS_RELEASE_SECRET"),
+            trust_profile_secret=_required_env("TELEMETRY_TRUST_PROFILE_SECRET"),
+            trust_profile_id=_required_env("TELEMETRY_TRUST_PROFILE_ID"),
+            trust_readiness_secret=_required_env("TELEMETRY_TRUST_READINESS_SECRET"),
             renewal_minimum_days=minimum_days,
             deployment_timeout_seconds=deployment_timeout,
         )
@@ -94,6 +100,13 @@ class CertificateMaterial:
     leaf_sha256: str
     fullchain_sha256: str
     not_after: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TrustProfile:
+    profile_id: str
+    pem: bytes
+    sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +268,66 @@ def _load_and_validate_material(
     )
 
 
+def _load_trust_profile(profile_id: str, pem: bytes) -> TrustProfile:
+    certificates = x509.load_pem_x509_certificates(pem)
+    if not certificates:
+        raise ValueError("telemetry trust profile is empty")
+    for certificate in certificates:
+        try:
+            constraints = certificate.extensions.get_extension_for_class(
+                x509.BasicConstraints
+            ).value
+        except x509.ExtensionNotFound as error:
+            raise ValueError("telemetry trust profile contains a non-CA certificate") from error
+        if not constraints.ca:
+            raise ValueError("telemetry trust profile contains a non-CA certificate")
+    normalized = b"".join(
+        certificate.public_bytes(serialization.Encoding.PEM) for certificate in certificates
+    )
+    digest = hashlib.sha256(
+        b"".join(
+            sorted(
+                certificate.public_bytes(serialization.Encoding.DER) for certificate in certificates
+            )
+        )
+    ).hexdigest()
+    return TrustProfile(profile_id=profile_id, pem=normalized, sha256=digest)
+
+
+def _validate_candidate_against_trust_profile(
+    material: CertificateMaterial,
+    trust: TrustProfile,
+    directory: Path,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> None:
+    certificates = PEM_CERTIFICATE.findall(material.fullchain)
+    leaf_file = directory / "candidate-leaf.pem"
+    chain_file = directory / "candidate-chain.pem"
+    trust_file = directory / "configured-trust.pem"
+    leaf_file.write_bytes(certificates[0])
+    chain_file.write_bytes(b"\n".join(certificates[1:]))
+    trust_file.write_bytes(trust.pem)
+    command = [
+        "openssl",
+        "verify",
+        "-CAfile",
+        str(trust_file),
+        "-untrusted",
+        str(chain_file),
+        str(leaf_file),
+    ]
+    result = runner(command, check=False, capture_output=True, timeout=15)
+    if result.returncode != 0:
+        result = runner(
+            [*command[:2], "-partial_chain", *command[2:]],
+            check=False,
+            capture_output=True,
+            timeout=15,
+        )
+    if result.returncode != 0:
+        raise ValueError("certificate candidate is outside the configured telemetry trust profile")
+
+
 def _release_document(
     settings: Settings,
     material: CertificateMaterial,
@@ -262,6 +335,7 @@ def _release_document(
     cert_version: str,
     key_version: str,
     state_version: str,
+    trust_profile: TrustProfile,
 ) -> bytes:
     return json.dumps(
         {
@@ -274,6 +348,8 @@ def _release_document(
             "leaf_sha256": material.leaf_sha256,
             "not_after": material.not_after.isoformat(),
             "state_version": state_version,
+            "trust_profile_id": trust_profile.profile_id,
+            "trust_profile_sha256": trust_profile.sha256,
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -291,6 +367,29 @@ def _parse_release(value: SecretValue | None, settings: Settings) -> dict[str, o
             raise ValueError("active TLS release manifest is incomplete")
     document["release_version"] = value.version
     return document
+
+
+def _require_trust_cutover_readiness(
+    client: SecretClient, settings: Settings, trust: TrustProfile
+) -> None:
+    value = _read_secret(
+        client,
+        settings.project_id,
+        settings.trust_readiness_secret,
+        missing_ok=True,
+    )
+    if value is None:
+        raise ValueError("telemetry trust-profile cutover is not approved")
+    document = json.loads(value.data)
+    if (
+        not isinstance(document, dict)
+        or document.get("ready") is not True
+        or document.get("trust_profile_id") != trust.profile_id
+        or document.get("trust_profile_sha256") != trust.sha256
+        or not isinstance(document.get("required_vehicle_count"), int)
+        or int(document["required_vehicle_count"]) < 0
+    ):
+        raise ValueError("telemetry trust-profile cutover approval does not match")
 
 
 def _compute_url(settings: Settings, suffix: str) -> str:
@@ -383,6 +482,10 @@ def renew_certificate(
         secret_client, settings.project_id, settings.release_secret, missing_ok=True
     )
     active = _parse_release(active_value, settings)
+    trust_value = _read_secret(secret_client, settings.project_id, settings.trust_profile_secret)
+    if trust_value is None:
+        raise ValueError("telemetry trust profile is missing")
+    trust = _load_trust_profile(settings.trust_profile_id, trust_value.data)
     with tempfile.TemporaryDirectory(prefix="tpp-acme-") as temporary:
         root = Path(temporary)
         config_dir = root / "letsencrypt"
@@ -407,7 +510,20 @@ def renew_certificate(
             settings.hostname,
             minimum_days=settings.renewal_minimum_days,
         )
-        if active is not None and active.get("leaf_sha256") == material.leaf_sha256:
+        _validate_candidate_against_trust_profile(material, trust, root, runner)
+        trust_profile_changed = (
+            active is None
+            or active.get("trust_profile_id") != trust.profile_id
+            or active.get("trust_profile_sha256") != trust.sha256
+        )
+        if trust_profile_changed:
+            _require_trust_cutover_readiness(secret_client, settings, trust)
+        if (
+            active is not None
+            and active.get("leaf_sha256") == material.leaf_sha256
+            and active.get("trust_profile_id") == trust.profile_id
+            and active.get("trust_profile_sha256") == trust.sha256
+        ):
             release_version = str(active["release_version"])
             _deploy_release(
                 session,
@@ -441,6 +557,7 @@ def renew_certificate(
                 cert_version=cert_version,
                 key_version=key_version,
                 state_version=state_version,
+                trust_profile=trust,
             ),
         )
         _deploy_release(

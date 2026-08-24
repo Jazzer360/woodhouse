@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "Typed Tesla Fleet API client boundary"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "cryptography>=50,<51",
   "pyjwt[crypto]>=2.10,<3",
 ]
 
@@ -12,6 +13,7 @@ admin = ["google-cloud-secret-manager>=2.23,<3"]
 
 [project.scripts]
 tesla-register-partner = "tesla_personal_platform.tesla_client.admin:register_partner_main"
+prepare-telemetry-trust-profile = "tesla_personal_platform.tesla_client.trust_admin:prepare_trust_profile_main"
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

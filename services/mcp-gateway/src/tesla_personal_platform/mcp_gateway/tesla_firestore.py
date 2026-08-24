@@ -11,6 +11,7 @@ from google.cloud.firestore_v1 import Client
 from google.cloud.firestore_v1.base_query import FieldFilter
 from google.cloud.firestore_v1.transaction import Transaction
 from tesla_personal_platform.auth import CrossUserAccessError
+from tesla_personal_platform.mcp_gateway.telemetry_control import TelemetryConfigurationState
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
     ConcurrentTokenRotationError,
     InvalidOAuthStateError,
@@ -32,6 +33,7 @@ CONNECTIONS = "tesla_connections"
 VEHICLES = "vehicles"
 VIN_INDEX = "vehicle_vin_index"
 COMMAND_AUDITS = "tesla_command_audits"
+TELEMETRY_CONFIG_AUDITS = "tesla_telemetry_config_audits"
 
 
 class FirestoreTeslaOnboardingStore:
@@ -182,6 +184,97 @@ class FirestoreTeslaOnboardingStore:
                 vehicle_id,
                 status,
             ),
+        )
+
+    def get_telemetry_configuration(
+        self, owner_user_id: str, vehicle_id: str
+    ) -> TelemetryConfigurationState:
+        snapshot = self.client.collection(VEHICLES).document(vehicle_id).get()
+        if not snapshot.exists:
+            raise TeslaOnboardingError("Vehicle does not exist")
+        data = snapshot.to_dict()
+        record = self._vehicle_from_data(vehicle_id, data)
+        require_vehicle_owner(record, owner_user_id)
+        values = data or {}
+        return TelemetryConfigurationState(
+            vehicle_id=vehicle_id,
+            profile_version=_optional_string(values, "telemetry_config_version"),
+            config_hash=_optional_string(values, "telemetry_config_hash"),
+            field_config_hash=_optional_string(values, "telemetry_field_config_hash"),
+            trust_profile_id=_optional_string(values, "telemetry_trust_profile_id"),
+            trust_profile_hash=_optional_string(values, "telemetry_trust_profile_hash"),
+            status=str(values.get("telemetry_config_status", "not_configured")),
+            transport_maintenance_opt_in=bool(
+                values.get("telemetry_transport_maintenance_opt_in", False)
+            ),
+        )
+
+    def save_telemetry_configuration(
+        self,
+        *,
+        owner_user_id: str,
+        vehicle_id: str,
+        state: TelemetryConfigurationState,
+    ) -> None:
+        reference = self.client.collection(VEHICLES).document(vehicle_id)
+        snapshot = reference.get()
+        if not snapshot.exists:
+            raise TeslaOnboardingError("Vehicle does not exist")
+        require_vehicle_owner(
+            self._vehicle_from_data(vehicle_id, snapshot.to_dict()), owner_user_id
+        )
+        reference.update(
+            {
+                "telemetry_config_version": state.profile_version,
+                "telemetry_config_hash": state.config_hash,
+                "telemetry_field_config_hash": state.field_config_hash,
+                "telemetry_trust_profile_id": state.trust_profile_id,
+                "telemetry_trust_profile_hash": state.trust_profile_hash,
+                "telemetry_config_status": state.status,
+                "telemetry_transport_maintenance_opt_in": (state.transport_maintenance_opt_in),
+                "telemetry_config_updated_at": firestore.SERVER_TIMESTAMP,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }
+        )
+
+    def begin_telemetry_config_audit(
+        self,
+        *,
+        audit_id: str,
+        timestamp: datetime,
+        owner_user_id: str,
+        vehicle_id: str,
+        operation: str,
+        desired_config_hash: str | None,
+        source: str,
+    ) -> None:
+        self.client.collection(TELEMETRY_CONFIG_AUDITS).document(audit_id).create(
+            {
+                "timestamp": timestamp,
+                "owner_user_id": owner_user_id,
+                "vehicle_id": vehicle_id,
+                "operation": operation,
+                "desired_config_hash": desired_config_hash,
+                "result": "attempted",
+                "error_category": None,
+                "source": source,
+                "created_at": firestore.SERVER_TIMESTAMP,
+            }
+        )
+
+    def complete_telemetry_config_audit(
+        self,
+        *,
+        audit_id: str,
+        result: str,
+        error_category: str | None,
+    ) -> None:
+        self.client.collection(TELEMETRY_CONFIG_AUDITS).document(audit_id).update(
+            {
+                "result": result,
+                "error_category": error_category,
+                "completed_at": firestore.SERVER_TIMESTAMP,
+            }
         )
 
     def begin_command_audit(

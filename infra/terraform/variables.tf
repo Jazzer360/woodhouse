@@ -172,6 +172,27 @@ variable "enable_tesla_command_proxy" {
   default     = false
 }
 
+variable "enable_fleet_telemetry_control" {
+  description = "Enable authenticated per-vehicle Fleet Telemetry planning and signed configuration."
+  type        = bool
+  default     = false
+}
+
+variable "telemetry_trust_profile_id" {
+  description = "Versioned identifier for the stable CA bundle vehicles use to verify telemetry-edge."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.telemetry_trust_profile_id == null ? true : can(regex(
+      "^[a-z0-9][a-z0-9._-]{0,63}$",
+      var.telemetry_trust_profile_id
+    ))
+    error_message = "telemetry_trust_profile_id must be a lowercase versioned identifier."
+  }
+}
+
 variable "tesla_command_proxy_image" {
   description = "Official tesla/vehicle-command image pinned by sha256 digest; required when the proxy is enabled."
   type        = string

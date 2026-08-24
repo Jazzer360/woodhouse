@@ -266,14 +266,14 @@ Finish with an OPERATOR CHECKPOINT for the deployed telemetry path before changi
 
 ---
 
-## Prompt 8 — Broad Fleet Telemetry configuration
+## Prompt 8 — Cost-conscious Fleet Telemetry configuration
 
 ```text
 Read AGENTS.md, docs/tesla-onboarding.md, docs/data-and-analytics.md, and Tesla's current Fleet Telemetry available-data documentation/source schema before implementation.
 
-Implement a versioned broad Fleet Telemetry configuration for each eligible vehicle. The default philosophy is broad inclusion rather than minimizing warehouse storage: subscribe to essentially all practically useful supported vehicle telemetry available to the application, including media metadata/playback, location/navigation, driving/powertrain, battery/charging, climate, body/security, TPMS, software/configuration, connectivity/alerts, and self-driving/FSD counters where actually supported. Explicitly document any available fields intentionally omitted and why.
+Implement a versioned, declarative Fleet Telemetry configuration for each eligible vehicle. Use the operator-supplied Tessie field configuration as a checked-in field-only baseline, then express Woodhouse overrides, additions, and removals separately with an inline rationale for every deviation. Never retain Tessie's transport certificate, hostname, signature, identifiers, or response metadata. The target is useful multi-domain history while keeping total Fleet API usage within Tesla's current $10 monthly developer discount with margin for commands, wakes, and live reads. Treat this as an operational target that must be measured after deployment, not as a guaranteed static calculation.
 
-Use rational per-field interval_seconds/change behavior at the Tesla source; do not ask for maximum-frequency sampling everywhere when the signal does not justify it. This source configuration is the only intentional telemetry-frequency throttling layer. Once a record is emitted to our receiver, Phase 7's permanent-storage rule remains unchanged.
+Use rational per-field interval_seconds/change behavior at the Tesla source; do not ask for maximum-frequency sampling everywhere when the signal does not justify it. minimum_delta is opt-in only where its unit and threshold have a defensible physical or analytical meaning; do not assign it merely because a field is numeric. Use capability-projected include_fields where synchronized same-payload values materially improve analysis without creating an independent high-churn trigger, and retain a safe top-level fallback when onset/change detection still matters. Explicitly classify every field in the pinned Tesla schema as inherited, overridden, added, removed, or omitted so schema drift fails closed. This source configuration is the only intentional telemetry-frequency throttling layer. Once a record is emitted to our receiver, Phase 7's permanent-storage rule remains unchanged.
 
 Implement per-vehicle inspect, desired-vs-current diff, apply, verify, remove, repair/reapply, telemetry-error inspection, and config hash/version persistence through Tesla's currently recommended signed configuration path. Multiple vehicles on the same Tesla account must be configurable independently, and failure on one vehicle must not block the others. Do not implement plan-based telemetry profiles or downstream sampling.
 
@@ -299,7 +299,9 @@ Finish with a required OPERATOR CHECKPOINT for the first real vehicle. Show the 
 
 ### Phase 8 completion check
 
-- Broad telemetry coverage is deliberate and documented.
+- Tessie baseline and every Woodhouse deviation are declarative and documented.
+- Every pinned Tesla catalog field has an explicit inclusion or omission decision.
+- Runtime usage is monitored against the current developer-discount target.
 - Frequency decisions live only in Tesla config.
 - Config can be inspected/diffed/repaired per vehicle.
 - Compatible leaf renewals do not rewrite vehicle config; CA/endpoint changes

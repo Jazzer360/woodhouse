@@ -311,6 +311,15 @@ intervals, apply the signed update, wait for `synced=true`, inspect telemetry
 errors, and record an audit result independently per vehicle. Field selection,
 frequency, removal, and first-time enrollment remain explicit operator changes.
 
+The implemented Phase 8 operator path is the authenticated `/onboarding`
+vehicle screen. It renders the exact safe desired/current diff, requires the
+displayed config hash and explicit checkbox approval, sends one vehicle through
+the official command proxy, waits for `synced=true`, inspects errors, and only
+then records trusted config metadata. The canonical broad field/delta policy,
+intentional exclusions, trust-profile procedure, and first-live-vehicle
+checkpoint are documented in
+[`fleet-telemetry-configuration.md`](fleet-telemetry-configuration.md).
+
 For a CA migration, prefer an overlap in which vehicles trust both the old and
 new chains before the server changes, but only after confirming the current
 Tesla client accepts that CA bundle. Canary one vehicle, wait for sync and a

@@ -1,0 +1,195 @@
+# Woodhouse Fleet Telemetry policy layered over the operator-supplied Tessie baseline.
+#
+# This file is intentionally declarative and reviewable. A field must be in exactly
+# one applicable state: inherited from Tessie, overridden here, added here, removed
+# from Tessie, or explicitly omitted from the Tesla catalog.
+#
+# Cost target: keep total application usage within Tesla's $10 monthly developer
+# discount with margin for commands, wakes, and live reads. Tesla pricing is runtime
+# policy, not a vehicle-config field; re-audit it before changing cadence.
+#
+# minimum_delta is opt-in. Add it only when a physical/noisy/monotonic measurement
+# has a defensible threshold. Discrete numeric levels and counts rely on Tesla's
+# normal changed-value behavior.
+
+[profile]
+version = "broad-v1"
+schema_version = "fleet-telemetry-v0.9.4-2026-08-23"
+baseline = "tessie-operator-snapshot-2026-08-23"
+delivery_policy = "latest"
+alert_types = ["service", "customer", "service-fix"]
+
+# Changes to Tessie fields. Every deviation carries its review rationale.
+[overrides]
+"GpsHeading" = { interval_seconds = 10, minimum_delta = 5, rationale = "Align heading with trip cadence while ignoring small directional jitter." }
+"HvacLeftTemperatureRequest" = { interval_seconds = 5, rationale = "A setpoint is discrete in practice; five-second latency is enough and needs no numeric delta." }
+"Location" = { interval_seconds = 10, minimum_delta = 10, rationale = "Tesla's own economical example uses 10 seconds; 10 meters filters GPS drift while preserving trip shape." }
+"MediaNowPlayingAlbum" = { interval_seconds = 10, rationale = "Capture short tracks and skips for media history; unchanged metadata emits nothing." }
+"MediaNowPlayingArtist" = { interval_seconds = 10, rationale = "Capture short tracks and skips for media history; unchanged metadata emits nothing." }
+"MediaNowPlayingStation" = { interval_seconds = 10, rationale = "Capture station changes promptly; unchanged metadata emits nothing." }
+"MediaNowPlayingTitle" = { interval_seconds = 10, rationale = "Capture short tracks and skips for media history; unchanged metadata emits nothing." }
+"MediaPlaybackSource" = { interval_seconds = 10, rationale = "Capture source changes promptly; unchanged state emits nothing." }
+"MediaPlaybackStatus" = { interval_seconds = 10, rationale = "Capture play/pause transitions promptly; unchanged state emits nothing." }
+"Odometer" = { interval_seconds = 60, minimum_delta = 0.01, rationale = "Tessie's precision is retained but cadence is reduced to Tesla's economical example." }
+"SelfDrivingMilesSinceReset" = { interval_seconds = 30, minimum_delta = 1, include_fields = ["MilesSinceReset"], rationale = "Retain Tessie's Tesla-required one-mile threshold; on Fleet Telemetry 1.3+ include the matching total-mile denominator in the same payload." }
+"TpmsHardWarnings" = { interval_seconds = 60, rationale = "Warnings are rare changes, so lower latency adds negligible normal signal volume." }
+"TpmsSoftWarnings" = { interval_seconds = 60, rationale = "Warnings are rare changes, so lower latency adds negligible normal signal volume." }
+"VehicleSpeed" = { interval_seconds = 1, minimum_delta = 1, include_fields = ["LongitudinalAcceleration"], rationale = "Preserve one-mph cruising changes and approximately one-second launch samples; on Fleet Telemetry 1.3+ include longitudinal acceleration in the same payload for synchronized analysis." }
+
+# New fields selected from Tesla's full documented catalog.
+[additions]
+"ACChargingEnergyIn" = { interval_seconds = 60, minimum_delta = 0.1, rationale = "Preserve metered AC session energy for charging-efficiency and cost analytics." }
+"AutoSeatClimateLeft" = { interval_seconds = 5, rationale = "Capture comfort automation state changes, not continuous measurements." }
+"AutoSeatClimateRight" = { interval_seconds = 5, rationale = "Capture comfort automation state changes, not continuous measurements." }
+"BMSState" = { interval_seconds = 60, rationale = "Capture battery-management state transitions without high-rate engineering telemetry." }
+"BrakePedal" = { interval_seconds = 1, rationale = "Capture braking transitions for acceleration/deceleration classification; unchanged boolean state does not emit." }
+"ChargePort" = { interval_seconds = 5, rationale = "Distinguish charge-port type/state changes in reconstructed charging sessions." }
+"ChargePortColdWeatherMode" = { interval_seconds = 5, rationale = "Explain cold-weather charge-port behavior when it occurs." }
+"ChargeRateMilePerHour" = { interval_seconds = 60, minimum_delta = 0.5, rationale = "Add a human-readable charging-rate trend at Tessie-like charging cadence." }
+"ChargeState" = { interval_seconds = 5, rationale = "Provide a canonical low-latency charging-session state." }
+"CruiseSetSpeed" = { interval_seconds = 10, minimum_delta = 1, rationale = "Support cruise-use analysis at driving cadence with one-mph changes." }
+"DCChargingEnergyIn" = { interval_seconds = 60, minimum_delta = 0.1, rationale = "Preserve metered DC session energy for charging-efficiency and cost analytics." }
+"DefrostForPreconditioning" = { interval_seconds = 5, rationale = "Explain defrost activity during preconditioning." }
+"DriveRail" = { interval_seconds = 5, rationale = "Provide a low-cost vehicle-ready/driving state transition." }
+"DriverSeatBelt" = { interval_seconds = 5, rationale = "Capture a safety state transition with little steady-state volume." }
+"EstBatteryRange" = { interval_seconds = 60, minimum_delta = 0.1, rationale = "Match Tesla's own economical example and retain condition-aware range history." }
+"EstimatedHoursToChargeTermination" = { interval_seconds = 60, minimum_delta = 0.0165, rationale = "Track charge completion estimates with approximately one-minute resolution." }
+"GpsState" = { interval_seconds = 5, rationale = "Distinguish missing GPS lock from absent or stale location data." }
+"GuestModeEnabled" = { interval_seconds = 5, rationale = "Retain rare guest-mode security state changes." }
+"GuestModeMobileAccessState" = { interval_seconds = 5, rationale = "Explain guest-mode access state when enabled." }
+"HvacACEnabled" = { interval_seconds = 5, rationale = "Distinguish compressor state in climate and efficiency analysis." }
+"HvacAutoMode" = { interval_seconds = 5, rationale = "Distinguish automatic from manual HVAC behavior." }
+"HvacFanSpeed" = { interval_seconds = 5, rationale = "Capture discrete fan-speed changes without an unnecessary numeric delta." }
+"HvacRightTemperatureRequest" = { interval_seconds = 5, rationale = "Pair the right-side setpoint with Tessie's left-side setpoint." }
+"LightsHazardsActive" = { interval_seconds = 5, rationale = "Capture rare hazard-light use without turn-signal volume." }
+"LocatedAtFavorite" = { interval_seconds = 30, rationale = "Enable privacy-preserving place classification without custom geofence coordinates." }
+"LocatedAtHome" = { interval_seconds = 30, rationale = "Enable privacy-preserving home classification without custom geofence coordinates." }
+"LocatedAtWork" = { interval_seconds = 30, rationale = "Enable privacy-preserving work classification without custom geofence coordinates." }
+"LongitudinalAcceleration" = { interval_seconds = 1, minimum_delta = 1.0, include_fields = ["VehicleSpeed"], rationale = "Capture meaningful acceleration onset and sign independently; on Fleet Telemetry 1.3+ include current speed so acceleration-triggered events add synchronized detail between regular speed emissions." }
+"MilesSinceReset" = { interval_seconds = 30, minimum_delta = 1, include_fields = ["SelfDrivingMilesSinceReset"], rationale = "Provide the denominator for Tesla's authoritative HW4 self-driving statistic; on Fleet Telemetry 1.3+ include the matching FSD-mile counter in the same payload." }
+"NotEnoughPowerToHeat" = { interval_seconds = 5, rationale = "Explain failed or constrained battery heating as a rare state transition." }
+"OriginLocation" = { interval_seconds = 60, minimum_delta = 25, rationale = "Capture route origin once established while filtering GPS drift." }
+"PairedPhoneKeyAndKeyFobQty" = { interval_seconds = 300, rationale = "Retain a low-frequency security inventory change." }
+"PreconditioningEnabled" = { interval_seconds = 5, rationale = "Reconstruct preconditioning periods and their energy/climate context." }
+"RearDefrostEnabled" = { interval_seconds = 5, rationale = "Capture a rare climate load relevant to cold-weather efficiency." }
+"RouteTrafficMinutesDelay" = { interval_seconds = 60, minimum_delta = 1, rationale = "Retain coarse traffic-delay history for trip analysis." }
+"ScheduledChargingPending" = { interval_seconds = 5, rationale = "Connect scheduled charging intent to actual sessions." }
+"SeatVentEnabled" = { interval_seconds = 5, rationale = "Capture seat-ventilation state for comfort analysis." }
+"ServiceMode" = { interval_seconds = 5, rationale = "Mark service-mode periods that affect other vehicle behavior." }
+"SoftwareUpdateExpectedDurationMinutes" = { interval_seconds = 60, rationale = "Add useful update planning metadata without a redundant numeric delta." }
+"WiperHeatEnabled" = { interval_seconds = 5, rationale = "Capture a rare cold-weather load." }
+
+# Tessie fields intentionally removed by Woodhouse.
+[removals]
+"MediaAudioVolumeIncrement" = "Static UI increment metadata has no useful historical role."
+"MediaAudioVolumeMax" = "Static UI maximum metadata has no useful historical role."
+
+# Tesla catalog fields not present in Tessie and intentionally not added.
+# Keeping every omission explicit makes schema reviews fail closed.
+[omissions]
+"AutomaticBlindSpotCamera" = "Driver-assistance preference is low-value historical metadata and can be read live when needed."
+"AutomaticEmergencyBrakingOff" = "Driver-assistance preference is low-value historical metadata and can be read live when needed."
+"BatteryLevel" = "Redundant with the retained state-of-charge signal Soc."
+"BlindSpotCollisionWarningChime" = "Driver-assistance preference is low-value historical metadata and can be read live when needed."
+"BmsFullchargecomplete" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."
+"BrakePedalPos" = "High-churn driving detail deferred because normal trip analytics do not require it."
+"BrickVoltageMax" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."
+"BrickVoltageMin" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."
+"CarType" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."
+"CenterDisplay" = "State is redundant with retained connectivity/security signals or has little historical analytical value."
+"CruiseFollowDistance" = "Driver-assistance preference is low-value historical metadata and can be read live when needed."
+"DCDCEnable" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."
+"DiAxleSpeedF" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiAxleSpeedR" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiAxleSpeedREL" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiAxleSpeedRER" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiHeatsinkTF" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiHeatsinkTR" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiHeatsinkTREL" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiHeatsinkTRER" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiInverterTF" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiInverterTR" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiInverterTREL" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiInverterTRER" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiMotorCurrentF" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiMotorCurrentR" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiMotorCurrentREL" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiMotorCurrentRER" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiSlaveTorqueCmd" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiStateF" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiStateR" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiStateREL" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiStateRER" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiStatorTempF" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiStatorTempR" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiStatorTempREL" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiStatorTempRER" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiTorqueActualF" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiTorqueActualR" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiTorqueActualREL" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiTorqueActualRER" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiTorquemotor" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiVBatF" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiVBatR" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiVBatREL" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"DiVBatRER" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"EfficiencyPackage" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."
+"EmergencyLaneDepartureAvoidance" = "Driver-assistance preference is low-value historical metadata and can be read live when needed."
+"EuropeVehicle" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."
+"ExteriorColor" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."
+"ForwardCollisionWarning" = "Driver-assistance preference is low-value historical metadata and can be read live when needed."
+"HomelinkDeviceCount" = "State is redundant with retained connectivity/security signals or has little historical analytical value."
+"HvacFanStatus" = "Hardware-specific or redundant comfort detail has little additional analytical value."
+"Hvil" = "High-rate engineering diagnostic deferred until measured demand justifies its signal cost."
+"IdealBatteryRange" = "Redundant with retained rated and condition-aware estimated range."
+"IsolationResistance" = "Engineering diagnostic with little routine personal analytical value."
+"LaneDepartureAvoidance" = "Driver-assistance preference is low-value historical metadata and can be read live when needed."
+"LateralAcceleration" = "High-churn driving detail deferred because normal trip analytics do not require it."
+"LifetimeEnergyUsedDrive" = "Tesla documents this field as Semi-only."
+"LightsHighBeams" = "High-churn lighting detail has little expected historical analytical value."
+"LightsTurnSignal" = "High-churn lighting detail has little expected historical analytical value."
+"NumBrickVoltageMax" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."
+"NumBrickVoltageMin" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."
+"NumModuleTempMax" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."
+"NumModuleTempMin" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."
+"OffroadLightbarPresent" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."
+"PassengerSeatBelt" = "Tesla documents this field as misreporting the second-row-center belt."
+"PedalPosition" = "High-churn driving detail deferred because normal trip analytics do not require it."
+"PowershareHoursLeft" = "Hardware-specific Powershare detail deferred until an eligible vehicle creates a concrete need."
+"PowershareInstantaneousPowerKW" = "Hardware-specific Powershare detail deferred until an eligible vehicle creates a concrete need."
+"PowershareStatus" = "Hardware-specific Powershare detail deferred until an eligible vehicle creates a concrete need."
+"PowershareStopReason" = "Hardware-specific Powershare detail deferred until an eligible vehicle creates a concrete need."
+"PowershareType" = "Hardware-specific Powershare detail deferred until an eligible vehicle creates a concrete need."
+"RearDisplayHvacEnabled" = "Hardware-specific or redundant comfort detail has little additional analytical value."
+"RearSeatHeaters" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."
+"RemoteStartEnabled" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."
+"RightHandDrive" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."
+"RoofColor" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."
+"RouteLastUpdated" = "Tesla documents this field as broken and not returning data."
+"RouteLine" = "Potentially high-churn route geometry is redundant with sampled location and destination history."
+"SemitruckPassengerSeatFoldPosition" = "Tesla documents this field as Semi-only."
+"SemitruckTpmsPressureRe1L0" = "Tesla documents this field as Semi-only."
+"SemitruckTpmsPressureRe1L1" = "Tesla documents this field as Semi-only."
+"SemitruckTpmsPressureRe1R0" = "Tesla documents this field as Semi-only."
+"SemitruckTpmsPressureRe1R1" = "Tesla documents this field as Semi-only."
+"SemitruckTpmsPressureRe2L0" = "Tesla documents this field as Semi-only."
+"SemitruckTpmsPressureRe2L1" = "Tesla documents this field as Semi-only."
+"SemitruckTpmsPressureRe2R0" = "Tesla documents this field as Semi-only."
+"SemitruckTpmsPressureRe2R1" = "Tesla documents this field as Semi-only."
+"SemitruckTractorParkBrakeStatus" = "Tesla documents this field as Semi-only."
+"SemitruckTrailerParkBrakeStatus" = "Tesla documents this field as Semi-only."
+"Setting24HourTime" = "Static display preference has little historical analytical value."
+"SettingChargeUnit" = "Static display preference has little historical analytical value."
+"SettingDistanceUnit" = "Static display preference has little historical analytical value."
+"SettingTemperatureUnit" = "Static display preference has little historical analytical value."
+"SettingTirePressureUnit" = "Static display preference has little historical analytical value."
+"SpeedLimitWarning" = "Driver-assistance preference is low-value historical metadata and can be read live when needed."
+"SunroofInstalled" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."
+"TonneauOpenPercent" = "Cybertruck-specific detail deferred until an eligible vehicle creates a concrete need."
+"TonneauPosition" = "Cybertruck-specific detail deferred until an eligible vehicle creates a concrete need."
+"TonneauTentMode" = "Cybertruck-specific detail deferred until an eligible vehicle creates a concrete need."
+"TpmsLastSeenPressureTimeFl" = "Tesla documents this timestamp as reporting incorrectly."
+"TpmsLastSeenPressureTimeFr" = "Tesla documents this timestamp as reporting incorrectly."
+"TpmsLastSeenPressureTimeRl" = "Tesla documents this timestamp as reporting incorrectly."
+"TpmsLastSeenPressureTimeRr" = "Tesla documents this timestamp as reporting incorrectly."
+"Trim" = "Static hardware metadata is better obtained through targeted vehicle metadata reads."

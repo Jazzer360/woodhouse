@@ -304,6 +304,13 @@ per-vehicle signed reconciliation path for genuine hostname, port, or CA trust
 changes. The certificate-renewal job must remain unable to access Tesla OAuth
 tokens or the command-signing key.
 
+Phase 8 implements this boundary with a CA-only Secret Manager trust profile,
+an authenticated per-user/per-vehicle controller in the gateway control plane,
+and the official Vehicle Command Proxy sidecar for the signed create operation.
+The field-profile hash, full config hash, and CA trust-profile ID/hash are
+persisted independently; the broad field policy is in
+[`fleet-telemetry-configuration.md`](fleet-telemetry-configuration.md).
+
 ---
 
 ## 6. Repository layout

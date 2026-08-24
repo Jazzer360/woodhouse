@@ -39,6 +39,8 @@ cloud_build_repository = "projects/woodhouse-506215/locations/us-central1/connec
 # Phase 6: enable only after adding command-proxy TLS secret versions. Resolve
 # the current official image digest out of band; never deploy a floating tag.
 # enable_tesla_command_proxy = true
+# enable_fleet_telemetry_control = true
+# telemetry_trust_profile_id     = "lets-encrypt-isrg-x1-2026-01"
 # tesla_command_proxy_image  = "tesla/vehicle-command@sha256:<reviewed-64-hex-digest>"
 
 # Use IAM member syntax. Keep empty until the operator identity is known.

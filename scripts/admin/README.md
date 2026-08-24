@@ -7,8 +7,10 @@ Administrative entry points are trusted, explicit operator workflows.
 - Phase 6.1: guarded `reset-user-identity` for provider migration/recovery.
 - Phase 4: idempotent Tesla partner registration/verification (implemented as
   `register-partner`).
-- Phase 7: guarded synthetic telemetry validation (implemented); Phase 8 adds
-  explicit per-vehicle configuration operations.
+- Phase 7: guarded synthetic telemetry validation (implemented).
+- Phase 8: explicit per-vehicle configuration operations (implemented through
+  the authenticated `/onboarding` operator screen so no local admin process can
+  read Tesla tokens or the command-signing key).
 
 Run Phase 3 user commands from the repository root after creating ADC for the
 keyless `tpp-user-admin` service account:
@@ -40,6 +42,20 @@ source-time-partitioned `raw_telemetry_events` table without deleting data.
 The commands never accept or print a token, secret, service-account key, or
 Tesla credential. See [`docs/deployment.md`](../../docs/deployment.md#manual-add-homer-workflow)
 for permissions, impersonation, dataset access, and recovery behavior.
+
+Prepare (but do not automatically upload) the Phase 8 CA-only vehicle trust
+profile from the live public chain:
+
+```bash
+uv run python scripts/admin/prepare-telemetry-trust-profile \
+  --hostname telemetry.woodhouse.derekjass.com \
+  --profile-id lets-encrypt-current-2026-08 \
+  --output /tmp/woodhouse-telemetry-ca-profile.pem
+```
+
+It drops the expiring leaf and refuses to overwrite an existing path. Follow
+the inspection, Secret Manager, Terraform, exact-diff, and first-vehicle steps
+in [`docs/deployment.md`](../../docs/deployment.md#phase-8-fleet-telemetry-configuration-checkpoint).
 
 After the Tesla client secret and public key have enabled Secret Manager
 versions, register or verify the application without copying either value into

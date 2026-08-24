@@ -1,0 +1,109 @@
+# Tessie Fleet Telemetry field baseline supplied by the operator on 2026-08-23.
+#
+# Only field cadence/delta settings are retained. The source response's hostname,
+# CA certificate, JWS issuer/audience/signature, sync state, and timestamps are
+# deliberately excluded. This baseline is reference data, not a deployable
+# transport configuration.
+#
+# Keep changes to this file limited to correcting transcription of that snapshot.
+# Woodhouse policy belongs in fleet_telemetry_woodhouse.toml.
+
+[baseline]
+name = "tessie-operator-snapshot-2026-08-23"
+delivery_policy = "latest"
+alert_types = ["service", "customer", "service-fix"]
+
+[fields]
+"ACChargingPower" = { interval_seconds = 60, minimum_delta = 0.1 }
+"BatteryHeaterOn" = { interval_seconds = 1 }
+"CabinOverheatProtectionMode" = { interval_seconds = 1 }
+"CabinOverheatProtectionTemperatureLimit" = { interval_seconds = 1 }
+"ChargeAmps" = { interval_seconds = 60, minimum_delta = 1 }
+"ChargeCurrentRequest" = { interval_seconds = 60 }
+"ChargeCurrentRequestMax" = { interval_seconds = 60 }
+"ChargeEnableRequest" = { interval_seconds = 1 }
+"ChargeLimitSoc" = { interval_seconds = 1 }
+"ChargePortDoorOpen" = { interval_seconds = 1 }
+"ChargePortLatch" = { interval_seconds = 1 }
+"ChargerPhases" = { interval_seconds = 60 }
+"ChargerVoltage" = { interval_seconds = 60, minimum_delta = 2 }
+"ChargingCableType" = { interval_seconds = 1 }
+"ClimateKeeperMode" = { interval_seconds = 1 }
+"ClimateSeatCoolingFrontLeft" = { interval_seconds = 1 }
+"ClimateSeatCoolingFrontRight" = { interval_seconds = 1 }
+"CurrentLimitMph" = { interval_seconds = 1 }
+"DCChargingPower" = { interval_seconds = 60, minimum_delta = 0.1 }
+"DefrostMode" = { interval_seconds = 1 }
+"DestinationLocation" = { interval_seconds = 1 }
+"DestinationName" = { interval_seconds = 1 }
+"DetailedChargeState" = { interval_seconds = 1 }
+"DoorState" = { interval_seconds = 1 }
+"DriverSeatOccupied" = { interval_seconds = 1 }
+"EnergyRemaining" = { interval_seconds = 60, minimum_delta = 0.01 }
+"ExpectedEnergyPercentAtTripArrival" = { interval_seconds = 60, minimum_delta = 1 }
+"FastChargerPresent" = { interval_seconds = 1 }
+"FastChargerType" = { interval_seconds = 1 }
+"FdWindow" = { interval_seconds = 1 }
+"FpWindow" = { interval_seconds = 1 }
+"Gear" = { interval_seconds = 1 }
+"GpsHeading" = { interval_seconds = 60, minimum_delta = 1 }
+"HomelinkNearby" = { interval_seconds = 1 }
+"HvacLeftTemperatureRequest" = { interval_seconds = 1 }
+"HvacPower" = { interval_seconds = 1 }
+"HvacSteeringWheelHeatAuto" = { interval_seconds = 1 }
+"HvacSteeringWheelHeatLevel" = { interval_seconds = 1 }
+"InsideTemp" = { interval_seconds = 60, minimum_delta = 0.5 }
+"LifetimeEnergyUsed" = { interval_seconds = 3600 }
+"Location" = { interval_seconds = 30, minimum_delta = 3 }
+"Locked" = { interval_seconds = 1 }
+"MediaAudioVolume" = { interval_seconds = 60 }
+"MediaAudioVolumeIncrement" = { interval_seconds = 60 }
+"MediaAudioVolumeMax" = { interval_seconds = 60 }
+"MediaNowPlayingAlbum" = { interval_seconds = 60 }
+"MediaNowPlayingArtist" = { interval_seconds = 60 }
+"MediaNowPlayingDuration" = { interval_seconds = 60 }
+"MediaNowPlayingElapsed" = { interval_seconds = 60 }
+"MediaNowPlayingStation" = { interval_seconds = 60 }
+"MediaNowPlayingTitle" = { interval_seconds = 60 }
+"MediaPlaybackSource" = { interval_seconds = 60 }
+"MediaPlaybackStatus" = { interval_seconds = 60 }
+"MilesToArrival" = { interval_seconds = 60, minimum_delta = 0.1 }
+"MinutesToArrival" = { interval_seconds = 60, minimum_delta = 1 }
+"ModuleTempMax" = { interval_seconds = 120, minimum_delta = 0.5 }
+"ModuleTempMin" = { interval_seconds = 120, minimum_delta = 0.5 }
+"Odometer" = { interval_seconds = 30, minimum_delta = 0.01 }
+"OutsideTemp" = { interval_seconds = 60, minimum_delta = 1 }
+"PackCurrent" = { interval_seconds = 120, minimum_delta = 0.1 }
+"PackVoltage" = { interval_seconds = 300, minimum_delta = 0.1 }
+"PinToDriveEnabled" = { interval_seconds = 1 }
+"RatedRange" = { interval_seconds = 60, minimum_delta = 0.1 }
+"RdWindow" = { interval_seconds = 1 }
+"RpWindow" = { interval_seconds = 1 }
+"ScheduledChargingMode" = { interval_seconds = 1 }
+"ScheduledChargingStartTime" = { interval_seconds = 1 }
+"SeatHeaterLeft" = { interval_seconds = 1 }
+"SeatHeaterRearCenter" = { interval_seconds = 1 }
+"SeatHeaterRearLeft" = { interval_seconds = 1 }
+"SeatHeaterRearRight" = { interval_seconds = 1 }
+"SeatHeaterRight" = { interval_seconds = 1 }
+"SelfDrivingMilesSinceReset" = { interval_seconds = 30, minimum_delta = 1 }
+"SentryMode" = { interval_seconds = 1 }
+"Soc" = { interval_seconds = 60, minimum_delta = 0.1 }
+"SoftwareUpdateDownloadPercentComplete" = { interval_seconds = 60, minimum_delta = 1 }
+"SoftwareUpdateInstallationPercentComplete" = { interval_seconds = 60, minimum_delta = 1 }
+"SoftwareUpdateScheduledStartTime" = { interval_seconds = 1 }
+"SoftwareUpdateVersion" = { interval_seconds = 1 }
+"SpeedLimitMode" = { interval_seconds = 1 }
+"SuperchargerSessionTripPlanner" = { interval_seconds = 1 }
+"TimeToFullCharge" = { interval_seconds = 60, minimum_delta = 0.0165 }
+"TpmsHardWarnings" = { interval_seconds = 1800 }
+"TpmsPressureFl" = { interval_seconds = 900 }
+"TpmsPressureFr" = { interval_seconds = 900 }
+"TpmsPressureRl" = { interval_seconds = 900 }
+"TpmsPressureRr" = { interval_seconds = 900 }
+"TpmsSoftWarnings" = { interval_seconds = 1800 }
+"ValetModeEnabled" = { interval_seconds = 1 }
+"VehicleName" = { interval_seconds = 1 }
+"VehicleSpeed" = { interval_seconds = 30 }
+"Version" = { interval_seconds = 1 }
+"WheelType" = { interval_seconds = 600 }

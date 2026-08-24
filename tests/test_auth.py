@@ -29,6 +29,7 @@ from tesla_personal_platform.auth.memory import InMemoryIdentityStore
 from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundary
 from tesla_personal_platform.mcp_gateway.main import (
     REQUEST_IDLE_TIMEOUT_SECONDS,
+    _browser_telemetry_failure,
     _decode_json_request,
     _Handler,
     _log_tesla_failure,
@@ -37,9 +38,13 @@ from tesla_personal_platform.mcp_gateway.main import (
 )
 from tesla_personal_platform.mcp_gateway.mcp_auth import MCPAuthorizationSettings
 from tesla_personal_platform.mcp_gateway.mcp_tools import MCPProtocol, TeslaMCPService
-from tesla_personal_platform.mcp_gateway.tesla_onboarding import TeslaOnboardingService
+from tesla_personal_platform.mcp_gateway.telemetry_control import TelemetryConfigurationError
+from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
+    TeslaOnboardingError,
+    TeslaOnboardingService,
+)
 from tesla_personal_platform.mcp_gateway.tesla_runtime import TeslaRuntime
-from tesla_personal_platform.tesla_client import TeslaAPIError
+from tesla_personal_platform.tesla_client import TeslaAPIError, TeslaReauthorizationRequired
 
 
 class TokenMapVerifier:
@@ -262,6 +267,50 @@ def test_tesla_failure_log_contains_only_safe_metadata(
 
     assert "tesla_fleet_status_failed category=http_error upstream_status=403" in caplog.text
     assert "credential-bearing" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status", "expected_text"),
+    [
+        (
+            CrossUserAccessError("outside boundary"),
+            403,
+            "That vehicle is not available to this account.",
+        ),
+        (
+            TeslaReauthorizationRequired("expired"),
+            401,
+            "Authorize Tesla again before changing telemetry configuration.",
+        ),
+        (
+            TelemetryConfigurationError("stale_plan", "changed"),
+            409,
+            "Woodhouse rejected the operation (stale_plan).",
+        ),
+        (
+            TeslaOnboardingError("missing connection"),
+            502,
+            "Woodhouse could not resolve a usable Tesla connection or vehicle record.",
+        ),
+        (
+            TeslaAPIError("upstream", category="rate_limited"),
+            502,
+            "Tesla did not complete the operation (rate_limited).",
+        ),
+    ],
+)
+def test_browser_telemetry_failures_have_actionable_statuses(
+    error: CrossUserAccessError
+    | TelemetryConfigurationError
+    | TeslaAPIError
+    | TeslaOnboardingError,
+    expected_status: int,
+    expected_text: str,
+) -> None:
+    status, body = _browser_telemetry_failure(error, retry_path="/telemetry")
+
+    assert status == expected_status
+    assert expected_text in body.decode()
 
 
 def test_non_allowlisted_login_is_rejected() -> None:

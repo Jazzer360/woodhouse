@@ -26,7 +26,10 @@ from tesla_personal_platform.mcp_gateway.browser_auth import (
     PendingBrowserLogin,
     _RejectRedirects,
 )
-from tesla_personal_platform.mcp_gateway.onboarding_web import onboarding_page
+from tesla_personal_platform.mcp_gateway.onboarding_web import (
+    onboarding_page,
+    telemetry_configuration_page,
+)
 
 NOW = datetime(2026, 8, 22, tzinfo=UTC)
 IDENTITY = VerifiedIdentity(
@@ -274,3 +277,19 @@ def test_onboarding_page_lists_each_vehicle_and_escapes_content() -> None:
     assert "/onboarding/vehicles/veh_two/refresh" in html
     assert html.count("Pair Virtual Key in Tesla") == 1
     assert "owner_user_id" not in html
+
+
+def test_telemetry_page_preserves_existing_transport_maintenance_opt_in() -> None:
+    html = telemetry_configuration_page(
+        {
+            "vehicle_id": "veh_one",
+            "display_name": "Woodhouse",
+            "desired_config_hash": "a" * 64,
+            "diff": {"status": "in_sync", "changes": {}},
+            "persisted": {"transport_maintenance_opt_in": True},
+        },
+        "csrf-value",
+    ).decode()
+
+    assert 'value="yes" checked' in html
+    assert "a" * 64 in html

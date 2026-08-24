@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from html import escape
 from urllib.parse import quote
 
@@ -69,6 +71,75 @@ def error_page(title: str, message: str, *, retry_path: str = "/") -> bytes:
     return _document(content)
 
 
+def telemetry_configuration_page(
+    document: Mapping[str, object], csrf_token: str, *, message: str | None = None
+) -> bytes:
+    """Render the exact safe desired/current plan and guarded operator actions."""
+    vehicle_id = str(document.get("vehicle_id", ""))
+    display_name = str(document.get("display_name") or "Tesla vehicle")
+    desired_hash = str(document.get("desired_config_hash", ""))
+    diff = document.get("diff", {})
+    persisted = document.get("persisted", {})
+    transport_opt_in = bool(
+        persisted.get("transport_maintenance_opt_in", False)
+        if isinstance(persisted, dict)
+        else False
+    )
+    transport_checked = " checked" if transport_opt_in else ""
+    status = diff.get("status") if isinstance(diff, dict) else "unknown"
+    encoded_id = quote(vehicle_id, safe="")
+    notice = f'<p class="notice">{escape(message)}</p>' if message else ""
+    safe_json = escape(json.dumps(document, indent=2, sort_keys=True))
+    content = f"""
+      <header class="topbar">
+        <div><span class="mark">W</span><span>Woodhouse</span></div>
+        <a class="link-button" href="/onboarding">Back to vehicles</a>
+      </header>
+      <main>
+        <section class="hero telemetry-hero">
+          <p class="eyebrow">Operator checkpoint</p>
+          <h1>{escape(display_name)} telemetry</h1>
+          <p>Review the complete redacted desired-versus-current configuration below. Applying,
+          repairing, and removing are per-vehicle operations and require explicit approval.</p>
+          {notice}
+          <p><span class="badge {"ok" if status == "in_sync" else "pending"}">
+            {escape(str(status))}</span></p>
+        </section>
+        <section class="vehicle telemetry-plan">
+          <h2>Exact configuration plan</h2>
+          <pre>{safe_json}</pre>
+          <div class="actions telemetry-actions">
+            <form method="post" action="/onboarding/vehicles/{encoded_id}/telemetry/apply">
+              <input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}">
+              <input type="hidden" name="expected_config_hash"
+                value="{escape(desired_hash, quote=True)}">
+              <label><input required type="checkbox" name="confirm" value="yes">
+                I approve applying this exact configuration to this vehicle.</label>
+              <label><input type="checkbox" name="transport_maintenance_opt_in"
+                value="yes"{transport_checked}>
+                Permit future automatic transport-only trust maintenance for this vehicle.</label>
+              <button class="button" type="submit">Apply or repair configuration</button>
+            </form>
+            <form method="post" action="/onboarding/vehicles/{encoded_id}/telemetry/remove">
+              <input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}">
+              <label><input required type="checkbox" name="confirm" value="yes">
+                I approve removing telemetry from this vehicle.</label>
+              <button class="button danger" type="submit">Remove configuration</button>
+            </form>
+            <form method="post" action="/onboarding/vehicles/{encoded_id}/telemetry/reconcile">
+              <input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}">
+              <label><input required type="checkbox" name="confirm" value="yes">
+                Use this vehicle as the canary for an opted-in transport-only migration.</label>
+              <button class="button ghost" type="submit">Reconcile transport trust</button>
+            </form>
+          </div>
+          <p>Persisted state: <code>{escape(json.dumps(persisted, sort_keys=True))}</code></p>
+        </section>
+      </main>
+    """
+    return _document(content)
+
+
 def _vehicle_card(vehicle: dict[str, object], csrf_token: str) -> str:
     vehicle_id = str(vehicle.get("vehicle_id", ""))
     name = str(vehicle.get("display_name") or "Tesla vehicle")
@@ -76,20 +147,26 @@ def _vehicle_card(vehicle: dict[str, object], csrf_token: str) -> str:
     pairing = str(vehicle.get("virtual_key_status") or "unknown")
     pairing_url = str(vehicle.get("virtual_key_pairing_url") or "")
     status_class = "ok" if pairing == "paired" else "pending"
+    encoded_id = quote(vehicle_id, safe="")
     pair_action = ""
     if pairing != "paired" and pairing_url.startswith("https://www.tesla.com/_ak/"):
         pair_action = (
             f'<a class="button secondary" rel="noopener noreferrer" href="'
             f'{escape(pairing_url, quote=True)}">Pair Virtual Key in Tesla</a>'
         )
-    encoded_id = quote(vehicle_id, safe="")
+    telemetry_action = ""
+    if pairing == "paired":
+        telemetry_action = (
+            f'<a class="button ghost" href="/onboarding/vehicles/{encoded_id}'
+            f'/telemetry">Inspect telemetry configuration</a>'
+        )
     return f"""
       <article class="vehicle">
         <div class="vehicle-heading"><h2>{escape(name)}</h2>
           <span class="badge {status_class}">{escape(pairing)}</span></div>
         <dl><div><dt>Vehicle state</dt><dd>{escape(state)}</dd></div>
             <div><dt>Internal vehicle ID</dt><dd><code>{escape(vehicle_id)}</code></dd></div></dl>
-        <div class="actions">{pair_action}
+        <div class="actions">{pair_action}{telemetry_action}
           <form method="post" action="/onboarding/vehicles/{encoded_id}/refresh">
             <input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}">
             <button class="button ghost" type="submit">Refresh pairing status</button>
@@ -130,6 +207,7 @@ def _document(content: str) -> bytes:
       color: #0d1110; background: #9fe3bd; }}
     .secondary {{ color: #e8fff2; background: #2e6b4b; }}
     .ghost {{ color: #e8fff2; background: transparent; border: 1px solid #466354; }}
+    .danger {{ color: #fff; background: #8a2f35; }}
     .link-button {{ border: 0; color: #b8c7bf; background: transparent; cursor: pointer; }}
     .vehicles {{ display: grid; gap: 18px; padding-bottom: 72px; }}
     .vehicle {{ padding: 24px; border: 1px solid #33483e; border-radius: 18px;
@@ -144,6 +222,14 @@ def _document(content: str) -> bytes:
     code {{ font-size: .82em; word-break: break-all; }}
     .notice, .empty {{ padding: 14px 16px; border-radius: 12px; background: #1e4934;
       color: #dff9e9; }}
+    .telemetry-hero {{ padding-bottom: 24px; }}
+    .telemetry-plan {{ margin-bottom: 72px; }}
+    pre {{ max-height: 70vh; overflow: auto; padding: 18px; border-radius: 12px;
+      color: #dff9e9; background: #0a0e0c; white-space: pre-wrap; }}
+    .telemetry-actions {{ align-items: stretch; }}
+    .telemetry-actions form {{ display: grid; gap: 12px; flex: 1 1 360px; padding: 16px;
+      border: 1px solid #33483e; border-radius: 12px; }}
+    .telemetry-actions label {{ color: #b8c7bf; line-height: 1.45; }}
     @media (max-width: 600px) {{ .card {{ padding: 28px; }} dl div {{ align-items: start;
       flex-direction: column; }} dd {{ text-align: left; }} }}
   </style>
