@@ -155,6 +155,7 @@ Initial useful concepts:
 drives
 charge_sessions
 media_history
+acceleration_events
 semantic_events
 vehicle_state_changes
 daily_vehicle_summary
@@ -200,7 +201,34 @@ No dedicated playlist endpoint is required.
 
 ---
 
-## 9. Generic analytics MCP tools
+## 9. Acceleration and launch analysis
+
+Raw `VehicleSpeed`, `LongitudinalAcceleration`, `BrakePedal`, and `Gear`
+observations support rebuildable acceleration/deceleration analysis. Fleet
+Telemetry 1.3.0+ may deliver longitudinal acceleration in the same payload as
+qualifying speed through `include_fields`; that is synchronized delivery, not a
+claim that separate vehicle sensors sampled at the exact same instant.
+
+Derived `acceleration_events` should:
+
+- order observations by source timestamp and retain ingestion timestamps only
+  for transport diagnostics;
+- identify stationary, forward-gear starts and reject rolling starts;
+- use independent longitudinal-acceleration changes to estimate event onset;
+- interpolate threshold crossings between surrounding speed observations;
+- retain acceleration and braking sign/magnitude plus brake-pedal context;
+- record sample count, largest source-time gap, telemetry client/config hash,
+  and a quality/uncertainty classification;
+- reject or clearly downgrade attempts with missing/out-of-order samples rather
+  than inventing precision.
+
+Approximate 0-60 results are personal analytical estimates, not certified
+performance measurements. Raw observations remain authoritative and permanent
+if the detection/interpolation method changes later.
+
+---
+
+## 10. Generic analytics MCP tools
 
 ### `get_analytics_schema`
 
@@ -235,7 +263,7 @@ The safety cap prevents accidental giant queries. It is not a per-user commercia
 
 ---
 
-## 10. Current state does not belong in the history path
+## 11. Current state does not belong in the history path
 
 Ordinary questions about current vehicle state should use Tesla Fleet API via MCP.
 
@@ -245,7 +273,7 @@ Use BigQuery for history, trends, correlations, reconstructed sessions, and open
 
 ---
 
-## 11. Unknown vehicle routing
+## 12. Unknown vehicle routing
 
 The processor resolves raw telemetry VIN against the Firestore vehicle registry.
 
@@ -262,7 +290,7 @@ claim a user or vehicle and never writes to a per-user dataset.
 
 ---
 
-## 12. Future broader personal analytics MCP
+## 13. Future broader personal analytics MCP
 
 Design BigQuery schemas cleanly because Tesla data may later be queried beside other personal datasets (music APIs, finance, health/wellness, home energy, etc.).
 

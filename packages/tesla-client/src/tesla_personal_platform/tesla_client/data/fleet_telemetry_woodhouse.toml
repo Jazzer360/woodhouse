@@ -33,7 +33,7 @@ alert_types = ["service", "customer", "service-fix"]
 "Odometer" = { interval_seconds = 60, minimum_delta = 0.01, rationale = "Tessie's precision is retained but cadence is reduced to Tesla's economical example." }
 "TpmsHardWarnings" = { interval_seconds = 60, rationale = "Warnings are rare changes, so lower latency adds negligible normal signal volume." }
 "TpmsSoftWarnings" = { interval_seconds = 60, rationale = "Warnings are rare changes, so lower latency adds negligible normal signal volume." }
-"VehicleSpeed" = { interval_seconds = 10, minimum_delta = 1, rationale = "Tesla's own economical example uses 10 seconds; one-mph delta suppresses small fluctuations." }
+"VehicleSpeed" = { interval_seconds = 1, minimum_delta = 2, include_fields = ["LongitudinalAcceleration"], rationale = "Capture approximately one-second speed samples during meaningful acceleration/deceleration; on Fleet Telemetry 1.3+ include longitudinal acceleration in the same payload for synchronized analysis." }
 
 # New fields selected from Tesla's full documented catalog.
 [additions]
@@ -41,7 +41,7 @@ alert_types = ["service", "customer", "service-fix"]
 "AutoSeatClimateLeft" = { interval_seconds = 5, rationale = "Capture comfort automation state changes, not continuous measurements." }
 "AutoSeatClimateRight" = { interval_seconds = 5, rationale = "Capture comfort automation state changes, not continuous measurements." }
 "BMSState" = { interval_seconds = 60, rationale = "Capture battery-management state transitions without high-rate engineering telemetry." }
-"BrakePedal" = { interval_seconds = 5, rationale = "Mark braking state transitions without streaming pedal-position telemetry." }
+"BrakePedal" = { interval_seconds = 1, rationale = "Capture braking transitions for acceleration/deceleration classification; unchanged boolean state does not emit." }
 "ChargePort" = { interval_seconds = 5, rationale = "Distinguish charge-port type/state changes in reconstructed charging sessions." }
 "ChargePortColdWeatherMode" = { interval_seconds = 5, rationale = "Explain cold-weather charge-port behavior when it occurs." }
 "ChargeRateMilePerHour" = { interval_seconds = 60, minimum_delta = 0.5, rationale = "Add a human-readable charging-rate trend at Tessie-like charging cadence." }
@@ -64,6 +64,7 @@ alert_types = ["service", "customer", "service-fix"]
 "LocatedAtFavorite" = { interval_seconds = 30, rationale = "Enable privacy-preserving place classification without custom geofence coordinates." }
 "LocatedAtHome" = { interval_seconds = 30, rationale = "Enable privacy-preserving home classification without custom geofence coordinates." }
 "LocatedAtWork" = { interval_seconds = 30, rationale = "Enable privacy-preserving work classification without custom geofence coordinates." }
+"LongitudinalAcceleration" = { interval_seconds = 1, minimum_delta = 1.0, rationale = "Capture meaningful acceleration onset and sign independently; Fleet Telemetry 1.3+ also includes it with each qualifying speed sample for synchronized launch traces." }
 "MilesSinceReset" = { interval_seconds = 30, minimum_delta = 1, rationale = "Provide the denominator for Tesla's authoritative HW4 self-driving statistic." }
 "NotEnoughPowerToHeat" = { interval_seconds = 5, rationale = "Explain failed or constrained battery heating as a rare state transition." }
 "OriginLocation" = { interval_seconds = 60, minimum_delta = 25, rationale = "Capture route origin once established while filtering GPS drift." }
@@ -146,7 +147,6 @@ alert_types = ["service", "customer", "service-fix"]
 "LifetimeEnergyUsedDrive" = "Tesla documents this field as Semi-only."
 "LightsHighBeams" = "High-churn lighting detail has little expected historical analytical value."
 "LightsTurnSignal" = "High-churn lighting detail has little expected historical analytical value."
-"LongitudinalAcceleration" = "High-churn driving detail deferred because normal trip analytics do not require it."
 "NumBrickVoltageMax" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."
 "NumBrickVoltageMin" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."
 "NumModuleTempMax" = "Battery engineering detail is deferred until a concrete diagnostic or analytical use justifies it."

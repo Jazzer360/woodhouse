@@ -19,11 +19,14 @@ is not a plan, quota, or storage tier.
 
 - Source catalog: 239 documented fields.
 - Operator-supplied Tessie baseline: 93 fields.
-- Woodhouse deviations: 13 overrides, 39 additions, and 2 removals.
-- Configured for a Fleet Telemetry 1.2.0+ passenger vehicle: 130 fields.
-- Fleet Telemetry 1.0/1.1 projection: 128 fields; the two HW4 self-driving
+- Woodhouse deviations: 13 overrides, 40 additions, and 2 removals.
+- Configured for a Fleet Telemetry 1.2.0+ passenger vehicle: 131 fields.
+- Fleet Telemetry 1.0/1.1 projection: 129 fields; the two HW4 self-driving
   counters are omitted because Tesla introduced them in client 1.2.0.
-- Remaining exclusions: 109 fields, comprising the 2 Tessie removals and 107
+- Fleet Telemetry 1.3.0+ additionally synchronizes longitudinal acceleration
+  into qualifying speed payloads using `include_fields`; earlier clients keep
+  both fields independently configured and omit only that synchronization.
+- Remaining exclusions: 108 fields, comprising the 2 Tessie removals and 106
   explicit decisions not to add a non-baseline catalog field.
 - `delivery_policy` is `latest`, so unacknowledged buffered data is resent.
 - Alert types are `service`, `customer`, and `service-fix`.
@@ -56,7 +59,7 @@ These are every cadence/delta difference for a field already in Tessie:
 | Field(s) | Tessie | Woodhouse | Why |
 |---|---:|---:|---|
 | `Location` | 30 s / 3 m | 10 s / 10 m | Better trip shape at Tesla's economical example cadence, while filtering GPS drift more strongly. |
-| `VehicleSpeed` | 30 s / no delta | 10 s / 1 mph | Better trip chronology without recording one-mph fluctuations. |
+| `VehicleSpeed` | 30 s / no delta | 1 s / 2 mph | Preserve acceleration/deceleration traces and approximate launch timing; the two-mph delta suppresses cruising jitter. On client 1.3+, include longitudinal acceleration in the same payload. |
 | `GpsHeading` | 60 s / 1° | 10 s / 5° | Align heading with trip cadence and ignore small directional jitter. |
 | Six media metadata/state fields | 60 s | 10 s | Capture short tracks, skips, and state/source changes; unchanged values do not emit. |
 | `TpmsSoftWarnings`, `TpmsHardWarnings` | 1,800 s | 60 s | Warning transitions are rare, so improved latency adds little normal volume. |
@@ -70,15 +73,15 @@ sensitive to stationary jitter.
 
 ### Woodhouse additions and removals
 
-The 39 additions are deliberately narrow groups rather than whole Tesla
+The 40 additions are deliberately narrow groups rather than whole Tesla
 categories:
 
 - 12 charging/session fields for energy-in, charge state/rate, BMS state, port
   conditions, preconditioning, scheduling, and completion estimates;
 - 10 climate state fields for HVAC mode/fan, right setpoint, defrost, seat
   climate/ventilation, and cold-weather loads;
-- 4 low-churn driving fields: brake state (not pedal position), cruise set
-  speed, drive-ready state, and coarse traffic delay;
+- 5 selected driving fields: one-second longitudinal acceleration, one-second
+  brake state, cruise set speed, drive-ready state, and coarse traffic delay;
 - 5 location/context fields: GPS validity, Tesla's home/work/favorite
   classification, and a 25-meter-gated route origin;
 - 2 safety/self-driving fields: driver seat belt and the counter denominator;
@@ -90,9 +93,9 @@ volume changes with the current track can provide a weak but useful engagement
 signal. It removes `MediaAudioVolumeIncrement` and `MediaAudioVolumeMax` because
 those static UI range values add no comparable historical value.
 
-The 107 non-baseline omissions are individually commented in the Woodhouse
+The 106 non-baseline omissions are individually commented in the Woodhouse
 TOML. Major choices include detailed powertrain engineering signals,
-acceleration and pedal-position streams, turn-signal/high-beam transitions,
+lateral acceleration and pedal-position streams, turn-signal/high-beam transitions,
 route geometry, static preferences/configuration, redundant fields, unsupported
 hardware families, Tesla's documented broken `RouteLastUpdated`, and its
 misreported `PassengerSeatBelt`. These can be reconsidered only with a concrete
@@ -108,7 +111,8 @@ location deltas add a second noise threshold.
 | Selected signal family | Normal interval | Delta policy and rationale |
 |---|---:|---|
 | Body, security, safety, gear | Tessie 1-5 s | Discrete change only; unchanged values do not emit. |
-| Location and speed | 10 s | 10 m and 1 mph respectively; route origin is 60 s / 25 m. |
+| Location | 10 s | 10 m; route origin is 60 s / 25 m. |
+| Speed and longitudinal acceleration | 1 s | 2 mph and 1 m/s² respectively; acceleration is also included with qualifying speed on client 1.3+. |
 | Charging and battery | Mostly 30-120 s | Physical measurements use explicit defensible deltas; discrete state/settings do not receive artificial deltas. |
 | Climate | Tessie baseline plus 5 s added states | Temperatures inherit Tessie's deltas; modes, setpoints, fan levels, and switches are treated as changed values. |
 | Media | 10-60 s | Metadata/state is 10 s; elapsed/duration retain Tessie's slower, delta-gated behavior. |
@@ -123,9 +127,11 @@ normal changed-value behavior. This avoids the earlier blanket-delta policy.
 
 High-volume considerations shown at the checkpoint:
 
-- Location and speed can each emit at most once per 10 seconds after crossing
-  their respective delta;
-- detailed powertrain and high-churn acceleration/pedal telemetry are omitted;
+- Location can emit at most once per 10 seconds after 10 meters of movement;
+- speed and longitudinal acceleration can each emit at most once per second
+  after crossing their respective delta; synchronized acceleration is another
+  billable signal whenever qualifying speed publishes on client 1.3+;
+- detailed powertrain, lateral acceleration, and pedal-position telemetry are omitted;
 - charging measurements normally emit at most once per 60 seconds and usually
   require a measurement delta;
 - slow/discrete fields normally emit only on a real state change or on the
@@ -144,6 +150,42 @@ fields or shortening intervals. Tesla's
 can remove telemetry configurations at the limit and does not automatically
 restore them, so alert below the limit. A field/frequency change always creates
 a versioned explicit operator diff; it is never automatic maintenance.
+
+## Acceleration/deceleration trace policy
+
+The profile deliberately spends additional signal budget on reconstructable
+driving dynamics:
+
+- `VehicleSpeed`: 1 second, 2 mph minimum delta;
+- `LongitudinalAcceleration`: 1 second, 1 m/s² minimum delta;
+- `BrakePedal`: 1 second, change-based boolean;
+- on Fleet Telemetry client 1.3.0+, `VehicleSpeed.include_fields` contains
+  `LongitudinalAcceleration`.
+
+Tesla guarantees that an included field is carried in the same payload whenever
+its parent publishes, even when the included value has not changed. This gives
+speed and acceleration a shared delivery event, but it does not guarantee the
+underlying sensors were sampled atomically at an identical physical instant.
+The top-level acceleration field remains configured because included-field
+delivery does not reset its timer and because its independent change event is
+useful for detecting acceleration onset. Clients before 1.3.0 safely omit the
+include relationship while retaining both top-level fields.
+
+At the current streaming price, speed plus synchronized acceleration has a
+theoretical ceiling of 120 signals/minute while speed changes by at least 2 mph
+each second. Independently triggered acceleration can add up to 60/minute in an
+extreme continuously changing trace; brake transitions are normally negligible.
+That conservative three-signal ceiling is $0.072/driving hour. Actual volume
+should be lower, but it must be measured across all enrolled vehicles.
+
+Phase 9 analytics may derive acceleration events and approximate 0-60 runs from
+the permanent raw observations. It must use source timestamps, require a
+stationary start and continuous forward acceleration, interpolate the 60 mph
+crossing between surrounding speed values, and report sample count, maximum
+gap, capability mode, and an uncertainty/confidence label. A gap over roughly
+1.5 seconds or a rolling start should invalidate a high-confidence result. This
+is useful personal telemetry, not drag-strip timing equipment; do not present
+tenths of a second without the accompanying uncertainty evidence.
 
 ## Per-vehicle lifecycle
 

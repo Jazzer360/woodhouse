@@ -8,7 +8,7 @@ import json
 import re
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.resources import files
 from io import StringIO
 from typing import Final, Literal, cast, overload
@@ -192,6 +192,14 @@ def broad_profile(fleet_telemetry_version: str | None) -> FleetTelemetryProfile:
                 "Requires Fleet Telemetry client 1.2.0 and supported HW4 firmware."
             )
             del configured[name]
+    if not _version_at_least(fleet_telemetry_version, (1, 3, 0)):
+        for name, field in tuple(configured.items()):
+            if field.include_fields:
+                configured[name] = replace(field, include_fields=())
+                capability_omissions[f"{name}.include_fields"] = (
+                    "Synchronized included fields require Fleet Telemetry client 1.3.0. "
+                    "The included field remains independently configured."
+                )
 
     excluded_fields = {**omissions, **removals}
     baseline_comparison = _build_baseline_comparison(
@@ -284,7 +292,7 @@ def _load_field_section(
         if not isinstance(raw, dict):
             raise RuntimeError(f"Telemetry profile field {name!r} must be a TOML inline table")
         spec = cast(dict[str, object], raw)
-        allowed = {"interval_seconds", "minimum_delta"}
+        allowed = {"include_fields", "interval_seconds", "minimum_delta"}
         if require_rationale:
             allowed.add("rationale")
         unknown = set(spec) - allowed
@@ -303,7 +311,24 @@ def _load_field_section(
                 raise RuntimeError(f"Telemetry profile field {name!r} has an invalid delta")
             if catalog[name].value_type not in {"integer", "real", "Location"}:
                 raise RuntimeError(f"Telemetry profile field {name!r} cannot use minimum_delta")
-        field = FleetTelemetryField(interval_seconds=interval, minimum_delta=minimum_delta)
+        raw_include_fields = spec.get("include_fields", [])
+        if (
+            not isinstance(raw_include_fields, list)
+            or not all(isinstance(item, str) for item in raw_include_fields)
+            or len(set(raw_include_fields)) != len(raw_include_fields)
+        ):
+            raise RuntimeError(f"Telemetry profile field {name!r} has invalid include_fields")
+        include_fields = tuple(cast(list[str], raw_include_fields))
+        invalid_includes = set(include_fields) - set(catalog)
+        if invalid_includes or name in include_fields:
+            raise RuntimeError(
+                f"Telemetry profile field {name!r} includes invalid fields: {invalid_includes}"
+            )
+        field = FleetTelemetryField(
+            interval_seconds=interval,
+            minimum_delta=minimum_delta,
+            include_fields=include_fields,
+        )
         if require_rationale:
             rationale = _require_string(spec, "rationale")
             with_reasons[name] = (field, rationale)
@@ -372,13 +397,20 @@ def _build_baseline_comparison(
     override_document: JsonObject = {
         name: {
             "baseline": baseline_fields[name].to_payload(),
-            "woodhouse": field.to_payload(),
+            "woodhouse": (
+                configured_fields[name].to_payload() if name in configured_fields else None
+            ),
             "rationale": rationale,
         }
         for name, (field, rationale) in sorted(overrides.items())
     }
     addition_document: JsonObject = {
-        name: {"woodhouse": field.to_payload(), "rationale": rationale}
+        name: {
+            "woodhouse": (
+                configured_fields[name].to_payload() if name in configured_fields else None
+            ),
+            "rationale": rationale,
+        }
         for name, (field, rationale) in sorted(additions.items())
     }
     removal_document: JsonObject = {

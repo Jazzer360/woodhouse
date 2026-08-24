@@ -252,30 +252,35 @@ def context() -> UserContext:
 
 
 def test_profile_is_a_complete_declarative_tessie_comparison() -> None:
-    profile = broad_profile("1.2.0")
+    profile = broad_profile("1.3.0")
     definitions = {item.name: item for item in load_field_catalog()}
     comparison = profile.baseline_comparison
 
     assert len(definitions) == 239
     assert profile.baseline_name == "tessie-operator-snapshot-2026-08-23"
-    assert len(profile.fields) == 130
-    assert len(profile.excluded_fields) == 109
+    assert len(profile.fields) == 131
+    assert len(profile.excluded_fields) == 108
     assert set(profile.fields) | set(profile.excluded_fields) == set(definitions)
     assert profile.capability_omissions == {}
     assert comparison["baseline_field_count"] == 93
-    assert comparison["woodhouse_field_count"] == 130
+    assert comparison["woodhouse_field_count"] == 131
     assert len(comparison["overrides"]) == 13  # type: ignore[arg-type]
-    assert len(comparison["additions"]) == 39  # type: ignore[arg-type]
+    assert len(comparison["additions"]) == 40  # type: ignore[arg-type]
     assert len(comparison["removals"]) == 2  # type: ignore[arg-type]
-    assert len(comparison["catalog_omissions"]) == 107  # type: ignore[arg-type]
+    assert len(comparison["catalog_omissions"]) == 106  # type: ignore[arg-type]
 
 
 def test_profile_uses_deltas_only_for_defensible_measurements() -> None:
-    profile = broad_profile("1.2.0")
+    profile = broad_profile("1.3.0")
 
     assert profile.fields["Location"].interval_seconds == 10
     assert profile.fields["Location"].minimum_delta == 10
-    assert profile.fields["VehicleSpeed"].minimum_delta == 1
+    assert profile.fields["VehicleSpeed"].interval_seconds == 1
+    assert profile.fields["VehicleSpeed"].minimum_delta == 2
+    assert profile.fields["VehicleSpeed"].include_fields == ("LongitudinalAcceleration",)
+    assert profile.fields["LongitudinalAcceleration"].interval_seconds == 1
+    assert profile.fields["LongitudinalAcceleration"].minimum_delta == 1.0
+    assert profile.fields["BrakePedal"].interval_seconds == 1
     assert profile.fields["SelfDrivingMilesSinceReset"].minimum_delta == 1
     assert profile.fields["HvacFanSpeed"].minimum_delta is None
     assert profile.fields["ChargeCurrentRequest"].minimum_delta is None
@@ -287,7 +292,7 @@ def test_profile_uses_deltas_only_for_defensible_measurements() -> None:
 
 
 def test_tessie_removals_and_woodhouse_additions_are_operator_visible() -> None:
-    comparison = broad_profile("1.2.0").baseline_comparison
+    comparison = broad_profile("1.3.0").baseline_comparison
 
     assert set(comparison["removals"]) == {  # type: ignore[arg-type]
         "MediaAudioVolumeIncrement",
@@ -295,17 +300,29 @@ def test_tessie_removals_and_woodhouse_additions_are_operator_visible() -> None:
     }
     assert "ChargeState" in comparison["additions"]  # type: ignore[operator]
     assert "DriverSeatBelt" in comparison["additions"]  # type: ignore[operator]
+    assert "LongitudinalAcceleration" in comparison["additions"]  # type: ignore[operator]
     assert "Location" in comparison["overrides"]  # type: ignore[operator]
 
 
-def test_capability_projection_omits_only_new_self_driving_fields() -> None:
+def test_capability_projection_handles_self_driving_and_synchronized_includes() -> None:
     profile = broad_profile("1.1.0")
 
-    assert len(profile.fields) == 128
+    assert len(profile.fields) == 129
+    assert profile.fields["VehicleSpeed"].include_fields == ()
+    assert "LongitudinalAcceleration" in profile.fields
     assert set(profile.capability_omissions) == {
         "MilesSinceReset",
         "SelfDrivingMilesSinceReset",
+        "VehicleSpeed.include_fields",
     }
+
+    version_1_2 = broad_profile("1.2.0")
+    assert version_1_2.fields["VehicleSpeed"].include_fields == ()
+    assert set(version_1_2.capability_omissions) == {"VehicleSpeed.include_fields"}
+
+    version_1_3 = broad_profile("1.3.0")
+    assert version_1_3.fields["VehicleSpeed"].include_fields == ("LongitudinalAcceleration",)
+    assert version_1_3.capability_omissions == {}
 
 
 def test_config_hash_separates_field_profile_from_stable_trust_profile() -> None:
@@ -359,6 +376,34 @@ def test_diff_reports_exact_field_and_transport_changes_without_ca_pem() -> None
     assert same == {"status": "in_sync", "changes": {}}
 
 
+def test_diff_detects_missing_synchronized_include_fields() -> None:
+    profile = broad_profile("1.3.0")
+    desired = trust().build_config(profile)
+    current = replace(
+        desired,
+        fields={
+            **desired.fields,
+            "VehicleSpeed": replace(desired.fields["VehicleSpeed"], include_fields=()),
+        },
+    )
+
+    difference = config_diff(current, desired, desired_trust_profile_id="woodhouse-ca-v1")
+    changes = difference["changes"]
+    assert isinstance(changes, dict)
+    fields = changes["fields"]
+    assert isinstance(fields, dict)
+    changed = fields["changed"]
+    assert isinstance(changed, dict)
+    assert changed["VehicleSpeed"] == {
+        "current": {"interval_seconds": 1, "minimum_delta": 2},
+        "desired": {
+            "interval_seconds": 1,
+            "minimum_delta": 2,
+            "include_fields": ["LongitudinalAcceleration"],
+        },
+    }
+
+
 def test_inspect_fails_safely_when_tesla_returns_malformed_configuration() -> None:
     controller, _, fleet = service()
     fleet.malformed_vins.add(vehicle().vin)
@@ -388,7 +433,7 @@ def test_apply_requires_exact_confirmation_persists_only_after_sync_and_audits()
 
     assert isinstance(comparison, dict)
     assert comparison["baseline_field_count"] == 93
-    assert comparison["woodhouse_field_count"] == 130
+    assert comparison["woodhouse_field_count"] == 131
 
     with pytest.raises(TelemetryConfigurationError, match="approval"):
         controller.apply(context(), "veh_one", expected_config_hash=desired_hash, confirm=False)
