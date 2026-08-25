@@ -4,6 +4,7 @@ import pytest
 from google.cloud import bigquery
 from tesla_personal_platform.auth.bigquery_admin import (
     ANALYTICS_VIEW_LABELS,
+    ANALYTICS_VIEW_VALIDATION_TIMEOUT_SECONDS,
     AnalyticsViewReconciler,
     BigQueryDatasetProvisioner,
     restricted_dataset_access,
@@ -45,7 +46,9 @@ class RecordingBigQueryClient:
         self.updated_dataset_fields: list[list[str]] = []
         self.dataset_access_snapshots: list[set[tuple[str, str, str]]] = []
         self.created_tables: list[bigquery.Table] = []
+        self.created_table_timeouts: list[tuple[str, int]] = []
         self.updated_table_fields: list[list[str]] = []
+        self.updated_table_timeouts: list[tuple[str, int]] = []
         self.deleted_table_ids: list[str] = []
         self.fail_view_creation = fail_view_creation
 
@@ -85,7 +88,8 @@ class RecordingBigQueryClient:
         exists_ok: bool,
         timeout: int,
     ) -> bigquery.Table:
-        del exists_ok, timeout
+        del exists_ok
+        self.created_table_timeouts.append((table.table_id, timeout))
         if self.fail_view_creation and table.view_query is not None:
             raise RuntimeError("view validation failed")
         if table.view_query is not None:
@@ -111,8 +115,8 @@ class RecordingBigQueryClient:
         *,
         timeout: int,
     ) -> bigquery.Table:
-        del timeout
         self.updated_table_fields.append(fields)
+        self.updated_table_timeouts.append((table.table_id, timeout))
         return table
 
     def list_tables(self, dataset: object, *, timeout: int) -> list[bigquery.Table]:
@@ -229,9 +233,19 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
     assert all(view.labels["layer"] == "analytics" for view in views)
     assert all(view.labels["managed_by"] == "analytics-view-reconciler" for view in views)
     assert all(len(view.labels["definition_hash"]) == 16 for view in views)
+    assert client.created_table_timeouts[0] == ("raw_telemetry_events", 30)
+    assert all(
+        timeout == ANALYTICS_VIEW_VALIDATION_TIMEOUT_SECONDS
+        for _, timeout in client.created_table_timeouts[1:]
+    )
     assert all(
         set(fields) == {"description", "labels", "view_query", "view_use_legacy_sql"}
         for fields in client.updated_table_fields[1:]
+    )
+    assert client.updated_table_timeouts[0] == ("raw_telemetry_events", 30)
+    assert all(
+        timeout == ANALYTICS_VIEW_VALIDATION_TIMEOUT_SECONDS
+        for _, timeout in client.updated_table_timeouts[1:]
     )
     assert client.dataset_access_snapshots[-2] == {
         ("OWNER", "userByEmail", "dataset-owner@example.iam"),

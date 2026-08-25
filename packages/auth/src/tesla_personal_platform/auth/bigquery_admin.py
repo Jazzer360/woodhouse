@@ -30,6 +30,7 @@ ANALYTICS_VIEW_LABELS = {
     "layer": "analytics",
 }
 LEGACY_ANALYTICS_VIEW_MANAGERS = frozenset({"add-user", "analytics-view-reconciler"})
+ANALYTICS_VIEW_VALIDATION_TIMEOUT_SECONDS = 120
 
 
 def restricted_dataset_access(
@@ -133,7 +134,11 @@ class AnalyticsViewReconciler:
                 view.labels = _view_labels(definition.description, definition.sql)
                 view.view_query = definition.sql
                 view.view_use_legacy_sql = False
-                self._client.create_table(view, exists_ok=True, timeout=30)
+                self._client.create_table(
+                    view,
+                    exists_ok=True,
+                    timeout=ANALYTICS_VIEW_VALIDATION_TIMEOUT_SECONDS,
+                )
 
                 current_view = self._client.get_table(view.reference, timeout=30)
                 if current_view.table_type not in {None, "VIEW"}:
@@ -147,7 +152,7 @@ class AnalyticsViewReconciler:
                 self._client.update_table(
                     current_view,
                     ["description", "labels", "view_query", "view_use_legacy_sql"],
-                    timeout=30,
+                    timeout=ANALYTICS_VIEW_VALIDATION_TIMEOUT_SECONDS,
                 )
 
             removed = 0

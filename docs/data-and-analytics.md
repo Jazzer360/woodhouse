@@ -232,6 +232,16 @@ dataset reader for BigQuery SQL validation and restores the exact prior ACL in
 trusted Firestore allowlist; the build accepts no caller-supplied user or
 dataset selector.
 
+BigQuery validates logical-view SQL while the metadata mutation is submitted;
+that validation is planning, not execution over the user's rows. The reconciler
+allows up to 120 seconds for that validation so BigQuery can return a specific
+semantic planner error instead of masking it as a short client deadline. View
+SQL must still avoid unsupported correlated table subqueries and express
+nearest-point/existence logic with joins, windows, or aggregates. A definition
+that cannot dry-run successfully fails the merge delivery before stale-view
+cleanup; raising this deadline is not a substitute for simplifying an invalid
+or excessively complex view graph.
+
 ### Session boundary rules
 
 Drive identity remains Gear-defined. For each start metric, the selector first
@@ -365,6 +375,11 @@ A reset-aware counter timeline:
 - pairs same-message values exactly on client 1.3 and carries the nearest other
   counter at reduced confidence for client 1.2 history;
 - maps milestones to `drive_path_points` distance;
+- implements nearest route-point selection with explicit joins and ordered
+  aggregation rather than per-row correlated table subqueries;
+- expands manual/FSD/tail alternatives from typed arrays in one pass rather
+  than repeatedly referencing the same deep CTE chain, keeping logical-view
+  planning bounded as history grows;
 - treats each positive FSD delta as certifying the preceding distance in that
   counter bucket;
 - allocates a mixed bucket as a manual prefix followed by the certified FSD

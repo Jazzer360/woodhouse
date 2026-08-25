@@ -1027,22 +1027,31 @@ WITH counter_updates AS (
   SELECT *
   FROM drive_candidates
   WHERE source_timestamp >= started_at OR before_rank = 1
-), mapped_points AS (
+), mapped_candidates AS (
   SELECT
     selected.*,
+    path.distance_into_drive_miles AS nearest_path_distance_miles,
+    ROW_NUMBER() OVER (
+      PARTITION BY selected.drive_id, selected.source_timestamp,
+        selected.pubsub_message_id
+      ORDER BY ABS(TIMESTAMP_DIFF(path.source_timestamp, selected.source_timestamp,
+        MILLISECOND)), path.source_timestamp
+    ) AS path_rank
+  FROM selected_points AS selected
+  LEFT JOIN {table("drive_path_points")} AS path
+    ON path.drive_id = selected.drive_id
+    AND selected.source_timestamp > selected.started_at
+    AND (selected.ended_at IS NULL OR selected.source_timestamp < selected.ended_at)
+), mapped_points AS (
+  SELECT
+    * EXCEPT(nearest_path_distance_miles, path_rank),
     CASE
       WHEN source_timestamp <= started_at THEN 0
       WHEN ended_at IS NOT NULL AND source_timestamp >= ended_at THEN distance_miles
-      ELSE (
-        SELECT path.distance_into_drive_miles
-        FROM {table("drive_path_points")} AS path
-        WHERE path.drive_id = selected.drive_id
-        ORDER BY ABS(TIMESTAMP_DIFF(path.source_timestamp, selected.source_timestamp,
-          MILLISECOND))
-        LIMIT 1
-      )
+      ELSE nearest_path_distance_miles
     END AS distance_into_drive_miles
-  FROM selected_points AS selected
+  FROM mapped_candidates
+  WHERE path_rank = 1
 ), deltas AS (
   SELECT
     *,
@@ -1089,100 +1098,136 @@ WITH counter_updates AS (
   WHERE counter_total_delta_miles >= 0
     AND counter_fsd_delta_miles >= 0
     AND counter_manual_delta_miles >= -0.01
-), bucket_segments AS (
+), bucket_segment_arrays AS (
   SELECT
     drive_id,
     vehicle_id,
     started_at AS drive_started_at,
     ended_at AS drive_ended_at,
     distance_miles AS drive_distance_miles,
-    previous_distance_miles AS start_distance_miles,
-    distance_into_drive_miles - inferred_fsd_miles AS end_distance_miles,
-    'manual' AS state,
-    IF(inferred_fsd_miles > 0, base_confidence * 0.8, base_confidence) AS confidence,
-    base_method AS inference_method,
-    previous_distance_miles AS transition_lower_bound_miles,
-    distance_into_drive_miles AS transition_upper_bound_miles
+    ARRAY_CONCAT(
+      IF(bucket_distance_miles - inferred_fsd_miles > 0.001, [STRUCT(
+        previous_distance_miles AS start_distance_miles,
+        distance_into_drive_miles - inferred_fsd_miles AS end_distance_miles,
+        'manual' AS state,
+        IF(inferred_fsd_miles > 0, base_confidence * 0.8, base_confidence)
+          AS confidence,
+        base_method AS inference_method,
+        previous_distance_miles AS transition_lower_bound_miles,
+        distance_into_drive_miles AS transition_upper_bound_miles
+      )], []),
+      IF(inferred_fsd_miles > 0.001, [STRUCT(
+        distance_into_drive_miles - inferred_fsd_miles AS start_distance_miles,
+        distance_into_drive_miles AS end_distance_miles,
+        'fsd' AS state,
+        IF(inferred_fsd_miles < bucket_distance_miles,
+          base_confidence * 0.8, base_confidence) AS confidence,
+        base_method AS inference_method,
+        previous_distance_miles AS transition_lower_bound_miles,
+        distance_into_drive_miles AS transition_upper_bound_miles
+      )], [])
+    ) AS segments
   FROM valid_buckets
-  WHERE bucket_distance_miles - inferred_fsd_miles > 0.001
-  UNION ALL
+), bucket_segments AS (
   SELECT
-    drive_id,
-    vehicle_id,
-    started_at,
-    ended_at,
-    distance_miles,
-    distance_into_drive_miles - inferred_fsd_miles,
-    distance_into_drive_miles,
-    'fsd',
-    IF(inferred_fsd_miles < bucket_distance_miles, base_confidence * 0.8, base_confidence),
-    base_method,
-    previous_distance_miles,
-    distance_into_drive_miles
-  FROM valid_buckets
-  WHERE inferred_fsd_miles > 0.001
-), last_segment AS (
-  SELECT *
+    bucket.drive_id,
+    bucket.vehicle_id,
+    bucket.drive_started_at,
+    bucket.drive_ended_at,
+    bucket.drive_distance_miles,
+    segment.*
+  FROM bucket_segment_arrays AS bucket
+  CROSS JOIN UNNEST(bucket.segments) AS segment
+), ranked_bucket_segments AS (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (
+      PARTITION BY drive_id ORDER BY end_distance_miles DESC, start_distance_miles DESC
+    ) AS reverse_segment_rank
   FROM bucket_segments
-  QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY drive_id ORDER BY end_distance_miles DESC, start_distance_miles DESC
-  ) = 1
-), tail_segments AS (
-  SELECT
-    drive_id,
-    vehicle_id,
-    drive_started_at,
-    drive_ended_at,
-    drive_distance_miles,
-    end_distance_miles AS start_distance_miles,
-    drive_distance_miles AS end_distance_miles,
-    state,
-    confidence * 0.6 AS confidence,
-    'counter_state_carried_to_drive_boundary' AS inference_method,
-    end_distance_miles AS transition_lower_bound_miles,
-    drive_distance_miles AS transition_upper_bound_miles
-  FROM last_segment
-  WHERE drive_distance_miles - end_distance_miles > 0.001
 ), inferred_segments AS (
-  SELECT * FROM bucket_segments
-  UNION ALL
-  SELECT * FROM tail_segments
-), fallback_segments AS (
+  SELECT
+    ranked.drive_id,
+    segment.*
+  FROM ranked_bucket_segments AS ranked
+  CROSS JOIN UNNEST(ARRAY_CONCAT(
+    [STRUCT(
+      ranked.start_distance_miles AS start_distance_miles,
+      ranked.end_distance_miles AS end_distance_miles,
+      ranked.state AS state,
+      ranked.confidence AS confidence,
+      ranked.inference_method AS inference_method,
+      ranked.transition_lower_bound_miles AS transition_lower_bound_miles,
+      ranked.transition_upper_bound_miles AS transition_upper_bound_miles
+    )],
+    IF(
+      ranked.reverse_segment_rank = 1
+        AND ranked.drive_distance_miles - ranked.end_distance_miles > 0.001,
+      [STRUCT(
+        ranked.end_distance_miles AS start_distance_miles,
+        ranked.drive_distance_miles AS end_distance_miles,
+        ranked.state AS state,
+        ranked.confidence * 0.6 AS confidence,
+        'counter_state_carried_to_drive_boundary' AS inference_method,
+        ranked.end_distance_miles AS transition_lower_bound_miles,
+        ranked.drive_distance_miles AS transition_upper_bound_miles
+      )],
+      []
+    )
+  )) AS segment
+), all_segments AS (
   SELECT
     drive.drive_id,
     drive.vehicle_id,
     drive.started_at AS drive_started_at,
     drive.ended_at AS drive_ended_at,
     drive.distance_miles AS drive_distance_miles,
-    0.0 AS start_distance_miles,
-    drive.distance_miles AS end_distance_miles,
-    'uncertain' AS state,
-    0.0 AS confidence,
-    'insufficient_counter_evidence' AS inference_method,
-    0.0 AS transition_lower_bound_miles,
-    drive.distance_miles AS transition_upper_bound_miles
+    COALESCE(segment.start_distance_miles, 0.0) AS start_distance_miles,
+    COALESCE(segment.end_distance_miles, drive.distance_miles) AS end_distance_miles,
+    COALESCE(segment.state, 'uncertain') AS state,
+    COALESCE(segment.confidence, 0.0) AS confidence,
+    COALESCE(segment.inference_method, 'insufficient_counter_evidence')
+      AS inference_method,
+    COALESCE(segment.transition_lower_bound_miles, 0.0)
+      AS transition_lower_bound_miles,
+    COALESCE(segment.transition_upper_bound_miles, drive.distance_miles)
+      AS transition_upper_bound_miles
   FROM {table("drives")} AS drive
-  WHERE NOT EXISTS (
-    SELECT 1 FROM inferred_segments AS segment WHERE segment.drive_id = drive.drive_id
-  )
-), all_segments AS (
-  SELECT * FROM inferred_segments
-  UNION ALL
-  SELECT * FROM fallback_segments
+  LEFT JOIN inferred_segments AS segment USING (drive_id)
 ), located AS (
   SELECT
     segment.*,
-    (SELECT AS STRUCT path.source_timestamp, path.latitude, path.longitude
-      FROM {table("drive_path_points")} AS path
-      WHERE path.drive_id = segment.drive_id
-      ORDER BY ABS(path.distance_into_drive_miles - segment.start_distance_miles)
-      LIMIT 1) AS start_point,
-    (SELECT AS STRUCT path.source_timestamp, path.latitude, path.longitude
-      FROM {table("drive_path_points")} AS path
-      WHERE path.drive_id = segment.drive_id
-      ORDER BY ABS(path.distance_into_drive_miles - segment.end_distance_miles)
-      LIMIT 1) AS end_point
+    ARRAY_AGG(
+      IF(path.drive_id IS NULL, NULL,
+        STRUCT(path.source_timestamp, path.latitude, path.longitude))
+      IGNORE NULLS
+      ORDER BY ABS(path.distance_into_drive_miles - segment.start_distance_miles),
+        path.source_timestamp
+      LIMIT 1
+    )[SAFE_OFFSET(0)] AS start_point,
+    ARRAY_AGG(
+      IF(path.drive_id IS NULL, NULL,
+        STRUCT(path.source_timestamp, path.latitude, path.longitude))
+      IGNORE NULLS
+      ORDER BY ABS(path.distance_into_drive_miles - segment.end_distance_miles),
+        path.source_timestamp
+      LIMIT 1
+    )[SAFE_OFFSET(0)] AS end_point
   FROM all_segments AS segment
+  LEFT JOIN {table("drive_path_points")} AS path USING (drive_id)
+  GROUP BY
+    drive_id,
+    vehicle_id,
+    drive_started_at,
+    drive_ended_at,
+    drive_distance_miles,
+    start_distance_miles,
+    end_distance_miles,
+    state,
+    confidence,
+    inference_method,
+    transition_lower_bound_miles,
+    transition_upper_bound_miles
 )
 SELECT
   drive_id,
