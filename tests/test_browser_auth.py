@@ -293,3 +293,5 @@ def test_telemetry_page_preserves_existing_transport_maintenance_opt_in() -> Non
 
     assert 'value="yes" checked' in html
     assert "a" * 64 in html
+    assert "/onboarding/vehicles/veh_one/telemetry/verify" in html
+    assert "Verify and record provenance" in html

@@ -28,12 +28,20 @@ class FakeSecrets:
     def access_secret_version(self, request: dict[str, object]) -> Any:
         name = str(request["name"])
         secret = name.split("/secrets/", 1)[1].split("/versions/", 1)[0]
+        requested_version = name.rsplit("/", 1)[-1]
         values = self.values.get(secret, [])
-        if not values:
+        if requested_version == "latest":
+            index = len(values) - 1
+        else:
+            try:
+                index = int(requested_version) - 1
+            except ValueError:
+                index = -1
+        if index < 0 or index >= len(values):
             raise NotFound("missing")  # type: ignore[no-untyped-call]
         return SimpleNamespace(
-            name=f"projects/test/secrets/{secret}/versions/{len(values)}",
-            payload=SimpleNamespace(data=values[-1]),
+            name=f"projects/test/secrets/{secret}/versions/{index + 1}",
+            payload=SimpleNamespace(data=values[index]),
         )
 
     def add_secret_version(self, request: dict[str, object]) -> Any:
@@ -88,7 +96,13 @@ def settings() -> renewal.Settings:
     )
 
 
-def certificate_material(tmp_path: Path, hostname: str = HOSTNAME) -> renewal.CertificateMaterial:
+def certificate_material(
+    tmp_path: Path,
+    hostname: str = HOSTNAME,
+    *,
+    valid_for: timedelta = timedelta(days=89),
+    issued_ago: timedelta = timedelta(hours=1),
+) -> renewal.CertificateMaterial:
     root_key = ec.generate_private_key(ec.SECP256R1())
     root_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Root")])
     root = (
@@ -110,8 +124,8 @@ def certificate_material(tmp_path: Path, hostname: str = HOSTNAME) -> renewal.Ce
         .issuer_name(root_name)
         .public_key(leaf_key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.now(UTC) - timedelta(hours=1))
-        .not_valid_after(datetime.now(UTC) + timedelta(days=89))
+        .not_valid_before(datetime.now(UTC) - issued_ago)
+        .not_valid_after(datetime.now(UTC) + valid_for)
         .add_extension(x509.SubjectAlternativeName([x509.DNSName(hostname)]), critical=False)
         .sign(root_key, hashes.SHA256())
     )
@@ -128,7 +142,7 @@ def certificate_material(tmp_path: Path, hostname: str = HOSTNAME) -> renewal.Ce
             serialization.NoEncryption(),
         )
     )
-    return renewal._load_and_validate_material(tmp_path, hostname, minimum_days=45)
+    return renewal._load_and_validate_material(tmp_path, hostname)
 
 
 def trust_pem(material: renewal.CertificateMaterial) -> bytes:
@@ -155,7 +169,43 @@ def test_certificate_validation_requires_hostname_chain_and_matching_key(tmp_pat
     assert len(material.fullchain_sha256) == 64
 
     with pytest.raises(ValueError, match="SAN"):
-        renewal._load_and_validate_material(tmp_path, "wrong.example.com", minimum_days=45)
+        renewal._load_and_validate_material(tmp_path, "wrong.example.com")
+
+
+@pytest.mark.parametrize(
+    ("lifetime_days", "remaining_days", "expected"),
+    (
+        (90, 31, False),
+        (90, 29, True),
+        (64, 22, False),
+        (64, 20, True),
+        (45, 16, False),
+        (45, 14, True),
+        (10, 6, False),
+        (10, 4, True),
+    ),
+)
+def test_renewal_due_window_tracks_certificate_lifetime(
+    lifetime_days: int, remaining_days: int, expected: bool
+) -> None:
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    material = renewal.CertificateMaterial(
+        fullchain=b"unused",
+        private_key=b"unused",
+        leaf_sha256="a" * 64,
+        fullchain_sha256="b" * 64,
+        not_before=now - timedelta(days=lifetime_days - remaining_days),
+        not_after=now + timedelta(days=remaining_days),
+    )
+
+    assert renewal._certificate_is_due(material, now=now) is expected
+
+
+def test_new_45_day_certificate_passes_activation_safety_window(tmp_path: Path) -> None:
+    material = certificate_material(tmp_path, valid_for=timedelta(days=44, hours=23))
+
+    assert material.not_after > datetime.now(UTC) + renewal.MINIMUM_ACTIVATION_REMAINING
+    assert renewal._certificate_is_due(material) is False
 
 
 def test_acme_state_rejects_path_traversal(tmp_path: Path) -> None:
@@ -167,6 +217,64 @@ def test_acme_state_rejects_path_traversal(tmp_path: Path) -> None:
 
     with pytest.raises((tarfile.TarError, ValueError, OSError)):
         renewal._extract_state(buffer.getvalue(), tmp_path / "state")
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "category"),
+    (
+        (b"CloudFlare API Error 9109: Invalid access token", "dns_provider_authorization"),
+        (b"too many failed authorizations recently", "acme_rate_limited"),
+        (b"Temporary failure in name resolution", "acme_unavailable"),
+        (b"expected cert.pem to be a symlink", "acme_state_invalid"),
+        (b"an unrecognized certbot failure", "certbot_failed"),
+    ),
+)
+def test_certbot_failure_output_is_reduced_to_safe_category(
+    diagnostic: bytes, category: str
+) -> None:
+    assert renewal._certbot_failure_category(diagnostic) == category
+
+
+def test_certbot_forces_the_lineage_after_woodhouse_marks_it_due(tmp_path: Path) -> None:
+    invocation: list[str] = []
+
+    def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        invocation.extend(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=b"", stderr=b"")
+
+    renewal._run_certbot(settings(), tmp_path / "config", tmp_path / "token", runner)
+
+    assert "--force-renewal" in invocation
+    assert "--keep-until-expiring" not in invocation
+
+
+def test_certbot_failure_raises_only_safe_category(tmp_path: Path) -> None:
+    secret_diagnostic = b"Invalid API token: should-never-appear-in-the-exception"
+
+    def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=1,
+            stdout=b"",
+            stderr=secret_diagnostic,
+        )
+
+    with pytest.raises(renewal.CertbotError) as raised:
+        renewal._run_certbot(settings(), tmp_path / "config", tmp_path / "token", runner)
+
+    assert raised.value.category == "dns_provider_authorization"
+    assert "should-never-appear" not in str(raised.value)
+
+
+def test_certbot_timeout_raises_only_safe_category(tmp_path: Path) -> None:
+    def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(args, 900, output=b"must-not-leak")
+
+    with pytest.raises(renewal.CertbotError) as raised:
+        renewal._run_certbot(settings(), tmp_path / "config", tmp_path / "token", runner)
+
+    assert raised.value.category == "certbot_timeout"
+    assert "must-not-leak" not in str(raised.value)
 
 
 def test_new_release_is_published_only_after_pair_and_state(
@@ -212,7 +320,7 @@ def test_new_release_is_published_only_after_pair_and_state(
     assert deployed == [("1", material.leaf_sha256)]
 
 
-def test_unchanged_certificate_does_not_create_secret_versions(
+def test_healthy_active_release_ignores_corrupt_acme_state_and_does_not_create_versions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     configured = settings()
@@ -221,8 +329,8 @@ def test_unchanged_certificate_does_not_create_secret_versions(
         renewal._release_document(
             configured,
             material,
-            cert_version="7",
-            key_version="9",
+            cert_version="1",
+            key_version="1",
             state_version="4",
             trust_profile=renewal._load_trust_profile(
                 configured.trust_profile_id, trust_pem(material)
@@ -230,10 +338,20 @@ def test_unchanged_certificate_does_not_create_secret_versions(
         ),
         "3",
     )
-    secrets = FakeSecrets({"release": [active.data], "trust": [trust_pem(material)]})
+    secrets = FakeSecrets(
+        {
+            "cert": [material.fullchain],
+            "release": [active.data],
+            "state": [b"not-a-valid-acme-archive"],
+            "trust": [trust_pem(material)],
+        }
+    )
     deployed: list[str] = []
-    monkeypatch.setattr(renewal, "_run_certbot", lambda *args, **kwargs: None)
-    monkeypatch.setattr(renewal, "_load_and_validate_material", lambda *args, **kwargs: material)
+
+    def unexpected_certbot(*args: object, **kwargs: object) -> None:
+        raise AssertionError("healthy certificate must not contact ACME")
+
+    monkeypatch.setattr(renewal, "_run_certbot", unexpected_certbot)
     monkeypatch.setattr(
         renewal,
         "_deploy_release",
@@ -251,6 +369,45 @@ def test_unchanged_certificate_does_not_create_secret_versions(
 
     assert outcome == "healthy"
     assert secrets.added == []
+    assert deployed == ["1"]
+
+
+def test_healthy_stored_certificate_does_not_contact_acme(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    configured = settings()
+    state_dir = tmp_path / "state"
+    material = certificate_material(state_dir)
+    secrets = FakeSecrets(
+        {
+            "state": [renewal._archive_state(state_dir)],
+            "trust": [trust_pem(material)],
+            "trust-readiness": [trust_readiness(material)],
+        }
+    )
+    deployed: list[str] = []
+
+    def unexpected_certbot(*args: object, **kwargs: object) -> None:
+        raise AssertionError("healthy certificate must not contact ACME")
+
+    monkeypatch.setattr(renewal, "_run_certbot", unexpected_certbot)
+    monkeypatch.setattr(
+        renewal,
+        "_deploy_release",
+        lambda session, configured, *, release_version, **kwargs: deployed.append(release_version),
+    )
+
+    outcome = renewal.renew_certificate(
+        configured,
+        secrets,
+        UnusedSession(),
+        runner=lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"", stderr=b""
+        ),
+    )
+
+    assert outcome == "renewed"
+    assert secrets.added == ["cert", "key", "state", "release"]
     assert deployed == ["1"]
 
 

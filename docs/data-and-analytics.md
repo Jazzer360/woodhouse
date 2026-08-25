@@ -63,6 +63,11 @@ configuration as `synced=true` with no relevant telemetry errors. The field
 selection hash and server trust-profile ID/hash are stored separately so a
 compatible leaf renewal cannot masquerade as a field/frequency change. See
 [`fleet-telemetry-configuration.md`](fleet-telemetry-configuration.md).
+If an apply request times out before Tesla reports synchronization but the
+vehicle later adopts the exact desired configuration, use the onboarding
+**Verify and record provenance** action. It performs read-only Tesla config and
+error checks, requires an exact desired/current match, and repairs only the
+trusted registry metadata; it does not submit a configuration or wake the car.
 
 Recommended baseline:
 
@@ -123,6 +128,24 @@ Do not discard an event because:
 - storage is expected to grow.
 
 Exact transport redeliveries may appear more than once in the raw table. Preserve message IDs so analytical views may de-duplicate retry deliveries without losing original provenance.
+
+`payload.isResend=true` is Tesla's vehicle-to-receiver resend marker under
+`delivery_policy=latest`; it is independent of Google Pub/Sub delivery.
+`pubsub_delivery_attempt` is nullable because Google supplies
+`deliveryAttempt` only for subscriptions with a dead-letter policy. Woodhouse
+does not infer attempt 1 when the field is absent. Diagnose push delivery using
+Cloud Run request status/latency plus Pub/Sub `push_request_count`,
+`push_request_latencies`, and `oldest_unacked_message_age`; the durable row's
+Pub/Sub message ID remains the retry-correlation key.
+
+The first production aggregate review on 2026-08-24 found 4,350 rows with
+4,350 distinct Pub/Sub message IDs and no exact duplicate delivery signatures.
+Nine `V` rows were Tesla-marked resends. All processor requests visible in
+Cloud Run returned success; source-to-ingest latency was 47 ms median / 75 ms
+p95 and processor time was 173 ms p95. The 60-second push acknowledgement
+deadline therefore had substantial observed margin. Re-check these metrics as
+volume and processor behavior evolve rather than assuming the first-day result
+is permanent.
 
 The processor uses BigQuery streaming inserts with no insert ID. A successful
 insert response is the durable-acceptance boundary; only then does the

@@ -245,6 +245,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._apply_browser_telemetry(parsed.path)
             return
         if parsed.path.startswith("/onboarding/vehicles/") and parsed.path.endswith(
+            "/telemetry/verify"
+        ):
+            self._verify_browser_telemetry(parsed.path)
+            return
+        if parsed.path.startswith("/onboarding/vehicles/") and parsed.path.endswith(
             "/telemetry/remove"
         ):
             self._remove_browser_telemetry(parsed.path)
@@ -629,6 +634,11 @@ class _Handler(BaseHTTPRequestHandler):
         message = None
         if _single_optional_query_value(query, "configured") == "1":
             message = "Tesla accepted and synchronized this exact telemetry configuration."
+        elif _single_optional_query_value(query, "verified") == "1":
+            message = (
+                "Tesla still reports the exact configuration in sync; "
+                "Woodhouse recorded its trusted profile provenance."
+            )
         elif _single_optional_query_value(query, "removed") == "1":
             message = "The telemetry configuration was removed from this vehicle."
         elif _single_optional_query_value(query, "reconciled") == "1":
@@ -699,6 +709,35 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._redirect(
             f"/onboarding/vehicles/{vehicle_id}/telemetry?removed=1",
+            status=HTTPStatus.SEE_OTHER,
+        )
+
+    def _verify_browser_telemetry(self, path: str) -> None:
+        request = self._require_browser_form_session()
+        if request is None:
+            return
+        context, _, _, _ = request
+        vehicle_id = path.removeprefix("/onboarding/vehicles/").removesuffix("/telemetry/verify")
+        runtime = cast(_Server, self.server).tesla_runtime
+        if not vehicle_id or "/" in vehicle_id or runtime is None or runtime.telemetry is None:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        try:
+            runtime.telemetry.verify(context, vehicle_id)
+        except (
+            CrossUserAccessError,
+            TelemetryConfigurationError,
+            TeslaAPIError,
+            TeslaOnboardingError,
+        ) as error:
+            status, body = _browser_telemetry_failure(
+                error,
+                retry_path=f"/onboarding/vehicles/{vehicle_id}/telemetry",
+            )
+            self._send_html(status, body)
+            return
+        self._redirect(
+            f"/onboarding/vehicles/{vehicle_id}/telemetry?verified=1",
             status=HTTPStatus.SEE_OTHER,
         )
 

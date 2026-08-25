@@ -236,6 +236,48 @@ class FleetTelemetryControlService:
             "tesla": verified,
         }
 
+    def verify(self, context: UserContext, vehicle_id: str) -> JsonObject:
+        """Verify Tesla's exact current config and repair trusted provenance only."""
+        vehicle = self._eligible_vehicle(context.user_id, vehicle_id)
+        profile = broad_profile(vehicle.fleet_telemetry_version)
+        desired = self._trust.build_config(profile)
+        desired_hash = telemetry_config_hash(profile, self._trust)
+        prior = self._store.get_telemetry_configuration(context.user_id, vehicle_id)
+        audit_id = self._begin_audit(
+            context.user_id,
+            vehicle_id,
+            "verify",
+            desired_hash,
+            "operator-verify",
+        )
+        try:
+            verified = self._wait_until_synced(context.user_id, vehicle, desired)
+            state = TelemetryConfigurationState(
+                vehicle_id=vehicle_id,
+                profile_version=profile.version,
+                config_hash=desired_hash,
+                field_config_hash=profile.field_config_hash,
+                trust_profile_id=self._trust.profile_id,
+                trust_profile_hash=self._trust.ca_hash,
+                status="synced",
+                transport_maintenance_opt_in=prior.transport_maintenance_opt_in,
+            )
+            self._store.save_telemetry_configuration(
+                owner_user_id=context.user_id,
+                vehicle_id=vehicle_id,
+                state=state,
+            )
+        except Exception as error:
+            self._complete_audit(audit_id, "failed", _error_category(error))
+            raise
+        self._complete_audit(audit_id, "succeeded", None)
+        return {
+            "status": "verified",
+            "vehicle_id": vehicle_id,
+            "config_hash": desired_hash,
+            "tesla": verified,
+        }
+
     def remove(
         self,
         context: UserContext,

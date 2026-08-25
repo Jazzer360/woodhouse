@@ -39,6 +39,23 @@ table existence, invalid schema changes, Cloud Run auth audience, and Firestore
 availability. Re-run `add-user` for the affected approved user to repair the
 dataset/table/ACL contract; it must not delete history.
 
+This remains safe during Cloud Run cold starts: the subscriptions use a
+60-second acknowledgement deadline, and only an HTTP success acknowledges the
+push. A null `pubsub_delivery_attempt` is expected without a dead-letter policy
+and is not evidence that acknowledgement failed. Use Pub/Sub push response-class
+and latency metrics plus Cloud Run request logs for that proof.
+
+Tesla's `payload.isResend=true` is a separate vehicle-to-receiver condition. It
+means the vehicle resent buffered data that the Fleet Telemetry server had not
+acknowledged under `delivery_policy=latest`; preserve the row and source
+timestamp normally.
+
+If Tesla reports the exact configuration `synced=true` after the original
+apply path timed out, use **Verify and record provenance** from the vehicle's
+telemetry page. This reads and validates the current Tesla config/errors and
+repairs only the trusted profile version/hash. Do not reapply a vehicle
+configuration merely to repair missing provenance.
+
 ## Receiver diagnostics
 
 The edge identity can publish only to the receiver's four Terraform-owned

@@ -17,8 +17,11 @@ resource "google_cloud_run_v2_job" "telemetry_certificate_renewer" {
     parallelism = 1
 
     template {
-      service_account       = google_service_account.platform["certificate_renewer"].email
-      timeout               = "1200s"
+      service_account = google_service_account.platform["certificate_renewer"].email
+      timeout         = "1200s"
+      # A retry after ACME issuance but before candidate persistence could
+      # request another certificate. Let the next twice-daily run re-evaluate
+      # durable state instead of blindly retrying the whole task.
       max_retries           = 0
       execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
 

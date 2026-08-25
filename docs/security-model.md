@@ -352,7 +352,10 @@ Phase 6 creates `tesla_command_audits/{random_audit_id}` before every MCP write
 reaches Tesla. A completion update records success, Tesla rejection, or a safe
 error category; if completion fails, the initial `attempted` record remains.
 Audit parameters structurally redact PIN/password, token, VIN, calendar, and
-exact-location fields. Tesla response bodies are not copied into the audit.
+exact-location fields. Structured navigation destinations and encoded waypoint
+lists are redacted as whole values so free-form addresses or nested coordinates
+cannot survive under otherwise generic keys. Tesla response bodies are not
+copied into the audit.
 An automatic pre-command wake is a separate audited `tesla_wake_up` attempt,
 linked operationally by its `automatic_for` tool name. The requested command is
 still sent at most once and receives its own audit record.

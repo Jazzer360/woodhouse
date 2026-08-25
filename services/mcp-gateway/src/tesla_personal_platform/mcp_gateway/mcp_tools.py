@@ -10,7 +10,16 @@ import types
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Any,
+    Literal,
+    Protocol,
+    TypeAliasType,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from tesla_personal_platform.auth import CrossUserAccessError, UserContext
 from tesla_personal_platform.mcp_gateway.mcp_auth import MCP_ACCESS_SCOPE
@@ -30,7 +39,7 @@ from tesla_personal_platform.tesla_client import (
 )
 from tesla_personal_platform.tesla_client.coverage import COMMAND_NAMES
 from tesla_personal_platform.tesla_client.models import JsonObject
-from tesla_personal_platform.tesla_client.redaction import redact_mapping
+from tesla_personal_platform.tesla_client.redaction import REDACTED, redact_mapping
 from tesla_personal_platform.tesla_client.requests import (
     ActuateTrunkRequest,
     AdjustVolumeRequest,
@@ -85,6 +94,10 @@ _RESPONSE_SECRET_KEYS = frozenset(
         "refresh_token",
     }
 )
+_AUDIT_WHOLE_VALUE_FIELDS = {
+    "navigation_request": frozenset({"value"}),
+    "navigation_waypoints_request": frozenset({"waypoints"}),
+}
 
 
 class MCPToolError(Exception):
@@ -644,7 +657,7 @@ class TeslaMCPService:
                 owner_user_id=context.user_id,
                 vehicle_id=vehicle.vehicle_id,
                 tool_name=spec.name,
-                redacted_parameters=redact_mapping(values),
+                redacted_parameters=_redact_command_parameters(spec, values),
                 correlation_id=correlation_id,
                 source="chatgpt-mcp",
             )
@@ -1022,6 +1035,8 @@ def _dataclass_schema(model: type[Any]) -> Document:
 
 
 def _annotation_schema(annotation: object) -> Document:
+    if isinstance(annotation, TypeAliasType):
+        return _annotation_schema(annotation.__value__)
     origin = get_origin(annotation)
     args = get_args(annotation)
     if origin is Literal:
@@ -1044,6 +1059,14 @@ def _annotation_schema(annotation: object) -> Document:
     if annotation is float:
         return {"type": "number"}
     return {"type": "string"}
+
+
+def _redact_command_parameters(spec: ToolSpec, values: dict[str, object]) -> JsonObject:
+    redacted = redact_mapping(values)
+    for field_name in _AUDIT_WHOLE_VALUE_FIELDS.get(spec.client_method, ()):
+        if field_name in values:
+            redacted[field_name] = REDACTED
+    return redacted
 
 
 def _is_optional(annotation: object) -> bool:

@@ -264,6 +264,7 @@ def test_certificate_renewal_is_isolated_scheduled_and_fail_closed() -> None:
     )
     assert 'resource "google_cloud_run_v2_job" "telemetry_certificate_renewer"' in renewal
     assert 'resource "google_cloud_scheduler_job" "telemetry_certificate_renewal"' in renewal
+    assert "max_retries           = 0" in renewal
     assert "Twice-daily unattended ACME check" in renewal
     assert "paused           = var.telemetry_certificate_schedule_paused" in renewal
     assert "length(var.monitoring_notification_channels) > 0" in renewal
@@ -272,6 +273,15 @@ def test_certificate_renewal_is_isolated_scheduled_and_fail_closed() -> None:
         "notification channel."
     ) in renewal
     assert 'secret  = google_secret_manager_secret.platform["cloudflare_dns_api_token"]' in renewal
+    renewer_accessor = secrets[
+        secrets.index(
+            'resource "google_secret_manager_secret_iam_member" "certificate_renewer_accessor"'
+        ) : secrets.index(
+            'resource "google_secret_manager_secret_iam_member" "certificate_renewer_version_adder"'
+        )
+    ]
+    assert '"telemetry_edge_tls_cert"' in renewer_accessor
+    assert '"telemetry_edge_tls_key"' not in renewer_accessor
     assert 'role      = "roles/secretmanager.secretVersionAdder"' in secrets
     assert 'role_id     = "tppCertificateEdgeReloader"' in iam
     assert '"compute.instances.reset"' in iam

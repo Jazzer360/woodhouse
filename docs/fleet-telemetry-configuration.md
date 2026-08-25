@@ -12,8 +12,8 @@ Endpoints documentation, and the pinned receiver version `v0.9.4`.
 
 ## Canonical profile
 
-The only default profile is `broad-v1`. The name is retained for compatibility,
-but its policy is now **Tessie baseline plus explicit Woodhouse decisions**, not
+The only default profile is `broad-v2`. Its policy is **Tessie baseline plus
+explicit Woodhouse decisions**, not
 "subscribe to nearly everything." It is capability-projected per vehicle; it
 is not a plan, quota, or storage tier.
 
@@ -61,9 +61,9 @@ These are every cadence/delta difference for a field already in Tessie:
 
 | Field(s) | Tessie | Woodhouse | Why |
 |---|---:|---:|---|
-| `Location` | 30 s / 3 m | 10 s / 10 m | Better trip shape at Tesla's economical example cadence, while filtering GPS drift more strongly. |
+| `Location` | 30 s / 3 m | 5 s / 5 m | Improve trip-path and low-speed maneuver reconstruction while retaining a practical GPS-drift filter. |
 | `VehicleSpeed` | 30 s / no delta | 1 s / 1 mph | Preserve one-mph cruising changes plus acceleration/deceleration traces and approximate launch timing. On client 1.3+, include longitudinal acceleration in the same payload. |
-| `GpsHeading` | 60 s / 1° | 10 s / 5° | Align heading with trip cadence and ignore small directional jitter. |
+| `GpsHeading` | 60 s / 1° | 5 s / 5° | Align heading with trip-path cadence and ignore small directional jitter. |
 | Six media metadata/state fields | 60 s | 10 s | Capture short tracks, skips, and state/source changes; unchanged values do not emit. |
 | `TpmsSoftWarnings`, `TpmsHardWarnings` | 1,800 s | 60 s | Warning transitions are rare, so improved latency adds little normal volume. |
 | `HvacLeftTemperatureRequest` | 1 s | 5 s | Setpoint history does not need one-second polling or a numeric delta. |
@@ -115,8 +115,8 @@ location deltas add a second noise threshold.
 | Selected signal family | Normal interval | Delta policy and rationale |
 |---|---:|---|
 | Body, security, safety, gear | Tessie 1-5 s | Discrete change only; unchanged values do not emit. |
-| Location | 10 s | 10 m; route origin is 60 s / 25 m. |
-| Speed and longitudinal acceleration | 1 s | 1 mph and 1 m/s² respectively; on client 1.3+ each field includes the other when it independently qualifies. |
+| Location | 5 s | 5 m; route origin is 60 s / 25 m. |
+| Speed and longitudinal acceleration | 1 s | 1 mph and 0.5 m/s² respectively; on client 1.3+ each field includes the other when it independently qualifies. |
 | Charging and battery | Mostly 30-120 s | Physical measurements use explicit defensible deltas; discrete state/settings do not receive artificial deltas. |
 | Climate | Tessie baseline plus 5 s added states | Temperatures inherit Tessie's deltas; modes, setpoints, fan levels, and switches are treated as changed values. |
 | Media | 10-60 s | Metadata/state is 10 s; elapsed/duration retain Tessie's slower, delta-gated behavior. |
@@ -131,7 +131,7 @@ normal changed-value behavior. This avoids the earlier blanket-delta policy.
 
 High-volume considerations shown at the checkpoint:
 
-- Location can emit at most once per 10 seconds after 10 meters of movement;
+- Location can emit at most once per 5 seconds after 5 meters of movement;
 - speed and longitudinal acceleration can each emit at most once per second
   after crossing their respective delta; synchronized acceleration is another
   billable signal whenever qualifying speed publishes on client 1.3+;
@@ -155,13 +155,31 @@ can remove telemetry configurations at the limit and does not automatically
 restore them, so alert below the limit. A field/frequency change always creates
 a versioned explicit operator diff; it is never automatic maintenance.
 
+### First-day production observation
+
+The 2026-08-24 aggregate-only review found 4,350 raw receiver messages containing
+7,147 vehicle field observations. Tesla bills streaming **signals**, not raw
+receiver messages, so cost checks must count entries in each `V.data` array
+rather than BigQuery rows. The review found a 10-second median gap for both
+`Location` and `GpsHeading`, a 1-second median for `VehicleSpeed`, and a
+4-second median for `LongitudinalAcceleration` at its former 1.0 m/s² delta.
+That measured cadence supports the `broad-v2` changes to 5 seconds / 5 meters
+for location, 5 seconds / 5 degrees for heading, and a 0.5 m/s² acceleration
+delta. It does not yet justify adding pedal-position, lateral-acceleration, or
+high-rate drivetrain engineering signals.
+
+Reassess `PackCurrent` after at least one representative week containing
+ordinary drives and both AC/DC charging. A 10- or 15-second interval may add
+useful power/efficiency context, but should be evaluated as a separate explicit
+profile change against observed signal volume.
+
 ## Acceleration/deceleration trace policy
 
 The profile deliberately spends additional signal budget on reconstructable
 driving dynamics:
 
 - `VehicleSpeed`: 1 second, 1 mph minimum delta;
-- `LongitudinalAcceleration`: 1 second, 1 m/s² minimum delta;
+- `LongitudinalAcceleration`: 1 second, 0.5 m/s² minimum delta;
 - `BrakePedal`: 1 second, change-based boolean;
 - on Fleet Telemetry client 1.3.0+, `VehicleSpeed.include_fields` contains
   `LongitudinalAcceleration` and `LongitudinalAcceleration.include_fields`
@@ -289,7 +307,7 @@ migration even though normal browsers would accept it.
 
 ### Transport migration
 
-A hostname, port, or CA-profile change is separate from `broad-v1`. The
+A hostname, port, or CA-profile change is separate from `broad-v2`. The
 control-plane reconciler retains the exact persisted field hash, requires an
 explicit per-vehicle transport-maintenance opt-in, updates a selected canary
 first, waits for `synced=true`, inspects errors, and then processes remaining
