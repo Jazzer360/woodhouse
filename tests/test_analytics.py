@@ -362,6 +362,13 @@ def test_capability_diagnostic_compares_profile_client_receiver_and_payload_evid
     assert "synchronized_charge_messages" in diagnostic
     assert "synchronized_fsd_messages" in diagnostic
     assert "include_fields_not_observed" in diagnostic
+    assert (
+        "LEFT JOIN version_history AS history ON history.vehicle_id = latest.vehicle_id"
+        in diagnostic
+    )
+    assert "LEFT JOIN firmware ON firmware.vehicle_id = latest.vehicle_id" in diagnostic
+    assert "LEFT JOIN anchors ON anchors.vehicle_id = latest.vehicle_id" in diagnostic
+    assert "USING (vehicle_id)" not in diagnostic
 
 
 def test_field_catalog_is_complete_and_matches_the_reviewed_profile() -> None:

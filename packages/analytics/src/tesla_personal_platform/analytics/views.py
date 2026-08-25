@@ -1412,9 +1412,9 @@ FROM latest
 LEFT JOIN version_spans AS span
   ON span.vehicle_id = latest.vehicle_id
   AND span.telemetry_client_version = latest.telemetry_client_version
-LEFT JOIN version_history AS history USING (vehicle_id)
-LEFT JOIN firmware USING (vehicle_id)
-LEFT JOIN anchors USING (vehicle_id)
+LEFT JOIN version_history AS history ON history.vehicle_id = latest.vehicle_id
+LEFT JOIN firmware ON firmware.vehicle_id = latest.vehicle_id
+LEFT JOIN anchors ON anchors.vehicle_id = latest.vehicle_id
 """.strip()
 
     media_history = f"""
