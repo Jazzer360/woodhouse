@@ -302,9 +302,7 @@ def main() -> None:
     rendered = render_reference()
     if args.check:
         if not OUTPUT.is_file() or OUTPUT.read_text(encoding="utf-8") != rendered:
-            raise SystemExit(
-                "docs/mcp-tool-reference.md is stale; regenerate it with this script"
-            )
+            raise SystemExit("docs/mcp-tool-reference.md is stale; regenerate it with this script")
         return
     OUTPUT.write_text(rendered, encoding="utf-8")
 

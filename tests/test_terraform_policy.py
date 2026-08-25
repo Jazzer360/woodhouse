@@ -277,8 +277,7 @@ def test_certificate_renewal_is_isolated_scheduled_and_fail_closed() -> None:
         secrets.index(
             'resource "google_secret_manager_secret_iam_member" "certificate_renewer_accessor"'
         ) : secrets.index(
-            'resource "google_secret_manager_secret_iam_member" '
-            '"certificate_renewer_version_adder"'
+            'resource "google_secret_manager_secret_iam_member" "certificate_renewer_version_adder"'
         )
     ]
     assert '"telemetry_edge_tls_cert"' in renewer_accessor
