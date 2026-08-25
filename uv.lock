@@ -1239,6 +1239,7 @@ dependencies = [
     { name = "google-cloud-bigquery" },
     { name = "sqlglot" },
     { name = "tpp-shared-models" },
+    { name = "tpp-tesla-client" },
 ]
 
 [package.metadata]
@@ -1246,6 +1247,7 @@ requires-dist = [
     { name = "google-cloud-bigquery", specifier = ">=3.30,<4" },
     { name = "sqlglot", specifier = "==30.17.0" },
     { name = "tpp-shared-models", editable = "packages/shared-models" },
+    { name = "tpp-tesla-client", editable = "packages/tesla-client" },
 ]
 
 [[package]]

@@ -28,6 +28,14 @@ default dataset. It is not a Tesla endpoint and never wakes a vehicle. There
 are intentionally no dedicated trip, charging, efficiency, or playlist tools;
 the model composes those questions from the catalog.
 
+The catalog includes permanent raw history, universal long-form typed
+observations, the complete pinned Tesla/Woodhouse field catalog, five sparse
+exact-emission wide sample views (`charging_samples`, `climate_samples`,
+`driving_samples`, `location_samples`, and `media_samples`), and the higher
+level session/summary views. This lets a caller write novel read-only SQL when
+the prebuilt interpretations are insufficient without opening another dataset
+or an unrestricted BigQuery surface.
+
 ## Common vehicle-selection rule
 
 Vehicle-scoped tools accept an optional opaque internal `vehicle_id`. The

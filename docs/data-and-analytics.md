@@ -182,7 +182,13 @@ and every future/unknown representation remain intact in `value_json`.
 
 | View | Interpretation |
 |---|---|
+| `telemetry_field_catalog` | All 239 fields in the pinned Tesla schema with category/type/description, broad-v2 inclusion, interval/delta/include-fields policy, exclusion reason, profile/schema versions, and the client-capability target used to expand that policy. `configured` describes the full policy, not proof that a particular vehicle supports or emitted the field. |
 | `telemetry_observations` | Expands each `V` payload datum into typed numeric, string/enum, boolean, location, and complete JSON values. Exact Pub/Sub redeliveries are de-duplicated by `pubsub_message_id` here; Tesla-marked resends remain observations. |
+| `charging_samples` | Sparse wide charging rows keyed by the exact emitted message timestamp and delivery ID. |
+| `climate_samples` | Sparse wide climate rows keyed by the exact emitted message timestamp and delivery ID. |
+| `driving_samples` | Sparse wide driving rows suitable for speed/acceleration/braking graphs. |
+| `location_samples` | Sparse wide navigation/location rows; each configured `Location` value has separate latitude/longitude columns. |
+| `media_samples` | Sparse wide media rows for direct graphing or inspection of emitted playback metadata/state. |
 | `vehicle_state_changes` | Orders valid values by vehicle/field/source time and exposes the previous typed value. |
 | `drives` | Reconstructs forward/reverse Gear intervals and summarizes time, odometer distance, energy, speed, endpoints, sample count/gaps, and config provenance. |
 | `charge_sessions` | Reconstructs charging-state intervals and summarizes SOC, AC/DC energy counters, power, voltage, location, and sample count. |
@@ -207,6 +213,19 @@ signal for promoting a repeatedly expensive derivation to an incremental,
 partitioned rebuildable table. Native materialized views may be used only when
 the derivation fits BigQuery's restricted materialized-view SQL; raw history
 remains authoritative either way.
+
+Tesla's current Fleet Telemetry
+[system-behavior documentation](https://developer.tesla.com/docs/fleet-api/fleet-telemetry)
+was rechecked on 2026-08-24: changed fields enter a 500-millisecond collector
+bucket after their own interval/delta rules permit emission. The five
+`*_samples` views therefore
+group only fields in the same actual source message; they do not time-bucket,
+interpolate, or carry a previous value forward. A metric `NULL` means it was not
+validly emitted in that message. `observed_fields` distinguishes a missing
+field from an emitted field, and `invalid_fields` identifies fields Tesla
+explicitly marked invalid. This preserves honest timestamps while providing
+dashboard-friendly wide columns. Use `telemetry_observations` for universal
+long-form analysis and joins across all categories.
 
 Initial useful concepts:
 
@@ -326,6 +345,13 @@ Include:
 - likely join keys;
 - partition fields;
 - example queries where helpful.
+
+The schema includes `telemetry_field_catalog`, so a model can inspect every
+pinned Tesla field and the exact Woodhouse collection decision without relying
+on a truncated `SELECT DISTINCT field_name` discovery query. It also exposes
+the five wide exact-emission sample views for straightforward dashboard SQL;
+the raw table and long-form `telemetry_observations` remain available for novel
+queries not covered by derived views.
 
 ### `run_analytics_query`
 

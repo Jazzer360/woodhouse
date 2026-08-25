@@ -513,11 +513,11 @@ Server rules:
 
 Phase 9 implements this with a pinned SQLGlot BigQuery AST/scope validator and
 executes the canonical AST rendering, not the original caller string. The
-trusted static catalog contains the permanent raw table plus
-`telemetry_observations`, `vehicle_state_changes`, `drives`,
-`charge_sessions`, `media_history`, and `daily_vehicle_summary`. The schema
-tool intersects that catalog with objects actually present in the user's
-dataset and never returns the physical dataset ID. See
+trusted static catalog contains the permanent raw table, complete pinned field
+catalog, universal long-form observations, sparse exact-emission wide sample
+views for charging/climate/driving/location/media, and the state/session/daily
+derived views. The schema tool intersects that catalog with objects actually
+present in the user's dataset and never returns the physical dataset ID. See
 `docs/data-and-analytics.md` for the concrete query/response bounds.
 
 The safety ceiling is an implementation guardrail, not a commercial plan or per-user rate limit.

@@ -17,6 +17,10 @@ from tesla_personal_platform.analytics import (
     analytics_views,
     validate_analytics_query,
 )
+from tesla_personal_platform.analytics.telemetry_fields import (
+    category_sample_specs,
+    telemetry_catalog_entries,
+)
 from tesla_personal_platform.auth import UserContext
 
 CONTEXT = UserContext("usr_private", "tesla_u_private", "issuer", "subject")
@@ -126,6 +130,20 @@ def test_playlist_query_needs_no_dedicated_endpoint() -> None:
     assert validated.referenced_objects == frozenset({"drives", "media_history"})
 
 
+def test_field_catalog_and_dashboard_samples_are_queryable() -> None:
+    catalog_query = validate_analytics_query(
+        "SELECT category, field_name, interval_seconds FROM telemetry_field_catalog "
+        "WHERE configured ORDER BY category, field_name"
+    )
+    graph_query = validate_analytics_query(
+        "SELECT source_timestamp, vehicle_speed, longitudinal_acceleration "
+        "FROM driving_samples WHERE source_timestamp >= TIMESTAMP('2026-08-01')"
+    )
+
+    assert catalog_query.referenced_objects == frozenset({"telemetry_field_catalog"})
+    assert graph_query.referenced_objects == frozenset({"driving_samples"})
+
+
 def test_service_derives_default_dataset_and_bounds_results(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -177,6 +195,8 @@ def test_schema_is_descriptive_without_physical_namespace() -> None:
     serialized = str(result)
 
     assert "telemetry_observations" in serialized
+    assert "telemetry_field_catalog" in serialized
+    assert "driving_samples" in serialized
     assert "media_history" in serialized
     assert "join_keys" in serialized
     assert "partition_hint" in serialized
@@ -189,16 +209,75 @@ def test_derived_views_are_ordered_complete_and_raw_preserving() -> None:
     views = analytics_views("woodhouse-502615", "tesla_u_private")
 
     assert [view.name for view in views] == [
+        "telemetry_field_catalog",
         "telemetry_observations",
+        "charging_samples",
+        "climate_samples",
+        "driving_samples",
+        "location_samples",
+        "media_samples",
         "vehicle_state_changes",
         "drives",
         "charge_sessions",
         "media_history",
         "daily_vehicle_summary",
     ]
-    assert "raw_telemetry_events" in views[0].sql
-    assert "PARTITION BY pubsub_message_id" in views[0].sql
+    observations = next(view for view in views if view.name == "telemetry_observations")
+    assert "raw_telemetry_events" in observations.sql
+    assert "PARTITION BY pubsub_message_id" in observations.sql
     assert all(
         "DELETE" not in view.sql and "CREATE OR REPLACE TABLE" not in view.sql for view in views
     )
     assert all(isinstance(parse_one(view.sql, read="bigquery"), exp.Query) for view in views)
+
+
+def test_field_catalog_is_complete_and_matches_the_reviewed_profile() -> None:
+    entries = telemetry_catalog_entries()
+    configured = [entry for entry in entries if entry.configured]
+
+    assert len(entries) == 239
+    assert len(configured) == 131
+    assert {entry.category for entry in entries} == {
+        "Charging",
+        "Climate",
+        "Driving",
+        "Location",
+        "Media",
+        "Powertrain",
+        "Safety",
+        "Service",
+        "User Preference",
+        "Vehicle Configuration",
+        "Vehicle State",
+    }
+    speed = next(entry for entry in entries if entry.field_name == "VehicleSpeed")
+    battery_level = next(entry for entry in entries if entry.field_name == "BatteryLevel")
+    assert (speed.interval_seconds, speed.minimum_delta) == (1, 1.0)
+    assert speed.target_client_version == "1.3.0"
+    assert battery_level.configured is False
+    assert battery_level.exclusion_reason is not None
+
+
+def test_dashboard_samples_use_exact_sparse_emissions_and_typed_columns() -> None:
+    specs = {spec.view_name: spec for spec in category_sample_specs()}
+
+    assert set(specs) == {
+        "charging_samples",
+        "climate_samples",
+        "driving_samples",
+        "location_samples",
+        "media_samples",
+    }
+    driving = {column.name: column for column in specs["driving_samples"].columns}
+    location = {column.name: column for column in specs["location_samples"].columns}
+    assert driving["vehicle_speed"].field_type == "FLOAT64"
+    assert driving["brake_pedal"].field_type == "BOOLEAN"
+    assert location["location_latitude"].field_name == "Location"
+    assert location["location_longitude"].field_name == "Location"
+
+    views = {view.name: view for view in analytics_views("project", "dataset")}
+    assert (
+        "GROUP BY source_timestamp, vehicle_id, pubsub_message_id" in views["driving_samples"].sql
+    )
+    assert "TIMESTAMP_BUCKET" not in views["driving_samples"].sql
+    assert "invalid_fields" in views["driving_samples"].sql

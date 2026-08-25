@@ -5,6 +5,8 @@ from typing import Final, Literal
 
 from tesla_personal_platform.shared_models import RAW_TELEMETRY_SCHEMA, RAW_TELEMETRY_TABLE
 
+from .telemetry_fields import CategorySampleSpec, category_sample_specs
+
 ObjectKind = Literal["table", "view"]
 
 
@@ -42,6 +44,35 @@ RAW_OBJECT = AnalyticsObject(
         for field in RAW_TELEMETRY_SCHEMA
     ),
     partition_hint="Filter source_timestamp to prune the daily partition.",
+)
+
+TELEMETRY_FIELD_CATALOG = AnalyticsObject(
+    "telemetry_field_catalog",
+    "view",
+    "Pinned Tesla field taxonomy and reviewed Woodhouse collection policy.",
+    _columns(
+        ("field_name", "STRING", "Tesla Fleet Telemetry field name."),
+        ("category", "STRING", "Tesla's documented field category."),
+        ("value_type", "STRING", "Tesla's documented value type."),
+        ("description", "STRING", "Tesla's documented field meaning."),
+        (
+            "configured",
+            "BOOLEAN",
+            "Whether the full broad-v2 profile requests this field; not proof of emission.",
+        ),
+        ("interval_seconds", "INTEGER", "Requested minimum emission interval."),
+        ("minimum_delta", "FLOAT64", "Requested change threshold when configured."),
+        ("include_fields", "ARRAY<STRING>", "Fields requested in synchronized delivery."),
+        ("exclusion_reason", "STRING", "Reviewed reason an unconfigured field is omitted."),
+        ("profile_version", "STRING", "Woodhouse field profile version."),
+        ("schema_version", "STRING", "Pinned Tesla field schema snapshot."),
+        (
+            "target_client_version",
+            "STRING",
+            "Fleet Telemetry client capability target used to expand the profile.",
+        ),
+    ),
+    join_keys=("field_name",),
 )
 
 TELEMETRY_OBSERVATIONS = AnalyticsObject(
@@ -202,9 +233,46 @@ DAILY_VEHICLE_SUMMARY = AnalyticsObject(
     partition_hint="Filter summary_date for efficient dashboard-style questions.",
 )
 
+_SAMPLE_METADATA_COLUMNS = _columns(
+    ("source_timestamp", "TIMESTAMP", "Exact source time of the emitted Tesla message."),
+    ("ingested_at", "TIMESTAMP", "Latest edge acceptance time for the message."),
+    ("processed_at", "TIMESTAMP", "Latest processor handling time for the message."),
+    ("vehicle_id", "STRING", "Opaque internal vehicle identifier."),
+    ("pubsub_message_id", "STRING", "Google Pub/Sub delivery identifier."),
+    ("transport_message_id", "STRING", "Tesla transport transaction identifier."),
+    ("telemetry_config_version", "STRING", "Trusted source profile version."),
+    ("telemetry_config_hash", "STRING", "Trusted source profile hash."),
+    ("telemetry_client_version", "STRING", "Vehicle telemetry client version."),
+    ("observed_fields", "ARRAY<STRING>", "Category fields emitted in this message."),
+    ("invalid_fields", "ARRAY<STRING>", "Emitted fields Tesla marked invalid."),
+)
+
+
+def _sample_object(spec: CategorySampleSpec) -> AnalyticsObject:
+    return AnalyticsObject(
+        spec.view_name,
+        "view",
+        (
+            f"Sparse exact-emission {spec.category.lower()} samples. A metric is populated only "
+            "when Tesla emitted it in that message; inspect observed_fields and invalid_fields."
+        ),
+        _SAMPLE_METADATA_COLUMNS
+        + tuple(
+            AnalyticsColumn(column.name, column.field_type, column.description)
+            for column in spec.columns
+        ),
+        join_keys=("vehicle_id", "source_timestamp"),
+        partition_hint="Filter source_timestamp for bounded dashboard and graph queries.",
+    )
+
+
+CATEGORY_SAMPLE_OBJECTS: Final = tuple(_sample_object(spec) for spec in category_sample_specs())
+
 ANALYTICS_OBJECTS: Final = (
     RAW_OBJECT,
+    TELEMETRY_FIELD_CATALOG,
     TELEMETRY_OBSERVATIONS,
+    *CATEGORY_SAMPLE_OBJECTS,
     VEHICLE_STATE_CHANGES,
     DRIVES,
     CHARGE_SESSIONS,
@@ -215,6 +283,22 @@ ANALYTICS_OBJECTS_BY_NAME: Final = {item.name: item for item in ANALYTICS_OBJECT
 ALLOWED_ANALYTICS_OBJECTS: Final = frozenset(ANALYTICS_OBJECTS_BY_NAME)
 
 EXAMPLE_QUERIES: Final = (
+    {
+        "purpose": "Inspect configured fields and source cadence by category",
+        "sql": (
+            "SELECT category, field_name, value_type, interval_seconds, minimum_delta "
+            "FROM telemetry_field_catalog WHERE configured ORDER BY category, field_name"
+        ),
+    },
+    {
+        "purpose": "Graph speed and acceleration from exact driving emissions",
+        "sql": (
+            "SELECT source_timestamp, vehicle_id, vehicle_speed, longitudinal_acceleration "
+            "FROM driving_samples WHERE source_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), "
+            "INTERVAL 1 DAY) AND (vehicle_speed IS NOT NULL OR "
+            "longitudinal_acceleration IS NOT NULL) ORDER BY source_timestamp"
+        ),
+    },
     {
         "purpose": "Daily distance and efficiency by vehicle",
         "sql": (
