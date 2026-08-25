@@ -335,12 +335,22 @@ job timeout. Results are bounded to 200 rows/512 KiB. The gateway service
 account has dataset-level read access and project-level job creation only; it
 cannot use caller SQL to acquire another dataset grant.
 
+The approved user's normalized invitation email also has dataset-level
+`READER` access to that user's dataset so the owner can inspect and query their
+own raw history and derived views in the BigQuery console. This direct grant is
+part of the authoritative per-user dataset ACL; it never grants access to a
+different user's dataset. Running console queries additionally requires a
+separate project-level BigQuery job-creation role. The operator account has
+that role through reviewed Terraform; `add-user` does not grant it to every
+approved user automatically.
+
 The operator-only `tpp-user-admin` is not a runtime query principal and has no
 BigQuery job role. BigQuery requires a view creator to hold `tables.getData` on
 referenced raw/views while validating the definition, so the idempotent
 provisioner temporarily grants that keyless identity `READER` on exactly the
 target user's dataset. It revokes the entry in a `finally` path on both success
 and failure, restoring the permanent owner/gateway-reader/processor-writer ACL.
+A permanent approved-user reader entry is restored with those service entries.
 A subsequent repair also removes any transient entry left by process death
 before attempting view work. This is an audited operator-time exception, not a
 cross-user MCP or steady-state admin access path.

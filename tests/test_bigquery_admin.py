@@ -4,7 +4,7 @@ import pytest
 from google.cloud import bigquery
 from tesla_personal_platform.auth.bigquery_admin import (
     BigQueryDatasetProvisioner,
-    restricted_service_account_access,
+    restricted_dataset_access,
     temporary_view_provisioning_access,
 )
 from tesla_personal_platform.auth.models import AllowedUser, UserStatus
@@ -13,17 +13,19 @@ from tesla_personal_platform.auth.models import AllowedUser, UserStatus
 def test_dataset_access_is_exact_minimal_and_idempotent() -> None:
     existing = [bigquery.AccessEntry("OWNER", "userByEmail", "operator@example.com")]
 
-    once = restricted_service_account_access(
+    once = restricted_dataset_access(
         existing,
         "dataset-owner@example.iam",
         "gateway@example.iam",
         "processor@example.iam",
+        "homer@example.com",
     )
-    twice = restricted_service_account_access(
+    twice = restricted_dataset_access(
         once,
         "dataset-owner@example.iam",
         "gateway@example.iam",
         "processor@example.iam",
+        "homer@example.com",
     )
 
     assert twice == once
@@ -31,6 +33,7 @@ def test_dataset_access_is_exact_minimal_and_idempotent() -> None:
         ("OWNER", "userByEmail", "dataset-owner@example.iam"),
         ("READER", "userByEmail", "gateway@example.iam"),
         ("WRITER", "userByEmail", "processor@example.iam"),
+        ("READER", "userByEmail", "homer@example.com"),
     }
 
 
@@ -147,6 +150,7 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
         ("OWNER", "userByEmail", "dataset-owner@example.iam"),
         ("READER", "userByEmail", "gateway@example.iam"),
         ("WRITER", "userByEmail", "processor@example.iam"),
+        ("READER", "userByEmail", "homer@example.com"),
     }
     assert set(client.updated_dataset_fields[0]) == {
         "access_entries",
@@ -193,12 +197,14 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
         ("OWNER", "userByEmail", "dataset-owner@example.iam"),
         ("READER", "userByEmail", "gateway@example.iam"),
         ("WRITER", "userByEmail", "processor@example.iam"),
+        ("READER", "userByEmail", "homer@example.com"),
         ("READER", "userByEmail", "admin@example.iam"),
     }
     assert client.dataset_access_snapshots[-1] == {
         ("OWNER", "userByEmail", "dataset-owner@example.iam"),
         ("READER", "userByEmail", "gateway@example.iam"),
         ("WRITER", "userByEmail", "processor@example.iam"),
+        ("READER", "userByEmail", "homer@example.com"),
     }
 
 
@@ -231,6 +237,7 @@ def test_view_validation_failure_restores_permanent_dataset_acl() -> None:
         ("OWNER", "userByEmail", "dataset-owner@example.iam"),
         ("READER", "userByEmail", "gateway@example.iam"),
         ("WRITER", "userByEmail", "processor@example.iam"),
+        ("READER", "userByEmail", "homer@example.com"),
     }
 
 
@@ -239,6 +246,7 @@ def test_temporary_view_access_adds_only_admin_read() -> None:
         "dataset-owner@example.iam",
         "gateway@example.iam",
         "processor@example.iam",
+        "homer@example.com",
         "admin@example.iam",
     )
 
@@ -246,5 +254,20 @@ def test_temporary_view_access_adds_only_admin_read() -> None:
         ("OWNER", "dataset-owner@example.iam"),
         ("READER", "gateway@example.iam"),
         ("WRITER", "processor@example.iam"),
+        ("READER", "homer@example.com"),
         ("READER", "admin@example.iam"),
     }
+
+
+def test_approved_user_access_is_scoped_to_that_users_dataset() -> None:
+    homer_access = restricted_dataset_access(
+        (),
+        "dataset-owner@example.iam",
+        "gateway@example.iam",
+        "processor@example.iam",
+        "homer@example.com",
+    )
+
+    identities = {entry.entity_id for entry in homer_access}
+    assert "homer@example.com" in identities
+    assert "marge@example.com" not in identities

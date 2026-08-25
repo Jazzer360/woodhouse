@@ -38,7 +38,11 @@ preserves dataset, vehicle, Tesla connection, and historical data.
 After Phase 9 is deployed, re-run `add-user` once for every existing account.
 The same idempotent command creates/repairs that user's non-expiring,
 source-time-partitioned `raw_telemetry_events` table and all rebuildable
-analytical views without deleting data.
+analytical views without deleting data. It also preserves a dataset-level
+reader grant for the approved user's own invitation email. An operator who has
+the separately Terraform-managed project-level BigQuery job role can therefore
+inspect and query their own dataset in the Cloud console without a manual ACL
+edit; no user receives access to another user's dataset.
 
 The commands never accept or print a token, secret, service-account key, or
 Tesla credential. See [`docs/deployment.md`](../../docs/deployment.md#manual-add-homer-workflow)
