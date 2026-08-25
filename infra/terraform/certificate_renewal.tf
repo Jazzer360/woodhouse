@@ -19,10 +19,10 @@ resource "google_cloud_run_v2_job" "telemetry_certificate_renewer" {
     template {
       service_account = google_service_account.platform["certificate_renewer"].email
       timeout         = "1200s"
-      # Renewal and deployment are idempotent around the immutable release
-      # manifest. Retry transient ACME, Secret Manager, or VM-control failures
-      # within the same scheduled execution before alerting an operator.
-      max_retries           = 2
+      # A retry after ACME issuance but before candidate persistence could
+      # request another certificate. Let the next twice-daily run re-evaluate
+      # durable state instead of blindly retrying the whole task.
+      max_retries           = 0
       execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
 
       containers {

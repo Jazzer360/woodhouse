@@ -28,12 +28,20 @@ class FakeSecrets:
     def access_secret_version(self, request: dict[str, object]) -> Any:
         name = str(request["name"])
         secret = name.split("/secrets/", 1)[1].split("/versions/", 1)[0]
+        requested_version = name.rsplit("/", 1)[-1]
         values = self.values.get(secret, [])
-        if not values:
+        if requested_version == "latest":
+            index = len(values) - 1
+        else:
+            try:
+                index = int(requested_version) - 1
+            except ValueError:
+                index = -1
+        if index < 0 or index >= len(values):
             raise NotFound("missing")  # type: ignore[no-untyped-call]
         return SimpleNamespace(
-            name=f"projects/test/secrets/{secret}/versions/{len(values)}",
-            payload=SimpleNamespace(data=values[-1]),
+            name=f"projects/test/secrets/{secret}/versions/{index + 1}",
+            payload=SimpleNamespace(data=values[index]),
         )
 
     def add_secret_version(self, request: dict[str, object]) -> Any:
@@ -258,6 +266,17 @@ def test_certbot_failure_raises_only_safe_category(tmp_path: Path) -> None:
     assert "should-never-appear" not in str(raised.value)
 
 
+def test_certbot_timeout_raises_only_safe_category(tmp_path: Path) -> None:
+    def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(args, 900, output=b"must-not-leak")
+
+    with pytest.raises(renewal.CertbotError) as raised:
+        renewal._run_certbot(settings(), tmp_path / "config", tmp_path / "token", runner)
+
+    assert raised.value.category == "certbot_timeout"
+    assert "must-not-leak" not in str(raised.value)
+
+
 def test_new_release_is_published_only_after_pair_and_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -301,7 +320,7 @@ def test_new_release_is_published_only_after_pair_and_state(
     assert deployed == [("1", material.leaf_sha256)]
 
 
-def test_unchanged_certificate_does_not_create_secret_versions(
+def test_healthy_active_release_ignores_corrupt_acme_state_and_does_not_create_versions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     configured = settings()
@@ -310,8 +329,8 @@ def test_unchanged_certificate_does_not_create_secret_versions(
         renewal._release_document(
             configured,
             material,
-            cert_version="7",
-            key_version="9",
+            cert_version="1",
+            key_version="1",
             state_version="4",
             trust_profile=renewal._load_trust_profile(
                 configured.trust_profile_id, trust_pem(material)
@@ -319,10 +338,20 @@ def test_unchanged_certificate_does_not_create_secret_versions(
         ),
         "3",
     )
-    secrets = FakeSecrets({"release": [active.data], "trust": [trust_pem(material)]})
+    secrets = FakeSecrets(
+        {
+            "cert": [material.fullchain],
+            "release": [active.data],
+            "state": [b"not-a-valid-acme-archive"],
+            "trust": [trust_pem(material)],
+        }
+    )
     deployed: list[str] = []
-    monkeypatch.setattr(renewal, "_run_certbot", lambda *args, **kwargs: None)
-    monkeypatch.setattr(renewal, "_load_and_validate_material", lambda *args, **kwargs: material)
+
+    def unexpected_certbot(*args: object, **kwargs: object) -> None:
+        raise AssertionError("healthy certificate must not contact ACME")
+
+    monkeypatch.setattr(renewal, "_run_certbot", unexpected_certbot)
     monkeypatch.setattr(
         renewal,
         "_deploy_release",

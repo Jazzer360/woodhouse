@@ -34,6 +34,7 @@ from tesla_personal_platform.tesla_client.observability import (
     TeslaAPILogContext,
     current_tesla_api_log_context,
 )
+from tesla_personal_platform.tesla_client.requests import NavigationRequest
 
 ROOT = Path(__file__).parents[1]
 ALL_SCOPES = (
@@ -381,6 +382,76 @@ def test_write_uses_proxy_and_records_redacted_success_audit() -> None:
     assert "1234" not in serialized
     assert "secret-access" not in serialized
     assert "secret-refresh" not in serialized
+
+
+def test_navigation_destination_schema_accepts_object_and_redacts_entire_value() -> None:
+    store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
+    instance, _, proxy = service(store)
+    destination = {
+        "address": "123 Private Street",
+        "lat": 37.123456,
+        "lon": -122.123456,
+    }
+
+    instance.call(
+        CONTEXT,
+        "tesla_navigation_request",
+        {
+            "vehicle_id": "veh-one",
+            "type": "share_dest",
+            "value": destination,
+            "locale": "en-US",
+            "timestamp_ms": "1787610000000",
+        },
+    )
+
+    request = cast(NavigationRequest, proxy.calls[0][2]["request"])
+    assert request.value == destination
+    assert store.started[0]["redacted_parameters"] == {
+        "type": "share_dest",
+        "value": "[REDACTED]",
+        "locale": "en-US",
+        "timestamp_ms": "1787610000000",
+    }
+    assert "123 Private Street" not in str(store.started)
+    assert "37.123456" not in str(store.started)
+
+
+def test_navigation_destination_schema_rejects_string_value() -> None:
+    store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
+    instance, _, proxy = service(store)
+
+    with pytest.raises(MCPToolError) as caught:
+        instance.call(
+            CONTEXT,
+            "tesla_navigation_request",
+            {
+                "vehicle_id": "veh-one",
+                "type": "share_dest",
+                "value": "123 Private Street",
+                "locale": "en-US",
+                "timestamp_ms": "1787610000000",
+            },
+        )
+
+    assert caught.value.category == "invalid_arguments"
+    assert not proxy.calls
+    assert not store.started
+
+
+def test_navigation_waypoints_are_redacted_as_one_sensitive_payload() -> None:
+    store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
+    instance, _, _ = service(store)
+    waypoints = '[{"lat":37.123456,"lon":-122.123456}]'
+
+    instance.call(
+        CONTEXT,
+        "tesla_navigation_waypoints_request",
+        {"vehicle_id": "veh-one", "waypoints": waypoints},
+    )
+
+    assert store.started[0]["redacted_parameters"] == {"waypoints": "[REDACTED]"}
+    assert waypoints not in str(store.started)
 
 
 def test_failed_command_keeps_attempt_and_records_safe_error_category() -> None:

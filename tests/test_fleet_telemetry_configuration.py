@@ -282,6 +282,7 @@ def test_profile_uses_deltas_only_for_defensible_measurements() -> None:
     assert profile.fields["Location"].interval_seconds == 5
     assert profile.fields["Location"].minimum_delta == 5
     assert profile.fields["GpsHeading"].interval_seconds == 5
+    assert profile.fields["GpsHeading"].minimum_delta == 5
     assert profile.fields["VehicleSpeed"].interval_seconds == 1
     assert profile.fields["VehicleSpeed"].minimum_delta == 1
     assert profile.fields["VehicleSpeed"].include_fields == ("LongitudinalAcceleration",)

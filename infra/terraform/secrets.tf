@@ -36,6 +36,7 @@ resource "google_secret_manager_secret_iam_member" "certificate_renewer_accessor
   for_each = var.enable_telemetry_certificate_automation ? toset([
     "cloudflare_dns_api_token",
     "telemetry_acme_state",
+    "telemetry_edge_tls_cert",
     "telemetry_edge_tls_release",
     "telemetry_server_ca_profile",
     "telemetry_trust_readiness",

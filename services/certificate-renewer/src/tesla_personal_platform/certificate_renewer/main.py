@@ -144,11 +144,16 @@ def _secret_parent(project_id: str, secret: str) -> str:
 
 
 def _read_secret(
-    client: SecretClient, project_id: str, secret: str, *, missing_ok: bool = False
+    client: SecretClient,
+    project_id: str,
+    secret: str,
+    *,
+    version: str = "latest",
+    missing_ok: bool = False,
 ) -> SecretValue | None:
     try:
         response = client.access_secret_version(
-            request={"name": _secret_version_name(project_id, secret)}
+            request={"name": _secret_version_name(project_id, secret, version)}
         )
     except NotFound:
         if missing_ok:
@@ -205,40 +210,43 @@ def _run_certbot(
     cloudflare_credentials: Path,
     runner: Callable[..., subprocess.CompletedProcess[bytes]],
 ) -> None:
-    result = runner(
-        [
-            "certbot",
-            "certonly",
-            "--server",
-            ACME_SERVER,
-            "--dns-cloudflare",
-            "--dns-cloudflare-credentials",
-            str(cloudflare_credentials),
-            "--dns-cloudflare-propagation-seconds",
-            "60",
-            "--config-dir",
-            str(config_dir),
-            "--work-dir",
-            str(config_dir.parent / "work"),
-            "--logs-dir",
-            str(config_dir.parent / "logs"),
-            "--cert-name",
-            CERT_NAME,
-            "--domain",
-            settings.hostname,
-            "--email",
-            settings.acme_email,
-            "--agree-tos",
-            "--no-eff-email",
-            "--non-interactive",
-            # Woodhouse invokes Certbot only after its lifetime-relative due
-            # threshold is crossed, then forces this one selected lineage.
-            "--force-renewal",
-        ],
-        check=False,
-        capture_output=True,
-        timeout=900,
-    )
+    try:
+        result = runner(
+            [
+                "certbot",
+                "certonly",
+                "--server",
+                ACME_SERVER,
+                "--dns-cloudflare",
+                "--dns-cloudflare-credentials",
+                str(cloudflare_credentials),
+                "--dns-cloudflare-propagation-seconds",
+                "60",
+                "--config-dir",
+                str(config_dir),
+                "--work-dir",
+                str(config_dir.parent / "work"),
+                "--logs-dir",
+                str(config_dir.parent / "logs"),
+                "--cert-name",
+                CERT_NAME,
+                "--domain",
+                settings.hostname,
+                "--email",
+                settings.acme_email,
+                "--agree-tos",
+                "--no-eff-email",
+                "--non-interactive",
+                # Woodhouse invokes Certbot only after its lifetime-relative due
+                # threshold is crossed, then forces this one selected lineage.
+                "--force-renewal",
+            ],
+            check=False,
+            capture_output=True,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise CertbotError("certbot_timeout", -1) from error
     if result.returncode != 0:
         raise CertbotError(
             _certbot_failure_category(result.stdout + b"\n" + result.stderr),
@@ -314,18 +322,30 @@ def _load_and_validate_material(
     live_dir = config_dir / "live" / CERT_NAME
     fullchain = (live_dir / "fullchain.pem").read_bytes()
     private_key = (live_dir / "privkey.pem").read_bytes()
-    certificates = PEM_CERTIFICATE.findall(fullchain)
-    if len(certificates) < 2:
-        raise ValueError("certificate chain is incomplete")
-    leaf = x509.load_pem_x509_certificate(certificates[0])
-    names = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-    if hostname not in names.get_values_for_type(x509.DNSName):
-        raise ValueError("certificate SAN does not contain the telemetry hostname")
-    checked_at = now or datetime.now(UTC)
-    not_before = leaf.not_valid_before_utc
-    not_after = leaf.not_valid_after_utc
-    if not_after < checked_at + minimum_remaining:
-        raise ValueError("certificate validity is shorter than the deployment safety window")
+    return _validate_material(
+        fullchain,
+        private_key,
+        hostname,
+        minimum_remaining=minimum_remaining,
+        now=now,
+    )
+
+
+def _validate_material(
+    fullchain: bytes,
+    private_key: bytes,
+    hostname: str,
+    *,
+    minimum_remaining: timedelta = MINIMUM_ACTIVATION_REMAINING,
+    now: datetime | None = None,
+) -> CertificateMaterial:
+    material = _validate_certificate(
+        fullchain,
+        hostname,
+        minimum_remaining=minimum_remaining,
+        now=now,
+    )
+    leaf = x509.load_pem_x509_certificate(PEM_CERTIFICATE.findall(fullchain)[0])
     key = serialization.load_pem_private_key(private_key, password=None)
     public_format = {
         "encoding": serialization.Encoding.DER,
@@ -336,13 +356,68 @@ def _load_and_validate_material(
     if leaf_public != key_public:
         raise ValueError("certificate and private key do not match")
     return CertificateMaterial(
-        fullchain=fullchain,
+        fullchain=material.fullchain,
         private_key=private_key,
+        leaf_sha256=material.leaf_sha256,
+        fullchain_sha256=material.fullchain_sha256,
+        not_before=material.not_before,
+        not_after=material.not_after,
+    )
+
+
+def _validate_certificate(
+    fullchain: bytes,
+    hostname: str,
+    *,
+    minimum_remaining: timedelta | None = MINIMUM_ACTIVATION_REMAINING,
+    now: datetime | None = None,
+) -> CertificateMaterial:
+    certificates = PEM_CERTIFICATE.findall(fullchain)
+    if len(certificates) < 2:
+        raise ValueError("certificate chain is incomplete")
+    leaf = x509.load_pem_x509_certificate(certificates[0])
+    names = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    if hostname not in names.get_values_for_type(x509.DNSName):
+        raise ValueError("certificate SAN does not contain the telemetry hostname")
+    checked_at = now or datetime.now(UTC)
+    not_before = leaf.not_valid_before_utc
+    not_after = leaf.not_valid_after_utc
+    if minimum_remaining is not None and not_after < checked_at + minimum_remaining:
+        raise ValueError("certificate validity is shorter than the deployment safety window")
+    return CertificateMaterial(
+        fullchain=fullchain,
+        private_key=b"",
         leaf_sha256=leaf.fingerprint(hashes.SHA256()).hex(),
         fullchain_sha256=hashlib.sha256(fullchain).hexdigest(),
         not_before=not_before,
         not_after=not_after,
     )
+
+
+def _active_release_material(
+    client: SecretClient,
+    settings: Settings,
+    active: dict[str, object],
+) -> CertificateMaterial:
+    cert_value = _read_secret(
+        client,
+        settings.project_id,
+        settings.cert_secret,
+        version=str(active["cert_version"]),
+    )
+    if cert_value is None:
+        raise ValueError("active TLS release certificate is missing")
+    material = _validate_certificate(
+        cert_value.data,
+        settings.hostname,
+        minimum_remaining=None,
+    )
+    if (
+        material.leaf_sha256 != active["leaf_sha256"]
+        or material.fullchain_sha256 != active["fullchain_sha256"]
+    ):
+        raise ValueError("active TLS release material does not match its manifest")
+    return material
 
 
 def _certificate_is_due(material: CertificateMaterial, *, now: datetime | None = None) -> bool:
@@ -575,6 +650,24 @@ def renew_certificate(
     trust = _load_trust_profile(settings.trust_profile_id, trust_value.data)
     with tempfile.TemporaryDirectory(prefix="tpp-acme-") as temporary:
         root = Path(temporary)
+        if (
+            active is not None
+            and active.get("trust_profile_id") == trust.profile_id
+            and active.get("trust_profile_sha256") == trust.sha256
+        ):
+            active_material = _active_release_material(secret_client, settings, active)
+            if not _certificate_is_due(active_material):
+                _validate_candidate_against_trust_profile(active_material, trust, root, runner)
+                _deploy_release(
+                    session,
+                    settings,
+                    release_version=str(active["release_version"]),
+                    leaf_sha256=active_material.leaf_sha256,
+                    runner=runner,
+                    sleeper=sleeper,
+                )
+                return "healthy"
+
         config_dir = root / "letsencrypt"
         config_dir.mkdir(mode=0o700)
         state = _read_secret(

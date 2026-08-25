@@ -154,7 +154,7 @@ Arguments:
 | `start_enabled` | yes | boolean | Tesla request field. |
 | `start_time` | yes | integer | RFC 3339 timestamp for history reads, or minutes after local midnight for schedules. |
 | `end_enabled` | yes | boolean | Tesla request field. |
-| `end_time` | yes | integer | Schedule time in minutes after local midnight. |
+| `end_time` | yes | integer | RFC 3339 timestamp for history reads, or minutes after local midnight for schedules. |
 | `one_time` | yes | boolean | Tesla request field. |
 | `enabled` | yes | boolean | Tesla request field. |
 
@@ -395,7 +395,7 @@ Arguments:
 |---|---:|---|---|
 | `vehicle_id` | no | string | Opaque Woodhouse vehicle ID. Omit only when exactly one eligible vehicle exists. |
 | `start_time` | no | string; date-time | RFC 3339 timestamp for history reads, or minutes after local midnight for schedules. |
-| `end_time` | no | string; date-time | Schedule time in minutes after local midnight. |
+| `end_time` | no | string; date-time | RFC 3339 timestamp for history reads, or minutes after local midnight for schedules. |
 | `page` | no | integer; >= 1 | Tesla request field. |
 | `page_size` | no | integer; >= 1 and <= 100 | Requested page size, at most 100. |
 | `sort_by` | no | string | Tesla request field. |
@@ -844,7 +844,7 @@ Arguments:
 |---|---:|---|---|
 | `vehicle_id` | no | string | Opaque Woodhouse vehicle ID. Omit only when exactly one eligible vehicle exists. |
 | `type` | yes | string | Tesla request field. |
-| `value` | yes | string | Tesla structured navigation destination object; treated as sensitive. |
+| `value` | yes | object | Tesla structured navigation destination object; treated as sensitive. |
 | `locale` | yes | string | Tesla request field. |
 | `timestamp_ms` | yes | string | Navigation request timestamp represented as milliseconds. |
 
@@ -1731,7 +1731,7 @@ Arguments:
 | Name | Required | Type/constraints | Meaning |
 |---|---:|---|---|
 | `vehicle_id` | no | string | Opaque Woodhouse vehicle ID. Omit only when exactly one eligible vehicle exists. |
-| `endpoints` | yes | array; items: string | One or more explicit `vehicle_data` sections; broad polling is intentionally forbidden. |
+| `endpoints` | yes | array; items: string; at least 1 item(s); unique items | One or more explicit `vehicle_data` sections; duplicates are rejected. |
 
 Result: a sanitized structured result with `correlation_id`. The Tesla response remains live Fleet API data, not BigQuery history.
 
@@ -1752,7 +1752,7 @@ Arguments:
 |---|---:|---|---|
 | `vehicle_id` | no | string | Opaque Woodhouse vehicle ID. Omit only when exactly one eligible vehicle exists. |
 
-Result: a sanitized structured result with `correlation_id`. Commands also return Tesla's success/reason outcome and, when an automatic wake was needed, `wake_correlation_id`.
+Result: a sanitized structured result with `correlation_id`. The explicit wake returns the vehicle identity, display name, and live state.
 
 ### `tesla_window_control`
 

@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from typing import Any
 
 from tesla_personal_platform.mcp_gateway.mcp_tools import MCP_TOOL_SPECS, ToolSpec
+from tesla_personal_platform.tesla_client.coverage import COMMAND_NAMES
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "docs" / "mcp-tool-reference.md"
@@ -118,8 +120,8 @@ _ARGUMENT_NOTES = {
     "command": "Window action.",
     "days_of_week": "Tesla schedule weekday encoding.",
     "driver_temp": "Driver-zone target temperature in Tesla's API units.",
-    "end_time": "Schedule time in minutes after local midnight.",
-    "endpoints": "One or more explicit `vehicle_data` sections; broad polling is intentionally forbidden.",
+    "end_time": "RFC 3339 timestamp for history reads, or minutes after local midnight for schedules.",
+    "endpoints": "One or more explicit `vehicle_data` sections; duplicates are rejected.",
     "id": "Tesla schedule or Supercharger identifier, depending on the tool.",
     "lat": "Latitude; sensitive and excluded from command audit parameters.",
     "limit_mph": "Maximum speed in miles per hour.",
@@ -148,6 +150,8 @@ def endpoint(spec: ToolSpec) -> tuple[str, str]:
     known = _ENDPOINTS.get(spec.name)
     if known is not None:
         return known
+    if not spec.write or spec.client_method not in COMMAND_NAMES:
+        raise ValueError(f"MCP endpoint mapping is missing for {spec.name}")
     return "POST", f"/api/1/vehicles/{{vin}}/command/{spec.client_method}"
 
 
@@ -177,6 +181,10 @@ def schema_summary(schema: dict[str, Any]) -> str:
         pieces.append(str(schema["format"]))
     if schema.get("items"):
         pieces.append(f"items: {schema_summary(schema['items'])}")
+    if "minItems" in schema:
+        pieces.append(f"at least {schema['minItems']} item(s)")
+    if schema.get("uniqueItems") is True:
+        pieces.append("unique items")
     return "; ".join(pieces)
 
 
@@ -216,10 +224,14 @@ def tool_section(spec: ToolSpec) -> list[str]:
             (
                 "Result: a sanitized structured result with `correlation_id`. "
                 + (
-                    "Commands also return Tesla's success/reason outcome and, when an automatic "
-                    "wake was needed, `wake_correlation_id`."
-                    if spec.write
-                    else "The Tesla response remains live Fleet API data, not BigQuery history."
+                    "The explicit wake returns the vehicle identity, display name, and live state."
+                    if spec.client_method == "wake_up"
+                    else (
+                        "Commands also return Tesla's success/reason outcome and, when an "
+                        "automatic wake was needed, `wake_correlation_id`."
+                        if spec.write
+                        else "The Tesla response remains live Fleet API data, not BigQuery history."
+                    )
                 )
             ),
             "",
@@ -228,7 +240,7 @@ def tool_section(spec: ToolSpec) -> list[str]:
     return lines
 
 
-def main() -> None:
+def render_reference() -> str:
     undocumented_commands = {
         spec.client_method
         for spec in MCP_TOOL_SPECS
@@ -276,7 +288,25 @@ def main() -> None:
     lines.extend(["", "## Detailed tools", ""])
     for spec in MCP_TOOL_SPECS:
         lines.extend(tool_section(spec))
-    OUTPUT.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Fail when the checked-in reference differs from generated output.",
+    )
+    args = parser.parse_args()
+    rendered = render_reference()
+    if args.check:
+        if not OUTPUT.is_file() or OUTPUT.read_text(encoding="utf-8") != rendered:
+            raise SystemExit(
+                "docs/mcp-tool-reference.md is stale; regenerate it with this script"
+            )
+        return
+    OUTPUT.write_text(rendered, encoding="utf-8")
 
 
 if __name__ == "__main__":
