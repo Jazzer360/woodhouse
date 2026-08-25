@@ -196,6 +196,18 @@ remain explicitly marked. Query callers should filter `source_timestamp`,
 view chain. `semantic_events` is intentionally absent until Phase 10 produces
 real semantic events.
 
+The view definitions persist, but their result rows do not. BigQuery expands
+and evaluates each logical view when it is queried; no application process
+iterates over the dataset when a view is created. BigQuery can push compatible
+filters into the underlying source-time partitions and can reuse an eligible
+query-result cache, but callers must not treat a logical view as a precomputed
+table. The session/window views may still scan substantial raw history as the
+dataset grows. Query-job byte metadata and the MCP dry-run ceiling provide the
+signal for promoting a repeatedly expensive derivation to an incremental,
+partitioned rebuildable table. Native materialized views may be used only when
+the derivation fits BigQuery's restricted materialized-view SQL; raw history
+remains authoritative either way.
+
 Initial useful concepts:
 
 ```text

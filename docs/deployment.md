@@ -161,7 +161,9 @@ The idempotent `add-user` workflow—not shared Terraform—will create `tesla_u
 
 - `OWNER` on that dataset to the dormant, non-impersonatable `tpp-dataset-owner` identity, as required by BigQuery;
 - `roles/bigquery.dataEditor` on that dataset to `tpp-telemetry-processor`;
-- `roles/bigquery.dataViewer` on that dataset to `tpp-mcp-gateway`.
+- `roles/bigquery.dataViewer` on that dataset to `tpp-mcp-gateway`;
+- `roles/bigquery.dataViewer` on that dataset to the approved user's normalized
+  invitation email, for direct inspection of only their own history.
 
 It also creates `raw_telemetry_events`, partitions it daily by
 `source_timestamp`, clusters it by `vehicle_id, record_type`, and configures no
@@ -171,15 +173,19 @@ table expiration. Phase 9 additionally creates or updates the dependency-ordered
 Re-run `add-user` once for each existing approved user after Phase 9 is deployed;
 the operation is idempotent and does not alter or delete existing raw data.
 
-The three ACL entries above are the permanent contract. During managed view
+The four ACL entries above are the permanent contract. During managed view
 creation/update only, `add-user` temporarily adds `tpp-user-admin` as `READER`
 because BigQuery refuses to validate a view unless its creator has
 `tables.getData` on each referenced object. A `finally` cleanup restores the
-three-entry contract on success or failure. This narrowly scoped, short-lived
+four-entry contract on success or failure. This narrowly scoped, short-lived
 grant is an implementation requirement of BigQuery view validation, not a
 runtime analytics permission.
 
-The gateway already has project-level `roles/bigquery.jobUser` so it can run scoped queries. No caller supplies a dataset ID, and no shared project-level data-reader/writer role is granted.
+The gateway already has project-level `roles/bigquery.jobUser` so it can run
+scoped queries. The operator principal also has that project-level job role, so
+its per-user dataset reader grant supports console queries. `add-user` does not
+grant a project job role to every approved user. No caller supplies a dataset
+ID, and no shared project-level data-reader/writer role is granted.
 
 The Python BigQuery client serializes these two dataset grants as legacy dataset
 ACL roles `READER` and `WRITER`; for service-account principals those are the
@@ -453,12 +459,19 @@ The command transactionally allocates stable random `user_id` and `dataset_id`
 values, creates or repairs the `us-central1` dataset with no default table or
 partition expiration, grants the dormant `tpp-dataset-owner` identity the direct
 owner entry required by BigQuery, and enforces only gateway read and processor
-write runtime ACLs. While creating/updating Phase 9 views it briefly grants its
-own keyless identity dataset read solely for BigQuery validation, removes that
-entry in `finally`, then
+write runtime ACLs plus approved-user read access to only that user's dataset.
+While creating/updating Phase 9 views it briefly grants its own keyless identity
+dataset read solely for BigQuery validation, removes that entry in `finally`, then
 marks the invitation active. Re-running the command reuses the
 same identifiers and repairs drift. If dataset provisioning fails for a new
 invitation, the record remains disabled and a safe retry completes it.
+
+The approved-user reader entry is intentionally authoritative: manual grants
+not represented by this workflow are removed as ACL drift on the next repair.
+The operator's Terraform-managed project-level `roles/bigquery.jobUser` grant,
+together with this dataset-level reader entry, permits BigQuery console
+inspection and read-only queries without granting access to another user's
+dataset.
 
 On Homer's first protected request, the gateway requires a verified
 `homer@example.com` claim and atomically binds its configured issuer/subject. Later

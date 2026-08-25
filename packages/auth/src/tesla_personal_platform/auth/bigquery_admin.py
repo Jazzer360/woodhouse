@@ -9,7 +9,7 @@ from tesla_personal_platform.shared_models import RAW_TELEMETRY_SCHEMA, RAW_TELE
 
 DATA_VIEWER_ACCESS_ROLE = "READER"
 DATA_EDITOR_ACCESS_ROLE = "WRITER"
-SERVICE_ACCOUNT_ENTITY_TYPE = "userByEmail"
+USER_BY_EMAIL_ENTITY_TYPE = "userByEmail"
 DATASET_DESCRIPTION = "Isolated Tesla history for one approved platform user."
 DATASET_LABELS = {
     "application": "tesla-personal-platform",
@@ -23,29 +23,35 @@ RAW_TABLE_LABELS = {
 }
 
 
-def restricted_service_account_access(
+def restricted_dataset_access(
     existing: Iterable[bigquery.AccessEntry],
     owner_service_account: str,
     gateway_service_account: str,
     processor_service_account: str,
+    approved_user_email: str,
 ) -> list[bigquery.AccessEntry]:
-    """Return the exact isolated ACL, including BigQuery's required direct owner."""
+    """Return the exact isolated ACL for one approved user's dataset."""
     del existing
     return [
         bigquery.AccessEntry(
             "OWNER",
-            SERVICE_ACCOUNT_ENTITY_TYPE,
+            USER_BY_EMAIL_ENTITY_TYPE,
             owner_service_account,
         ),
         bigquery.AccessEntry(
             DATA_VIEWER_ACCESS_ROLE,
-            SERVICE_ACCOUNT_ENTITY_TYPE,
+            USER_BY_EMAIL_ENTITY_TYPE,
             gateway_service_account,
         ),
         bigquery.AccessEntry(
             DATA_EDITOR_ACCESS_ROLE,
-            SERVICE_ACCOUNT_ENTITY_TYPE,
+            USER_BY_EMAIL_ENTITY_TYPE,
             processor_service_account,
+        ),
+        bigquery.AccessEntry(
+            DATA_VIEWER_ACCESS_ROLE,
+            USER_BY_EMAIL_ENTITY_TYPE,
+            approved_user_email,
         ),
     ]
 
@@ -54,19 +60,21 @@ def temporary_view_provisioning_access(
     owner_service_account: str,
     gateway_service_account: str,
     processor_service_account: str,
+    approved_user_email: str,
     admin_service_account: str,
 ) -> list[bigquery.AccessEntry]:
     """Add the narrow read grant BigQuery requires while validating view SQL."""
     return [
-        *restricted_service_account_access(
+        *restricted_dataset_access(
             (),
             owner_service_account,
             gateway_service_account,
             processor_service_account,
+            approved_user_email,
         ),
         bigquery.AccessEntry(
             DATA_VIEWER_ACCESS_ROLE,
-            SERVICE_ACCOUNT_ENTITY_TYPE,
+            USER_BY_EMAIL_ENTITY_TYPE,
             admin_service_account,
         ),
     ]
@@ -100,11 +108,12 @@ class BigQueryDatasetProvisioner:
         dataset.description = DATASET_DESCRIPTION
         dataset.default_table_expiration_ms = None
         dataset.default_partition_expiration_ms = None
-        dataset.access_entries = restricted_service_account_access(
+        dataset.access_entries = restricted_dataset_access(
             (),
             self._owner_service_account,
             self._gateway_service_account,
             self._processor_service_account,
+            user.invitation_email,
         )
         dataset.labels = DATASET_LABELS.copy()
         self._client.create_dataset(dataset, exists_ok=True, timeout=30)
@@ -118,11 +127,12 @@ class BigQueryDatasetProvisioner:
         current.default_partition_expiration_ms = None
         current.description = DATASET_DESCRIPTION
         current.labels = DATASET_LABELS.copy()
-        current.access_entries = restricted_service_account_access(
+        current.access_entries = restricted_dataset_access(
             current.access_entries,
             self._owner_service_account,
             self._gateway_service_account,
             self._processor_service_account,
+            user.invitation_email,
         )
         self._client.update_dataset(
             current,
@@ -186,9 +196,9 @@ class BigQueryDatasetProvisioner:
             ["description", "expires", "labels"],
             timeout=30,
         )
-        self._provision_analytics_views(user.dataset_id)
+        self._provision_analytics_views(user.dataset_id, user.invitation_email)
 
-    def _provision_analytics_views(self, dataset_id: str) -> None:
+    def _provision_analytics_views(self, dataset_id: str, approved_user_email: str) -> None:
         """Validate views with transient read, then restore the exact permanent ACL."""
         dataset_reference = bigquery.DatasetReference(self._project_id, dataset_id)
         dataset = self._client.get_dataset(dataset_reference, timeout=30)
@@ -196,6 +206,7 @@ class BigQueryDatasetProvisioner:
             self._owner_service_account,
             self._gateway_service_account,
             self._processor_service_account,
+            approved_user_email,
             self._admin_service_account,
         )
         self._client.update_dataset(dataset, ["access_entries"], timeout=30)
@@ -229,10 +240,11 @@ class BigQueryDatasetProvisioner:
                 )
         finally:
             restored = self._client.get_dataset(dataset_reference, timeout=30)
-            restored.access_entries = restricted_service_account_access(
+            restored.access_entries = restricted_dataset_access(
                 restored.access_entries,
                 self._owner_service_account,
                 self._gateway_service_account,
                 self._processor_service_account,
+                approved_user_email,
             )
             self._client.update_dataset(restored, ["access_entries"], timeout=30)
