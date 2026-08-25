@@ -2,8 +2,11 @@
 
 # ruff: noqa: S608 -- all interpolated identifiers pass _identifier before SQL construction.
 
+import json
 from dataclasses import dataclass
 from typing import Final
+
+from .telemetry_fields import category_sample_specs, telemetry_catalog_entries
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +30,87 @@ def _identifier(value: str) -> str:
     if not value or not value.replace("-", "").replace("_", "").isalnum():
         raise ValueError("BigQuery project and dataset identifiers must be opaque safe identifiers")
     return value
+
+
+def _string_literal(value: str) -> str:
+    return json.dumps(value, ensure_ascii=True)
+
+
+def _field_catalog_sql() -> str:
+    rows: list[str] = []
+    for entry in telemetry_catalog_entries():
+        interval = (
+            str(entry.interval_seconds)
+            if entry.interval_seconds is not None
+            else "CAST(NULL AS INT64)"
+        )
+        delta = (
+            repr(entry.minimum_delta)
+            if entry.minimum_delta is not None
+            else "CAST(NULL AS FLOAT64)"
+        )
+        includes = (
+            "ARRAY<STRING>["
+            + ", ".join(_string_literal(value) for value in entry.include_fields)
+            + "]"
+        )
+        exclusion = (
+            _string_literal(entry.exclusion_reason)
+            if entry.exclusion_reason is not None
+            else "CAST(NULL AS STRING)"
+        )
+        rows.append(
+            "STRUCT("
+            f"{_string_literal(entry.field_name)} AS field_name, "
+            f"{_string_literal(entry.category)} AS category, "
+            f"{_string_literal(entry.value_type)} AS value_type, "
+            f"{_string_literal(entry.description)} AS description, "
+            f"{'TRUE' if entry.configured else 'FALSE'} AS configured, "
+            f"{interval} AS interval_seconds, "
+            f"{delta} AS minimum_delta, "
+            f"{includes} AS include_fields, "
+            f"{exclusion} AS exclusion_reason, "
+            f"{_string_literal(entry.profile_version)} AS profile_version, "
+            f"{_string_literal(entry.schema_version)} AS schema_version, "
+            f"{_string_literal(entry.target_client_version)} AS target_client_version"
+            ")"
+        )
+    return "SELECT * FROM UNNEST([\n  " + ",\n  ".join(rows) + "\n])"
+
+
+def _category_sample_sql(observations_table: str, category_index: int) -> str:
+    spec = category_sample_specs()[category_index]
+    field_names = ", ".join(_string_literal(field.field_name) for field in spec.fields)
+    aggregates: list[str] = []
+    for column in spec.columns:
+        condition = f"field_name = {_string_literal(column.field_name)} AND NOT is_invalid"
+        value = f"IF({condition}, {column.value_expression}, NULL)"
+        aggregate = "LOGICAL_OR" if column.field_type == "BOOLEAN" else "MAX"
+        aggregates.append(f"  {aggregate}({value}) AS {column.name}")
+    projected = ",\n".join(aggregates)
+    return f"""
+SELECT
+  source_timestamp,
+  MAX(ingested_at) AS ingested_at,
+  MAX(processed_at) AS processed_at,
+  vehicle_id,
+  pubsub_message_id,
+  MAX(transport_message_id) AS transport_message_id,
+  MAX(telemetry_config_version) AS telemetry_config_version,
+  MAX(telemetry_config_hash) AS telemetry_config_hash,
+  MAX(telemetry_client_version) AS telemetry_client_version,
+  ARRAY_AGG(DISTINCT field_name ORDER BY field_name) AS observed_fields,
+  ARRAY_AGG(
+    DISTINCT IF(is_invalid, field_name, NULL)
+    IGNORE NULLS
+    ORDER BY IF(is_invalid, field_name, NULL)
+  )
+    AS invalid_fields,
+{projected}
+FROM {observations_table}
+WHERE field_name IN ({field_names})
+GROUP BY source_timestamp, vehicle_id, pubsub_message_id
+""".strip()
 
 
 def analytics_views(project_id: str, dataset_id: str) -> tuple[AnalyticsView, ...]:
@@ -578,12 +662,31 @@ LEFT JOIN drive_daily AS drive USING (summary_date, vehicle_id)
 LEFT JOIN charge_daily AS charge USING (summary_date, vehicle_id)
 """.strip()
 
+    field_catalog = _field_catalog_sql()
+    category_samples = tuple(
+        AnalyticsView(
+            spec.view_name,
+            (
+                f"Sparse exact-emission {spec.category.lower()} samples. NULL values were not "
+                "validly emitted in that message; inspect observed_fields and invalid_fields."
+            ),
+            _category_sample_sql(table("telemetry_observations"), index),
+        )
+        for index, spec in enumerate(category_sample_specs())
+    )
+
     return (
+        AnalyticsView(
+            "telemetry_field_catalog",
+            "Pinned Tesla field taxonomy and reviewed Woodhouse collection policy.",
+            field_catalog,
+        ),
         AnalyticsView(
             "telemetry_observations",
             "Typed Fleet Telemetry datum layer with exact Pub/Sub retry de-duplication.",
             observations,
         ),
+        *category_samples,
         AnalyticsView(
             "vehicle_state_changes",
             "Successive valid typed field transitions.",

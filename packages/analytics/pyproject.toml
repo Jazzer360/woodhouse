@@ -7,10 +7,12 @@ dependencies = [
   "google-cloud-bigquery>=3.30,<4",
   "sqlglot==30.17.0",
   "tpp-shared-models",
+  "tpp-tesla-client",
 ]
 
 [tool.uv.sources]
 tpp-shared-models = { workspace = true }
+tpp-tesla-client = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

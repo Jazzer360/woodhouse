@@ -168,8 +168,10 @@ The idempotent `add-user` workflow—not shared Terraform—will create `tesla_u
 It also creates `raw_telemetry_events`, partitions it daily by
 `source_timestamp`, clusters it by `vehicle_id, record_type`, and configures no
 table expiration. Phase 9 additionally creates or updates the dependency-ordered
-`telemetry_observations`, `vehicle_state_changes`, `drives`,
-`charge_sessions`, `media_history`, and `daily_vehicle_summary` logical views.
+`telemetry_field_catalog`, `telemetry_observations`, `charging_samples`,
+`climate_samples`, `driving_samples`, `location_samples`, `media_samples`,
+`vehicle_state_changes`, `drives`, `charge_sessions`, `media_history`, and
+`daily_vehicle_summary` logical views.
 Re-run `add-user` once for each existing approved user after Phase 9 is deployed;
 the operation is idempotent and does not alter or delete existing raw data.
 

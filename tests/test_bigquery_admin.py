@@ -179,7 +179,13 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
     }
     views = client.created_tables[1:]
     assert [view.table_id for view in views] == [
+        "telemetry_field_catalog",
         "telemetry_observations",
+        "charging_samples",
+        "climate_samples",
+        "driving_samples",
+        "location_samples",
+        "media_samples",
         "vehicle_state_changes",
         "drives",
         "charge_sessions",
