@@ -374,3 +374,35 @@ def test_user_admin_has_no_key_and_only_dataset_provisioning_permissions() -> No
         iam.index('resource "google_service_account_iam_member" "user_admin_impersonator"') :
     ]
     assert 'platform["dataset_owner"]' not in impersonation
+
+
+def test_analytics_view_reconciler_has_narrow_metadata_and_allowlist_permissions() -> None:
+    source = terraform_source()
+    iam = (TERRAFORM_ROOT / "iam.tf").read_text(encoding="utf-8")
+    service_accounts = (TERRAFORM_ROOT / "service_accounts.tf").read_text(encoding="utf-8")
+
+    assert "google_service_account_key" not in source
+    assert 'account_id   = "tpp-analytics-view-reconciler"' in service_accounts
+    role_start = iam.index('resource "google_project_iam_custom_role" "analytics_view_reconciler"')
+    role_end = iam.index('resource "google_project_iam_member" "analytics_view_reconciler"')
+    role = iam[role_start:role_end]
+    assert '"datastore.entities.get"' in role
+    assert '"datastore.entities.list"' in role
+    assert '"bigquery.datasets.create"' not in role
+    assert '"bigquery.datasets.get"' in role
+    assert '"bigquery.datasets.update"' in role
+    assert '"bigquery.tables.create"' in role
+    assert '"bigquery.tables.delete"' in role
+    assert '"bigquery.tables.get"' in role
+    assert '"bigquery.tables.list"' in role
+    assert '"bigquery.tables.update"' in role
+    assert "bigquery.jobs" not in role
+    assert "bigquery.tables.getData" not in role
+    assert (
+        '"analytics_view_reconciler"'
+        in iam[
+            iam.index(
+                'resource "google_service_account_iam_member" "cloud_build_identity_token_creator"'
+            ) : iam.index('resource "google_project_iam_member" "admin_iap_tunnel"')
+        ]
+    )

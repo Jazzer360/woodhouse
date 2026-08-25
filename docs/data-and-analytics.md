@@ -172,8 +172,10 @@ Historical chronology uses source time. Transport health diagnostics use both.
 
 Raw truth remains permanent. Build derived views/materialized tables on top.
 
-Phase 9 provisions the following dependency-ordered logical views in every
-approved user's existing private dataset whenever `add-user` is run:
+Phase 9 defines the following dependency-ordered logical views. `add-user`
+installs them for a new or repaired user, and the dedicated main-merge analytics
+reconciler updates the complete set in every active user's existing private
+dataset whenever the source definitions change:
 
 The typed `Value` mapping was rechecked on 2026-08-24 against Tesla's current
 official `fleet-telemetry/protos/vehicle_data.proto`. Known scalar enum oneofs
@@ -219,6 +221,16 @@ signal for promoting a repeatedly expensive derivation to an incremental,
 partitioned rebuildable table. Native materialized views may be used only when
 the derivation fits BigQuery's restricted materialized-view SQL; raw history
 remains authoritative either way.
+
+The reconciler creates or updates every source-defined view, records a short
+definition hash in its labels, and then removes stale objects only when they are
+BigQuery views carrying the complete Woodhouse managed-analytics label set.
+Raw tables, user-created views, and other unmanaged objects are never deletion
+candidates. It temporarily adds only its dedicated service identity as a
+dataset reader for BigQuery SQL validation and restores the exact prior ACL in
+`finally`, including on failure. Active tenant dataset IDs come only from the
+trusted Firestore allowlist; the build accepts no caller-supplied user or
+dataset selector.
 
 ### Session boundary rules
 

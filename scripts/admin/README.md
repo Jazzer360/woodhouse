@@ -35,15 +35,32 @@ uv run python scripts/admin/reset-user-identity \
 The confirmation protects against resetting the wrong tenant. The operation
 preserves dataset, vehicle, Tesla connection, and historical data.
 
-After Phase 9 is deployed, re-run `add-user` once for every existing account.
-The same idempotent command creates/repairs that user's non-expiring,
-source-time-partitioned `raw_telemetry_events` table and all rebuildable
-analytical views—including the pinned field catalog and wide dashboard sample
-views—without deleting data. It also preserves a dataset-level
+After the merge-triggered Phase 9 analytics reconciler is bootstrapped,
+source-definition changes automatically synchronize the managed view set for
+every active account. `add-user` uses the same idempotent view reconciler for a
+new or repaired user's non-expiring, source-time-partitioned
+`raw_telemetry_events` table and rebuildable analytical views. It also preserves a dataset-level
 reader grant for the approved user's own invitation email. An operator who has
 the separately Terraform-managed project-level BigQuery job role can therefore
 inspect and query their own dataset in the Cloud console without a manual ACL
 edit; no user receives access to another user's dataset.
+
+An operator may invoke the same all-active-user reconciliation explicitly for
+repair. Run it only with keyless ADC impersonating the Terraform-managed
+reconciler (or `tpp-user-admin` during the one-time bootstrap):
+
+```bash
+uv run python scripts/admin/sync-analytics-views \
+  --project-id woodhouse-506215 \
+  --reconciler-service-account=tpp-analytics-view-reconciler@woodhouse-506215.iam.gserviceaccount.com
+```
+
+Before the dedicated reconciler IAM is bootstrapped, impersonate
+`tpp-user-admin`, pass that identity as `--reconciler-service-account`, and add
+`--skip-stale-removal`. The bootstrap run updates/creates every desired view but
+does not require the user administrator to receive table-list/delete
+permissions. Once the dedicated trigger exists, its merge runs own the safe
+stale-view cleanup policy.
 
 The commands never accept or print a token, secret, service-account key, or
 Tesla credential. See [`docs/deployment.md`](../../docs/deployment.md#manual-add-homer-workflow)

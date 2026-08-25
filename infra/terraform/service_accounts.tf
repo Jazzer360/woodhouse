@@ -32,6 +32,10 @@ locals {
       account_id   = "tpp-build-deployer"
       display_name = "Tesla Personal Platform application deployer"
     }
+    analytics_view_reconciler = {
+      account_id   = "tpp-analytics-view-reconciler"
+      display_name = "Tesla Personal Platform analytics view reconciler"
+    }
     user_admin = {
       account_id   = "tpp-user-admin"
       display_name = "Tesla Personal Platform manual user administrator"

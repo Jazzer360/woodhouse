@@ -168,3 +168,33 @@ resource "google_cloudbuild_trigger" "main_certificate_renewer" {
     }
   }
 }
+
+resource "google_cloudbuild_trigger" "main_analytics_views" {
+  count = var.cloud_build_repository == null ? 0 : 1
+
+  project            = var.project_id
+  location           = var.region
+  name               = "tpp-main-analytics-views"
+  description        = "Synchronize source-defined analytics views for every active user"
+  filename           = "cloudbuild.analytics-views.yaml"
+  service_account    = google_service_account.platform["analytics_view_reconciler"].id
+  include_build_logs = "INCLUDE_BUILD_LOGS_WITH_STATUS"
+  included_files = [
+    "cloudbuild.analytics-views.yaml",
+    "scripts/admin/sync-analytics-views",
+    "packages/analytics/**",
+    "packages/auth/**",
+    "packages/shared-models/**",
+    "packages/tesla-client/**",
+    "pyproject.toml",
+    "uv.lock",
+  ]
+
+  repository_event_config {
+    repository = var.cloud_build_repository
+
+    push {
+      branch = "main$"
+    }
+  }
+}
