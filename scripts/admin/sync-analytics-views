@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Synchronize source-defined analytics views for all active users."""
+
+from tesla_personal_platform.auth.cli import sync_analytics_views_main
+
+raise SystemExit(sync_analytics_views_main())

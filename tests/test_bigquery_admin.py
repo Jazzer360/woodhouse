@@ -3,9 +3,11 @@
 import pytest
 from google.cloud import bigquery
 from tesla_personal_platform.auth.bigquery_admin import (
+    ANALYTICS_VIEW_LABELS,
+    AnalyticsViewReconciler,
     BigQueryDatasetProvisioner,
     restricted_dataset_access,
-    temporary_view_provisioning_access,
+    temporary_dataset_reader_access,
 )
 from tesla_personal_platform.auth.models import AllowedUser, UserStatus
 
@@ -44,6 +46,7 @@ class RecordingBigQueryClient:
         self.dataset_access_snapshots: list[set[tuple[str, str, str]]] = []
         self.created_tables: list[bigquery.Table] = []
         self.updated_table_fields: list[list[str]] = []
+        self.deleted_table_ids: list[str] = []
         self.fail_view_creation = fail_view_creation
 
     def create_dataset(
@@ -85,6 +88,11 @@ class RecordingBigQueryClient:
         del exists_ok, timeout
         if self.fail_view_creation and table.view_query is not None:
             raise RuntimeError("view validation failed")
+        if table.view_query is not None:
+            table._properties["type"] = "VIEW"
+        for current in self.created_tables:
+            if current.reference == table.reference:
+                return current
         self.created_tables.append(table)
         return table
 
@@ -106,6 +114,24 @@ class RecordingBigQueryClient:
         del timeout
         self.updated_table_fields.append(fields)
         return table
+
+    def list_tables(self, dataset: object, *, timeout: int) -> list[bigquery.Table]:
+        del dataset, timeout
+        return list(self.created_tables)
+
+    def delete_table(
+        self,
+        table: object,
+        *,
+        not_found_ok: bool,
+        timeout: int,
+    ) -> None:
+        del not_found_ok, timeout
+        reference_text = str(table)
+        self.created_tables = [
+            current for current in self.created_tables if str(current.reference) != reference_text
+        ]
+        self.deleted_table_ids.append(reference_text.rsplit(".", 1)[-1])
 
 
 def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
@@ -201,6 +227,8 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
     assert all(view.view_query for view in views)
     assert all(view.view_use_legacy_sql is False for view in views)
     assert all(view.labels["layer"] == "analytics" for view in views)
+    assert all(view.labels["managed_by"] == "analytics-view-reconciler" for view in views)
+    assert all(len(view.labels["definition_hash"]) == 16 for view in views)
     assert all(
         set(fields) == {"description", "labels", "view_query", "view_use_legacy_sql"}
         for fields in client.updated_table_fields[1:]
@@ -253,21 +281,65 @@ def test_view_validation_failure_restores_permanent_dataset_acl() -> None:
     }
 
 
-def test_temporary_view_access_adds_only_admin_read() -> None:
-    access = temporary_view_provisioning_access(
-        "dataset-owner@example.iam",
-        "gateway@example.iam",
-        "processor@example.iam",
-        "homer@example.com",
-        "admin@example.iam",
-    )
+def test_temporary_view_access_preserves_acl_and_adds_only_reconciler_read() -> None:
+    existing = [
+        bigquery.AccessEntry("OWNER", "userByEmail", "dataset-owner@example.iam"),
+        bigquery.AccessEntry("READER", "userByEmail", "homer@example.com"),
+    ]
+    access = temporary_dataset_reader_access(existing, "admin@example.iam")
 
     assert {(entry.role, entry.entity_id) for entry in access} == {
         ("OWNER", "dataset-owner@example.iam"),
-        ("READER", "gateway@example.iam"),
-        ("WRITER", "processor@example.iam"),
         ("READER", "homer@example.com"),
         ("READER", "admin@example.iam"),
+    }
+
+
+def test_reconciler_removes_only_stale_labeled_views_and_restores_exact_acl() -> None:
+    current = bigquery.Dataset("project.tesla_u_homer")
+    current.location = "us-central1"
+    current.access_entries = [
+        bigquery.AccessEntry("OWNER", "userByEmail", "dataset-owner@example.iam"),
+        bigquery.AccessEntry("READER", "userByEmail", "homer@example.com"),
+    ]
+    client = RecordingBigQueryClient(current)
+
+    stale = bigquery.Table("project.tesla_u_homer.retired_managed_view")
+    stale._properties["type"] = "VIEW"
+    stale.labels = {**ANALYTICS_VIEW_LABELS, "managed_by": "add-user"}
+    stale.view_query = "SELECT 1"
+    unmanaged = bigquery.Table("project.tesla_u_homer.personal_view")
+    unmanaged._properties["type"] = "VIEW"
+    unmanaged.labels = {"managed_by": "user"}
+    unmanaged.view_query = "SELECT 1"
+    raw = bigquery.Table("project.tesla_u_homer.raw_telemetry_events")
+    raw._properties["type"] = "TABLE"
+    raw.labels = {**ANALYTICS_VIEW_LABELS}
+    client.created_tables.extend((stale, unmanaged, raw))
+
+    result = AnalyticsViewReconciler(
+        client,  # type: ignore[arg-type]
+        "project",
+        "reconciler@example.iam",
+    ).reconcile("tesla_u_homer")
+
+    assert result.desired_view_count == 18
+    assert result.removed_view_count == 1
+    assert client.deleted_table_ids == ["retired_managed_view"]
+    assert {table.table_id for table in client.created_tables} >= {
+        "personal_view",
+        "raw_telemetry_events",
+        "drives",
+        "charge_sessions",
+    }
+    assert client.dataset_access_snapshots[0] == {
+        ("OWNER", "userByEmail", "dataset-owner@example.iam"),
+        ("READER", "userByEmail", "homer@example.com"),
+        ("READER", "userByEmail", "reconciler@example.iam"),
+    }
+    assert client.dataset_access_snapshots[-1] == {
+        ("OWNER", "userByEmail", "dataset-owner@example.iam"),
+        ("READER", "userByEmail", "homer@example.com"),
     }
 
 

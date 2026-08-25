@@ -32,6 +32,10 @@ locals {
       role   = "roles/run.developer"
       member = "serviceAccount:${google_service_account.platform["cloud_build_deployer"].email}"
     }
+    analytics_view_reconciler_log_writer = {
+      role   = "roles/logging.logWriter"
+      member = "serviceAccount:${google_service_account.platform["analytics_view_reconciler"].email}"
+    }
     user_admin_firestore = {
       role   = "roles/datastore.user"
       member = "serviceAccount:${google_service_account.platform["user_admin"].email}"
@@ -151,7 +155,11 @@ resource "google_service_account_iam_member" "deployer_edge_runtime_user" {
 }
 
 resource "google_service_account_iam_member" "cloud_build_identity_token_creator" {
-  for_each = toset(["cloud_build_validator", "cloud_build_deployer"])
+  for_each = toset([
+    "analytics_view_reconciler",
+    "cloud_build_validator",
+    "cloud_build_deployer",
+  ])
 
   service_account_id = google_service_account.platform[each.value].name
   role               = "roles/iam.serviceAccountTokenCreator"
@@ -232,6 +240,31 @@ resource "google_project_iam_member" "user_admin_dataset_provisioner" {
   project = var.project_id
   role    = google_project_iam_custom_role.user_dataset_provisioner.id
   member  = "serviceAccount:${google_service_account.platform["user_admin"].email}"
+}
+
+resource "google_project_iam_custom_role" "analytics_view_reconciler" {
+  project     = var.project_id
+  role_id     = "tppAnalyticsViewReconciler"
+  title       = "TPP analytics view reconciler"
+  description = "List active tenants and synchronize only their managed BigQuery views."
+  stage       = "GA"
+  permissions = [
+    "bigquery.datasets.get",
+    "bigquery.datasets.update",
+    "bigquery.tables.create",
+    "bigquery.tables.delete",
+    "bigquery.tables.get",
+    "bigquery.tables.list",
+    "bigquery.tables.update",
+    "datastore.entities.get",
+    "datastore.entities.list",
+  ]
+}
+
+resource "google_project_iam_member" "analytics_view_reconciler" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.analytics_view_reconciler.id
+  member  = "serviceAccount:${google_service_account.platform["analytics_view_reconciler"].email}"
 }
 
 resource "google_service_account_iam_member" "user_admin_impersonator" {

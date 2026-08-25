@@ -195,7 +195,10 @@ applies configuration.
 
 **Status:** Implemented in code, including boundary-correct drives, authoritative
 charge sessions, uncertainty-preserving FSD route segments/summaries, and
-telemetry capability diagnostics; live deployment and operator checkpoint pending.
+telemetry capability diagnostics. Source-defined views are reconciled for every
+active user's isolated dataset after relevant main merges, with `add-user` using
+the same idempotent implementation; live analytics verification remains an
+operator checkpoint.
 
 **Prompt:** `docs/prompt-pack.md` → **Prompt 9 — Generic historical analytics MCP**
 
@@ -203,6 +206,8 @@ telemetry capability diagnostics; live deployment and operator checkpoint pendin
 
 - `get_analytics_schema` and `run_analytics_query` work;
 - derived analytical views exist for core history concepts;
+- relevant main merges create/update the full managed view set for every active
+  user and remove only stale, explicitly labeled managed views;
 - SQL is read-only and cannot escape the authenticated user's dataset;
 - max-bytes is only an accidental-query safety guardrail, not a quota product;
 - trip-playlist/cross-vehicle examples work without dedicated endpoints.

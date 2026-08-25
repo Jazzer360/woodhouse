@@ -15,12 +15,27 @@ def test_pr_build_never_deploys_production() -> None:
 def test_terraform_owns_repository_triggers_without_the_github_connection() -> None:
     source = (ROOT / "infra" / "terraform" / "cloud_build.tf").read_text(encoding="utf-8")
 
-    assert source.count('resource "google_cloudbuild_trigger"') == 5
+    assert source.count('resource "google_cloudbuild_trigger"') == 6
     assert 'resource "google_cloudbuildv2_connection"' not in source
     assert 'resource "google_cloudbuildv2_repository"' not in source
     assert 'platform["cloud_build_validator"].id' in source
     assert source.count('platform["cloud_build_deployer"].id') == 4
+    assert source.count('platform["analytics_view_reconciler"].id') == 1
     assert "COMMENTS_ENABLED_FOR_EXTERNAL_CONTRIBUTORS_ONLY" in source
+
+
+def test_analytics_view_delivery_is_merge_triggered_and_scoped() -> None:
+    build = (ROOT / "cloudbuild.analytics-views.yaml").read_text(encoding="utf-8")
+    terraform = (ROOT / "infra" / "terraform" / "cloud_build.tf").read_text(encoding="utf-8")
+
+    assert "scripts/admin/sync-analytics-views" in build
+    assert "tpp-analytics-view-reconciler@$PROJECT_ID.iam.gserviceaccount.com" in build
+    assert "terraform apply" not in build
+    assert "gcloud run" not in build
+    assert 'name               = "tpp-main-analytics-views"' in terraform
+    assert '"packages/analytics/**"' in terraform
+    assert '"packages/auth/**"' in terraform
+    assert 'platform["analytics_view_reconciler"].id' in terraform
 
 
 def test_main_delivery_uses_commit_tags_and_resolved_digests() -> None:

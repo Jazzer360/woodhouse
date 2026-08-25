@@ -1,0 +1,27 @@
+steps:
+  - id: python-sync
+    name: ghcr.io/astral-sh/uv:0.9.26-python3.12-bookworm-slim
+    entrypoint: bash
+    args:
+      - -ceu
+      - uv sync --frozen --package tpp-auth --extra admin
+
+  - id: reconcile-active-user-views
+    name: ghcr.io/astral-sh/uv:0.9.26-python3.12-bookworm-slim
+    entrypoint: bash
+    waitFor: [python-sync]
+    args:
+      - -ceu
+      - |
+        uv run --frozen --no-sync python scripts/admin/sync-analytics-views \
+          --project-id="$PROJECT_ID" \
+          --reconciler-service-account="tpp-analytics-view-reconciler@$PROJECT_ID.iam.gserviceaccount.com"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags:
+  - tpp-main-delivery
+  - analytics-views
+
+timeout: 600s

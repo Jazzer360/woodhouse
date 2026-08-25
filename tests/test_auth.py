@@ -24,7 +24,11 @@ from tesla_personal_platform.auth import (
     VerifiedIdentity,
     authorize_trusted_owner,
 )
-from tesla_personal_platform.auth.admin import UserAdminService
+from tesla_personal_platform.auth.admin import (
+    AnalyticsViewReconciliation,
+    AnalyticsViewSyncService,
+    UserAdminService,
+)
 from tesla_personal_platform.auth.memory import InMemoryIdentityStore
 from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundary
 from tesla_personal_platform.mcp_gateway.main import (
@@ -642,6 +646,26 @@ class FailingDatasetProvisioner:
         raise RuntimeError("simulated provisioning failure")
 
 
+class ActiveUsers:
+    def __init__(self, *users: AllowedUser) -> None:
+        self.users = users
+
+    def list_active_users(self) -> tuple[AllowedUser, ...]:
+        return self.users
+
+
+class RecordingViewReconciler:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.dataset_ids: list[str] = []
+        self.fail = fail
+
+    def reconcile(self, dataset_id: str) -> AnalyticsViewReconciliation:
+        self.dataset_ids.append(dataset_id)
+        if self.fail:
+            raise ValueError(f"private dataset was {dataset_id}")
+        return AnalyticsViewReconciliation(18, 1)
+
+
 def test_add_user_is_idempotent_and_repairs_dataset_access_each_run() -> None:
     store = MemoryAdminStore()
     datasets = RecordingDatasetProvisioner()
@@ -698,3 +722,55 @@ def test_identity_reset_requires_exact_user_id_and_preserves_tenant() -> None:
     assert reset.dataset_id == added.dataset_id
     assert reset.oidc_issuer is None
     assert reset.oidc_subject is None
+
+
+def test_analytics_view_sync_reconciles_every_active_tenant_without_identity_input() -> None:
+    views = RecordingViewReconciler()
+    summary = AnalyticsViewSyncService(
+        ActiveUsers(
+            active_user(),
+            active_user(
+                "marge@example.com",
+                user_id="usr_marge",
+                dataset_id="tesla_u_marge",
+            ),
+        ),
+        views,
+    ).sync_active_users()
+
+    assert views.dataset_ids == ["tesla_u_homer", "tesla_u_marge"]
+    assert summary.active_user_count == 2
+    assert summary.desired_view_count == 36
+    assert summary.removed_view_count == 2
+
+
+def test_analytics_view_sync_refuses_duplicate_tenant_identifiers_before_writes() -> None:
+    views = RecordingViewReconciler()
+    service = AnalyticsViewSyncService(
+        ActiveUsers(
+            active_user(),
+            active_user(
+                "marge@example.com",
+                user_id="usr_marge",
+                dataset_id="tesla_u_homer",
+            ),
+        ),
+        views,
+    )
+
+    with pytest.raises(RuntimeError, match="duplicate tenant identifiers"):
+        service.sync_active_users()
+
+    assert views.dataset_ids == []
+
+
+def test_analytics_view_sync_sanitizes_per_tenant_failures() -> None:
+    service = AnalyticsViewSyncService(
+        ActiveUsers(active_user()), RecordingViewReconciler(fail=True)
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        service.sync_active_users()
+
+    assert str(error.value) == "Analytics view reconciliation failed for one active tenant"
+    assert "tesla_u_homer" not in str(error.value)

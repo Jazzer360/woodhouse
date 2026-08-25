@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from google.cloud import firestore
 from google.cloud.firestore_v1 import Client
+from google.cloud.firestore_v1.base_query import FieldFilter
 from google.cloud.firestore_v1.document import DocumentReference
 from google.cloud.firestore_v1.transaction import Transaction
 from tesla_personal_platform.auth.core import first_login_invitation_email, normalize_email
@@ -200,6 +201,16 @@ class FirestoreAllowlistAdminStore:
             AllowedUser,
             _ensure_invitation_transaction(transaction, self, normalized, notes),
         )
+
+    def list_active_users(self) -> tuple[AllowedUser, ...]:
+        """Return active tenants from the trusted allowlist collection."""
+        snapshots = (
+            self.client.collection(ALLOWED_USERS_COLLECTION)
+            .where(filter=FieldFilter("status", "==", UserStatus.ACTIVE.value))
+            .stream()
+        )
+        users = tuple(_record_from_data(snapshot.id, snapshot.to_dict()) for snapshot in snapshots)
+        return tuple(sorted(users, key=lambda user: user.user_id))
 
     def activate(self, email: str) -> AllowedUser:
         """Activate only after dataset provisioning has succeeded."""

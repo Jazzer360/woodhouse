@@ -1,9 +1,11 @@
-"""Per-user BigQuery dataset provisioning for the manual allowlist workflow."""
+"""Per-user BigQuery provisioning and managed analytics-view reconciliation."""
 
 from collections.abc import Iterable
+from hashlib import sha256
 
 from google.cloud import bigquery
 from tesla_personal_platform.analytics import analytics_views
+from tesla_personal_platform.auth.admin import AnalyticsViewReconciliation
 from tesla_personal_platform.auth.models import AllowedUser
 from tesla_personal_platform.shared_models import RAW_TELEMETRY_SCHEMA, RAW_TELEMETRY_TABLE
 
@@ -21,6 +23,13 @@ RAW_TABLE_LABELS = {
     "data_class": "restricted-user-telemetry",
     "managed_by": "add-user",
 }
+ANALYTICS_VIEW_LABELS = {
+    "application": "tesla-personal-platform",
+    "data_class": "restricted-user-telemetry",
+    "managed_by": "analytics-view-reconciler",
+    "layer": "analytics",
+}
+LEGACY_ANALYTICS_VIEW_MANAGERS = frozenset({"add-user", "analytics-view-reconciler"})
 
 
 def restricted_dataset_access(
@@ -56,28 +65,117 @@ def restricted_dataset_access(
     ]
 
 
-def temporary_view_provisioning_access(
-    owner_service_account: str,
-    gateway_service_account: str,
-    processor_service_account: str,
-    approved_user_email: str,
-    admin_service_account: str,
+def temporary_dataset_reader_access(
+    existing: Iterable[bigquery.AccessEntry],
+    reconciler_service_account: str,
 ) -> list[bigquery.AccessEntry]:
-    """Add the narrow read grant BigQuery requires while validating view SQL."""
-    return [
-        *restricted_dataset_access(
-            (),
-            owner_service_account,
-            gateway_service_account,
-            processor_service_account,
-            approved_user_email,
-        ),
-        bigquery.AccessEntry(
-            DATA_VIEWER_ACCESS_ROLE,
-            USER_BY_EMAIL_ENTITY_TYPE,
-            admin_service_account,
-        ),
-    ]
+    """Temporarily add one reader without changing any permanent dataset ACL entry."""
+    entries = list(existing)
+    reader = bigquery.AccessEntry(
+        DATA_VIEWER_ACCESS_ROLE,
+        USER_BY_EMAIL_ENTITY_TYPE,
+        reconciler_service_account,
+    )
+    if reader not in entries:
+        entries.append(reader)
+    return entries
+
+
+def _view_labels(description: str, sql: str) -> dict[str, str]:
+    labels = ANALYTICS_VIEW_LABELS.copy()
+    labels["definition_hash"] = sha256(f"{description}\0{sql}".encode()).hexdigest()[:16]
+    return labels
+
+
+def _is_managed_analytics_view(table: bigquery.Table) -> bool:
+    labels = table.labels or {}
+    return (
+        table.table_type == "VIEW"
+        and labels.get("application") == ANALYTICS_VIEW_LABELS["application"]
+        and labels.get("data_class") == ANALYTICS_VIEW_LABELS["data_class"]
+        and labels.get("layer") == ANALYTICS_VIEW_LABELS["layer"]
+        and labels.get("managed_by") in LEGACY_ANALYTICS_VIEW_MANAGERS
+    )
+
+
+class AnalyticsViewReconciler:
+    """Make one private dataset's managed views exactly match source definitions."""
+
+    def __init__(
+        self,
+        client: bigquery.Client,
+        project_id: str,
+        reconciler_service_account: str,
+        *,
+        remove_stale_managed_views: bool = True,
+    ) -> None:
+        self._client = client
+        self._project_id = project_id
+        self._reconciler_service_account = reconciler_service_account
+        self._remove_stale_managed_views = remove_stale_managed_views
+
+    def reconcile(self, dataset_id: str) -> AnalyticsViewReconciliation:
+        """Update desired views and remove only stale Woodhouse-managed views."""
+        dataset_reference = bigquery.DatasetReference(self._project_id, dataset_id)
+        dataset = self._client.get_dataset(dataset_reference, timeout=30)
+        permanent_access = list(dataset.access_entries)
+        dataset.access_entries = temporary_dataset_reader_access(
+            permanent_access,
+            self._reconciler_service_account,
+        )
+        self._client.update_dataset(dataset, ["access_entries"], timeout=30)
+        try:
+            definitions = analytics_views(self._project_id, dataset_id)
+            desired_names = {definition.name for definition in definitions}
+            for definition in definitions:
+                view = bigquery.Table(f"{self._project_id}.{dataset_id}.{definition.name}")
+                view.description = definition.description
+                view.labels = _view_labels(definition.description, definition.sql)
+                view.view_query = definition.sql
+                view.view_use_legacy_sql = False
+                self._client.create_table(view, exists_ok=True, timeout=30)
+
+                current_view = self._client.get_table(view.reference, timeout=30)
+                if current_view.table_type not in {None, "VIEW"}:
+                    raise ValueError(
+                        f"Existing object {dataset_id}.{definition.name} is not a view"
+                    )
+                current_view.description = view.description
+                current_view.labels = view.labels.copy()
+                current_view.view_query = view.view_query
+                current_view.view_use_legacy_sql = False
+                self._client.update_table(
+                    current_view,
+                    ["description", "labels", "view_query", "view_use_legacy_sql"],
+                    timeout=30,
+                )
+
+            removed = 0
+            if self._remove_stale_managed_views:
+                for table_item in self._client.list_tables(dataset_reference, timeout=30):
+                    if table_item.table_id in desired_names:
+                        continue
+                    current_table = self._client.get_table(table_item.reference, timeout=30)
+                    if not _is_managed_analytics_view(current_table):
+                        continue
+                    self._client.delete_table(
+                        current_table.reference,
+                        not_found_ok=True,
+                        timeout=30,
+                    )
+                    removed += 1
+                managed_names = set()
+                for table_item in self._client.list_tables(dataset_reference, timeout=30):
+                    current_table = self._client.get_table(table_item.reference, timeout=30)
+                    if _is_managed_analytics_view(current_table):
+                        managed_names.add(current_table.table_id)
+                if managed_names != desired_names:
+                    raise RuntimeError("Managed analytics view postcondition failed")
+            return AnalyticsViewReconciliation(len(definitions), removed)
+        finally:
+            restored = self._client.get_dataset(dataset_reference, timeout=30)
+            restored.access_entries = permanent_access
+            self._client.update_dataset(restored, ["access_entries"], timeout=30)
 
 
 class BigQueryDatasetProvisioner:
@@ -99,7 +197,12 @@ class BigQueryDatasetProvisioner:
         self._owner_service_account = owner_service_account
         self._gateway_service_account = gateway_service_account
         self._processor_service_account = processor_service_account
-        self._admin_service_account = admin_service_account
+        self._view_reconciler = AnalyticsViewReconciler(
+            client,
+            project_id,
+            admin_service_account,
+            remove_stale_managed_views=False,
+        )
 
     def provision(self, user: AllowedUser) -> None:
         """Idempotently enforce the dataset and append-only raw table contract."""
@@ -196,55 +299,4 @@ class BigQueryDatasetProvisioner:
             ["description", "expires", "labels"],
             timeout=30,
         )
-        self._provision_analytics_views(user.dataset_id, user.invitation_email)
-
-    def _provision_analytics_views(self, dataset_id: str, approved_user_email: str) -> None:
-        """Validate views with transient read, then restore the exact permanent ACL."""
-        dataset_reference = bigquery.DatasetReference(self._project_id, dataset_id)
-        dataset = self._client.get_dataset(dataset_reference, timeout=30)
-        dataset.access_entries = temporary_view_provisioning_access(
-            self._owner_service_account,
-            self._gateway_service_account,
-            self._processor_service_account,
-            approved_user_email,
-            self._admin_service_account,
-        )
-        self._client.update_dataset(dataset, ["access_entries"], timeout=30)
-        try:
-            for definition in analytics_views(self._project_id, dataset_id):
-                view = bigquery.Table(f"{self._project_id}.{dataset_id}.{definition.name}")
-                view.description = definition.description
-                view.labels = {
-                    "application": "tesla-personal-platform",
-                    "data_class": "restricted-user-telemetry",
-                    "managed_by": "add-user",
-                    "layer": "analytics",
-                }
-                view.view_query = definition.sql
-                view.view_use_legacy_sql = False
-                self._client.create_table(view, exists_ok=True, timeout=30)
-
-                current_view = self._client.get_table(view.reference, timeout=30)
-                if current_view.table_type not in {None, "VIEW"}:
-                    raise ValueError(
-                        f"Existing object {dataset_id}.{definition.name} is not a view"
-                    )
-                current_view.description = view.description
-                current_view.labels = view.labels.copy()
-                current_view.view_query = view.view_query
-                current_view.view_use_legacy_sql = False
-                self._client.update_table(
-                    current_view,
-                    ["description", "labels", "view_query", "view_use_legacy_sql"],
-                    timeout=30,
-                )
-        finally:
-            restored = self._client.get_dataset(dataset_reference, timeout=30)
-            restored.access_entries = restricted_dataset_access(
-                restored.access_entries,
-                self._owner_service_account,
-                self._gateway_service_account,
-                self._processor_service_account,
-                approved_user_email,
-            )
-            self._client.update_dataset(restored, ["access_entries"], timeout=30)
+        self._view_reconciler.reconcile(user.dataset_id)

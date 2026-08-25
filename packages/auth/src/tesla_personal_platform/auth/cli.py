@@ -6,8 +6,11 @@ from typing import NoReturn
 
 from google.api_core.exceptions import GoogleAPICallError
 from google.cloud import bigquery, firestore
-from tesla_personal_platform.auth.admin import UserAdminService
-from tesla_personal_platform.auth.bigquery_admin import BigQueryDatasetProvisioner
+from tesla_personal_platform.auth.admin import AnalyticsViewSyncService, UserAdminService
+from tesla_personal_platform.auth.bigquery_admin import (
+    AnalyticsViewReconciler,
+    BigQueryDatasetProvisioner,
+)
 from tesla_personal_platform.auth.errors import AuthenticationError
 from tesla_personal_platform.auth.firestore import FirestoreAllowlistAdminStore
 from tesla_personal_platform.auth.models import AllowedUser
@@ -110,4 +113,49 @@ def reset_user_identity_main() -> int:
     except (AuthenticationError, GoogleAPICallError, ValueError) as error:
         _fail(parser, error)
     _print_result("reset-user-identity", user)
+    return 0
+
+
+def sync_analytics_views_main() -> int:
+    """Reconcile source-defined analytics views for every active allowlist record."""
+    parser = argparse.ArgumentParser(
+        description="Synchronize managed analytics views for all active platform users"
+    )
+    parser.add_argument("--project-id", required=True, help="Explicit target GCP project")
+    parser.add_argument(
+        "--reconciler-service-account",
+        help="Executing service account temporarily granted dataset read for SQL validation",
+    )
+    parser.add_argument(
+        "--skip-stale-removal",
+        action="store_true",
+        help="Bootstrap repair only: create/update desired views without removing retired ones",
+    )
+    arguments = parser.parse_args()
+    project_id = str(arguments.project_id)
+    reconciler_service_account = arguments.reconciler_service_account or (
+        f"tpp-analytics-view-reconciler@{project_id}.iam.gserviceaccount.com"
+    )
+    allowlist = FirestoreAllowlistAdminStore(firestore.Client(project=project_id))
+    views = AnalyticsViewReconciler(
+        bigquery.Client(project=project_id),
+        project_id,
+        str(reconciler_service_account),
+        remove_stale_managed_views=not arguments.skip_stale_removal,
+    )
+    try:
+        summary = AnalyticsViewSyncService(allowlist, views).sync_active_users()
+    except (GoogleAPICallError, RuntimeError, ValueError) as error:
+        _fail(parser, error)
+    print(
+        json.dumps(
+            {
+                "action": "sync-analytics-views",
+                "active_user_count": summary.active_user_count,
+                "desired_view_count": summary.desired_view_count,
+                "removed_view_count": summary.removed_view_count,
+            },
+            sort_keys=True,
+        )
+    )
     return 0

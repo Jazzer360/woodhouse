@@ -142,11 +142,15 @@ self-reference cycle.
 | `tpp-pubsub-push` | Invoker on telemetry-processor only |
 | `tpp-build-validator` | Log writer only; no deploy, secret, or data permission |
 | `tpp-build-deployer` | Artifact Registry writer, Cloud Run developer, `actAs` on Cloud Run runtimes, and—when enabled—`actAs` plus metadata/reset/health access only for `tpp-telemetry-edge` |
+| `tpp-analytics-view-reconciler` | Log writer plus active-allowlist read and managed BigQuery view metadata reconciliation; no query jobs, steady-state table-data access, dataset creation, raw-table deletion, secrets, or vehicle access |
 | `tpp-user-admin` | Firestore user; BigQuery dataset/raw-table/view metadata updater; no steady-state table-data or query-job access; temporary per-dataset read only while BigQuery validates managed view definitions |
 | `tpp-partner-admin` | Secret accessor only for Tesla client-secret and public-key containers; no project role or runtime impersonation |
 | `tpp-dataset-owner` | Required direct owner on per-user datasets; no project roles, keys, or impersonation binding |
 
-The Cloud Build service agent may mint tokens only for the two custom build identities. Neither build identity receives Owner, Editor, Secret Manager access, BigQuery data access, or vehicle-VM administration.
+The Cloud Build service agent may mint tokens only for the validator, deployer,
+and analytics-view reconciler build identities. None receives Owner, Editor, or
+Secret Manager access. The reconciler receives temporary dataset read only
+while BigQuery validates view SQL and restores the exact prior ACL afterward.
 
 Members in `user_admin_principals` receive only
 `roles/iam.serviceAccountTokenCreator` on `tpp-user-admin`, allowing keyless ADC
@@ -167,13 +171,10 @@ The idempotent `add-user` workflow—not shared Terraform—will create `tesla_u
 
 It also creates `raw_telemetry_events`, partitions it daily by
 `source_timestamp`, clusters it by `vehicle_id, record_type`, and configures no
-table expiration. Phase 9 additionally creates or updates the dependency-ordered
-`telemetry_field_catalog`, `telemetry_observations`, `charging_samples`,
-`climate_samples`, `driving_samples`, `location_samples`, `media_samples`,
-`vehicle_state_changes`, `drives`, `charge_sessions`, `media_history`, and
-`daily_vehicle_summary` logical views.
-Re-run `add-user` once for each existing approved user after Phase 9 is deployed;
-the operation is idempotent and does not alter or delete existing raw data.
+table expiration. Phase 9 additionally creates or updates the complete
+dependency-ordered logical-view set defined by the analytics package. New users
+receive that set through `add-user`; existing active users are kept synchronized
+by the main-merge analytics-view trigger.
 
 The four ACL entries above are the permanent contract. During managed view
 creation/update only, `add-user` temporarily adds `tpp-user-admin` as `READER`
@@ -182,6 +183,15 @@ because BigQuery refuses to validate a view unless its creator has
 four-entry contract on success or failure. This narrowly scoped, short-lived
 grant is an implementation requirement of BigQuery view validation, not a
 runtime analytics permission.
+
+The merge reconciler uses the same create/update implementation as `add-user`
+but preserves the exact existing permanent dataset ACL rather than re-authoring
+it. After every desired view has been validated, only the merge reconciler
+removes stale `VIEW` objects carrying the full
+Woodhouse application/data-class/layer/manager labels. Raw tables and unmanaged
+objects are outside its deletion policy. One user's failure fails the build
+with a tenant-neutral error; successful earlier datasets remain safe and the
+next idempotent run retries the full active-user set.
 
 The gateway already has project-level `roles/bigquery.jobUser` so it can run
 scoped queries. The operator principal also has that project-level job role, so
@@ -584,7 +594,7 @@ filters, build identities, and configuration paths cannot drift. The regional
 `tpp-pr-validation` trigger uses `tpp-build-validator` and `cloudbuild.pr.yaml`
 for pull requests targeting `main`.
 
-Three push triggers use `tpp-build-deployer` and the shared
+Application push triggers use `tpp-build-deployer` and the shared
 `cloudbuild.main.yaml` delivery contract:
 
 - `tpp-main-mcp-gateway` selects gateway, package, workspace-lock, and delivery
@@ -595,6 +605,29 @@ Three push triggers use `tpp-build-deployer` and the shared
 - `tpp-main-telemetry-edge`, enabled only after the TLS operator prerequisites,
   selects official receiver/config changes and substitutes
   `_SERVICE=telemetry-edge` plus the exact VM zone.
+
+The separate `tpp-main-analytics-views` push trigger selects analytics, auth,
+and reconciliation-script changes. It runs `cloudbuild.analytics-views.yaml`
+as `tpp-analytics-view-reconciler`, lists active tenant mappings from Firestore,
+and reconciles each private dataset from the merged source definitions. It does
+not build/deploy an application image and cannot mutate raw telemetry or Tesla
+configuration. Creating this identity, custom role, and trigger requires one
+reviewed Terraform apply; after that bootstrap, view updates are merge-driven.
+
+The trigger is not retroactive. Immediately after the first Terraform apply
+creates it, run the already-merged `main` revision once through the trigger:
+
+```bash
+gcloud builds triggers run tpp-main-analytics-views \
+  --project=woodhouse-506215 \
+  --region=us-central1 \
+  --branch=main
+```
+
+Require a successful build. The reconciler's final postcondition re-lists each
+dataset and fails unless its Woodhouse-managed analytics view names exactly
+match the source definition set; create/update/delete API failures also fail the
+build. Unmanaged views and all non-view objects are ignored by that comparison.
 
 The initial adoption of an existing environment is an import, not a recreate.
 After this configuration is merged, import the three existing regional triggers

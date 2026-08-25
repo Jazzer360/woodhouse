@@ -745,7 +745,12 @@ Core resources:
 
 Use Terraform for shared infrastructure.
 
-Per-user resources created by the manual `add-user` admin workflow may be managed by a small idempotent admin script if that is simpler than re-running Terraform for every friend.
+Per-user datasets and raw tables are created by the manual `add-user` workflow.
+Source-defined logical views are reconciled for every active user by a dedicated
+least-privilege main-merge build and by `add-user` for a newly created or
+repaired user. The reconciler may delete only stale objects already labeled as
+Woodhouse-managed analytics views; it cannot delete raw tables or unmanaged
+objects.
 
 ---
 
@@ -768,6 +773,8 @@ Repository merges are the source of deployment truth.
 - push Artifact Registry image tagged by commit SHA;
 - deploy only affected Cloud Run service;
 - telemetry-edge changes cause VM to pull an exact image digest and restart;
+- analytics/auth definition changes reconcile the complete managed view set in
+  every active user's existing private dataset;
 - run smoke/health checks;
 - record deployed commit/digest.
 
