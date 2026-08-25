@@ -6,29 +6,30 @@ rules in [`data-and-analytics.md`](data-and-analytics.md) remain unchanged:
 frequency is controlled only here, at the Tesla source, and every valid record
 received by Woodhouse is retained.
 
-The schema and behavior were audited on 2026-08-23 against Tesla's current
+The schema and behavior were audited on 2026-08-25 against Tesla's current
 Fleet Telemetry overview, Available Data catalog, `vehicle_data.proto`, Vehicle
 Endpoints documentation, and the pinned receiver version `v0.9.4`.
 
 ## Canonical profile
 
-The only default profile is `broad-v2`. Its policy is **Tessie baseline plus
+The only default profile is `broad-v3`. Its policy is **Tessie baseline plus
 explicit Woodhouse decisions**, not
 "subscribe to nearly everything." It is capability-projected per vehicle; it
 is not a plan, quota, or storage tier.
 
 - Source catalog: 239 documented fields.
 - Operator-supplied Tessie baseline: 93 fields.
-- Woodhouse deviations: 14 overrides, 40 additions, and 2 removals.
+- Woodhouse deviations: 16 overrides, 40 additions, and 2 removals.
 - Configured for a Fleet Telemetry 1.2.0+ passenger vehicle: 131 fields.
 - Fleet Telemetry 1.0/1.1 projection: 129 fields; the two HW4 self-driving
   counters are omitted because Tesla introduced them in client 1.2.0.
-- Fleet Telemetry 1.3.0+ additionally uses reciprocal `include_fields` for two
-  analytical pairs: qualifying speed carries acceleration and meaningful
-  acceleration changes carry current speed; either self-driving mileage
-  counter carries its matching total/self-driving counter. Earlier clients
-  keep the supported top-level fields independently configured and omit only
-  that synchronization.
+- Fleet Telemetry 1.3.0+ additionally uses `include_fields` for four purposes:
+  qualifying speed/acceleration changes carry their analytical counterpart;
+  the two self-driving counters reciprocally carry only each other; Gear
+  transitions carry odometer, remaining energy, SOC, and location; and
+  DetailedChargeState transitions carry charge counters, SOC, remaining
+  energy, odometer, power, and voltage. Earlier clients keep every supported
+  top-level field independently configured and omit all synchronization.
 - Remaining exclusions: 108 fields, comprising the 2 Tessie removals and 106
   explicit decisions not to add a non-baseline catalog field.
 - `delivery_policy` is `latest`, so unacknowledged buffered data is resent.
@@ -69,6 +70,8 @@ These are every cadence/delta difference for a field already in Tessie:
 | `HvacLeftTemperatureRequest` | 1 s | 5 s | Setpoint history does not need one-second polling or a numeric delta. |
 | `Odometer` | 30 s / 0.01 mi | 60 s / 0.01 mi | Retain Tessie's precision at a cheaper cadence. |
 | `SelfDrivingMilesSinceReset` | 30 s / 1 mi | 30 s / 1 mi, paired | Retain Tessie's Tesla-required threshold; on client 1.3+, carry the total-mile denominator in the same payload. |
+| `Gear` | 1 s | 1 s, include Odometer/EnergyRemaining/Soc/Location | Use sparse Gear transitions as exact drive-boundary anchors on client 1.3+. |
+| `DetailedChargeState` | 1 s | 1 s, include counters/SOC/energy/odometer/power/voltage | Carry exact authoritative charge-boundary state on client 1.3+. |
 
 Thus, Woodhouse is more responsive than Tessie for trip shape, media changes,
 and TPMS warning transitions; less aggressive for the HVAC setpoint and
@@ -163,7 +166,7 @@ receiver messages, so cost checks must count entries in each `V.data` array
 rather than BigQuery rows. The review found a 10-second median gap for both
 `Location` and `GpsHeading`, a 1-second median for `VehicleSpeed`, and a
 4-second median for `LongitudinalAcceleration` at its former 1.0 m/s² delta.
-That measured cadence supports the `broad-v2` changes to 5 seconds / 5 meters
+That measured cadence supports the `broad-v3` changes to 5 seconds / 5 meters
 for location, 5 seconds / 5 degrees for heading, and a 0.5 m/s² acceleration
 delta. It does not yet justify adding pedal-position, lateral-acceleration, or
 high-rate drivetrain engineering signals.
@@ -245,8 +248,31 @@ any decrease in either counter as a new reset epoch and must never subtract
 across that boundary. FSD share is derived from paired counter **deltas within
 one epoch** (`delta(SelfDrivingMilesSinceReset) / delta(MilesSinceReset)`), not
 from a single instantaneous ratio. Missing counters on an unsupported vehicle
-mean unavailable, not zero. The one-mile delta makes this suitable for
-cumulative and multi-mile analysis, not precise trip-level engagement timing.
+mean unavailable, not zero.
+
+Rebuildable analytics may also allocate each positive FSD counter delta
+backward over the matching route-distance bucket. A mixed bucket is represented
+as an inferred manual prefix followed by the counter-certified FSD distance;
+the last observed state may be carried to the Gear boundary only at reduced
+confidence. Segment rows retain confidence, method, and transition-distance
+bounds and use `uncertain` when evidence is missing or a reset prevents
+subtraction. These are useful trip/map inferences, not exact engagement events.
+
+## Drive and charge boundary synchronization
+
+On client 1.3.0+, `Gear` is the drive boundary anchor. `P -> R/D` and `R/D -> P`
+payloads include `Odometer`, `EnergyRemaining`, `Soc`, and `Location`. For older
+history, analytics stay within the stationary interval between adjacent drives:
+prefer the latest observation at/before departure and the earliest observation
+at/after parking, never an unbounded nearest value.
+
+`DetailedChargeState` is the authoritative charge anchor and includes
+`ACChargingEnergyIn`, `DCChargingEnergyIn`, `Soc`, `EnergyRemaining`,
+`Odometer`, `ACChargingPower`, `DCChargingPower`, and `ChargerVoltage` on 1.3.0+.
+The special FSD counters are absent from both anchors because Tesla permits them
+to include only each other. Older sessions may use bounded AC-power integration
+when the last wall-energy counter is at most 120 seconds old; battery energy
+remains an observed lower bound unless a synchronized terminal counter exists.
 
 ## Per-vehicle lifecycle
 
@@ -256,7 +282,9 @@ never accepts a caller-provided VIN or owner.
 
 1. Open `/onboarding` and select **Inspect telemetry configuration** for one
    paired vehicle.
-2. Woodhouse reads current config and telemetry errors, then renders the
+2. Woodhouse refreshes `fleet_status` and capability-projects the profile from
+   Tesla's actual `fleet_telemetry_version`, never from firmware inference or a
+   stale stored status. It then reads current config and telemetry errors and renders the
    complete redacted desired/current diff. CA PEM is represented by its SHA-256
    and certificate count.
 3. Apply requires the exact displayed config hash plus a checked confirmation.
@@ -268,6 +296,14 @@ never accepts a caller-provided VIN or owner.
    and trust-profile ID/hash in the trusted vehicle record.
 5. Repair/reapply repeats the guarded exact-hash flow. Remove has its own
    explicit confirmation and never runs from CI.
+
+The inspection document shows live/stored firmware and client versions, the
+pinned receiver version, whether include fields are supported/requested/present
+in Tesla's returned config, and a capability status. Historical ingestion
+evidence is exposed separately by `telemetry_capability_diagnostics`, including
+recent Gear, charge, and FSD synchronization counts. Firmware `2026.26.6` with
+an actual client `1.2.0` is a visible mismatch and remains capability-limited;
+Woodhouse does not manufacture a 1.3.0 capability from the firmware string.
 
 One vehicle's failure does not prevent inspection or repair of another. Every
 apply, repair, automated transport reconciliation, and removal has an attempted
@@ -307,7 +343,7 @@ migration even though normal browsers would accept it.
 
 ### Transport migration
 
-A hostname, port, or CA-profile change is separate from `broad-v2`. The
+A hostname, port, or CA-profile change is separate from `broad-v3`. The
 control-plane reconciler retains the exact persisted field hash, requires an
 explicit per-vehicle transport-maintenance opt-in, updates a selected canary
 first, waits for `synced=true`, inspects errors, and then processes remaining

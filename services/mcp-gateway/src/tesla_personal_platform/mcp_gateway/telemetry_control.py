@@ -17,6 +17,7 @@ from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
     VehicleRecord,
 )
 from tesla_personal_platform.tesla_client import (
+    FleetTelemetryProfile,
     PerUserTeslaClient,
     ServerTrustProfile,
     TeslaAccessProvider,
@@ -29,7 +30,12 @@ from tesla_personal_platform.tesla_client import (
     supports_broad_profile,
     telemetry_config_hash,
 )
-from tesla_personal_platform.tesla_client.models import JsonObject, JsonValue, json_object
+from tesla_personal_platform.tesla_client.models import (
+    FleetStatus,
+    JsonObject,
+    JsonValue,
+    json_object,
+)
 from tesla_personal_platform.tesla_client.requests import (
     FleetTelemetryConfig,
     FleetTelemetryConfigRequest,
@@ -111,6 +117,7 @@ class FleetTelemetryControlService:
         credentials: TeslaAccessProvider,
         store: TelemetryControlStore,
         trust_profile: ServerTrustProfile,
+        receiver_version: str = "unknown",
         sync_attempts: int = 12,
         sync_delay_seconds: float = 5.0,
         sleeper: Callable[[float], None] = time.sleep,
@@ -123,13 +130,14 @@ class FleetTelemetryControlService:
         self._signed_fleet = PerUserTeslaClient(signed_fleet, credentials)
         self._store = store
         self._trust = trust_profile
+        self._receiver_version = receiver_version
         self._sync_attempts = sync_attempts
         self._sync_delay_seconds = sync_delay_seconds
         self._sleep = sleeper
 
     def inspect(self, context: UserContext, vehicle_id: str) -> JsonObject:
         vehicle = self._eligible_vehicle(context.user_id, vehicle_id)
-        profile = broad_profile(vehicle.fleet_telemetry_version)
+        status, profile = self._capability_profile(context.user_id, vehicle)
         desired = self._trust.build_config(profile)
         desired_hash = telemetry_config_hash(profile, self._trust)
         response = self._fleet.execute(
@@ -163,6 +171,28 @@ class FleetTelemetryControlService:
             "baseline_comparison": profile.baseline_comparison,
             "intentional_exclusions": json_object(profile.excluded_fields),
             "capability_omissions": json_object(profile.capability_omissions),
+            "capability": {
+                "vehicle_firmware": status.firmware_version,
+                "fleet_telemetry_client": status.fleet_telemetry_version,
+                "stored_fleet_telemetry_client": vehicle.fleet_telemetry_version,
+                "telemetry_receiver_version": self._receiver_version,
+                "minimum_client_for_include_fields": "1.3.0",
+                "include_fields_supported": not any(
+                    key.endswith(".include_fields") for key in profile.capability_omissions
+                ),
+                "include_fields_requested": any(
+                    field.include_fields for field in profile.fields.values()
+                ),
+                "tesla_config_contains_include_fields": (
+                    current is not None
+                    and any(field.include_fields for field in current.fields.values())
+                ),
+                "status": _capability_status(status, vehicle),
+                "ingestion_evidence": (
+                    "Query telemetry_capability_diagnostics to compare recent incoming "
+                    "connection metadata and synchronized payloads."
+                ),
+            },
             "tesla": {
                 "synced": response.get("synced"),
                 "limit_reached": response.get("limit_reached"),
@@ -189,7 +219,7 @@ class FleetTelemetryControlService:
                 "confirmation_required", "Explicit vehicle configuration approval is required"
             )
         vehicle = self._eligible_vehicle(context.user_id, vehicle_id)
-        profile = broad_profile(vehicle.fleet_telemetry_version)
+        _, profile = self._capability_profile(context.user_id, vehicle)
         desired = self._trust.build_config(profile)
         desired_hash = telemetry_config_hash(profile, self._trust)
         if not secrets.compare_digest(expected_config_hash, desired_hash):
@@ -239,7 +269,7 @@ class FleetTelemetryControlService:
     def verify(self, context: UserContext, vehicle_id: str) -> JsonObject:
         """Verify Tesla's exact current config and repair trusted provenance only."""
         vehicle = self._eligible_vehicle(context.user_id, vehicle_id)
-        profile = broad_profile(vehicle.fleet_telemetry_version)
+        _, profile = self._capability_profile(context.user_id, vehicle)
         desired = self._trust.build_config(profile)
         desired_hash = telemetry_config_hash(profile, self._trust)
         prior = self._store.get_telemetry_configuration(context.user_id, vehicle_id)
@@ -347,7 +377,7 @@ class FleetTelemetryControlService:
         results: list[JsonValue] = []
         for index, vehicle in enumerate(ordered):
             state = self._store.get_telemetry_configuration(context.user_id, vehicle.vehicle_id)
-            profile = broad_profile(vehicle.fleet_telemetry_version)
+            _, profile = self._capability_profile(context.user_id, vehicle)
             desired_hash = telemetry_config_hash(profile, self._trust)
             if not state.transport_maintenance_opt_in:
                 results.append({"vehicle_id": vehicle.vehicle_id, "status": "opt_in_required"})
@@ -405,11 +435,6 @@ class FleetTelemetryControlService:
             raise TelemetryConfigurationError(
                 "virtual_key_required", "Pair the application Virtual Key before configuration"
             )
-        if not supports_broad_profile(vehicle.fleet_telemetry_version):
-            raise TelemetryConfigurationError(
-                "telemetry_client_upgrade_required",
-                "The vehicle Fleet Telemetry client must be version 1.0.0 or later",
-            )
         connection = self._store.get_connection(owner_user_id)
         missing = sorted(REQUIRED_SCOPES - set(connection.tokens.scopes))
         if missing:
@@ -417,6 +442,28 @@ class FleetTelemetryControlService:
                 "missing_tesla_scope", "Reconnect Tesla with the required telemetry scopes"
             )
         return vehicle
+
+    def _capability_profile(
+        self, owner_user_id: str, vehicle: VehicleRecord
+    ) -> tuple[FleetStatus, FleetTelemetryProfile]:
+        statuses = self._fleet.execute(
+            owner_user_id,
+            lambda fleet, token, base_url: fleet.fleet_status(
+                token, base_url=base_url, vins=[vehicle.vin]
+            ),
+        )
+        status = statuses.get(vehicle.vin)
+        if status is None:
+            raise TelemetryConfigurationError(
+                "fleet_status_missing_vehicle",
+                "Tesla fleet_status omitted the selected vehicle",
+            )
+        if not supports_broad_profile(status.fleet_telemetry_version):
+            raise TelemetryConfigurationError(
+                "telemetry_client_upgrade_required",
+                "The actual Fleet Telemetry client reported by Tesla must be 1.0.0 or later",
+            )
+        return status, broad_profile(status.fleet_telemetry_version)
 
     def _wait_until_synced(
         self, owner_user_id: str, vehicle: VehicleRecord, desired: FleetTelemetryConfig
@@ -487,6 +534,27 @@ def _state_document(state: TelemetryConfigurationState) -> JsonObject:
         "trust_profile_hash": state.trust_profile_hash,
         "transport_maintenance_opt_in": state.transport_maintenance_opt_in,
     }
+
+
+def _capability_status(status: FleetStatus, stored: VehicleRecord) -> str:
+    if stored.fleet_telemetry_version != status.fleet_telemetry_version:
+        return "stored_fleet_status_stale"
+    if _version_at_least(status.firmware_version, (2026, 26, 6)) and not _version_at_least(
+        status.fleet_telemetry_version, (1, 3, 0)
+    ):
+        return "firmware_client_capability_mismatch"
+    if not _version_at_least(status.fleet_telemetry_version, (1, 3, 0)):
+        return "client_capability_limited"
+    return "healthy"
+
+
+def _version_at_least(value: str | None, minimum: tuple[int, int, int]) -> bool:
+    if value is None:
+        return False
+    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", value.strip().removeprefix("v"))
+    if match is None:
+        return False
+    return tuple(int(part or 0) for part in match.groups()) >= minimum
 
 
 def _parse_tesla_config(document: JsonObject) -> FleetTelemetryConfig | None:

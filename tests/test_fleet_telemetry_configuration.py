@@ -33,7 +33,7 @@ from tesla_personal_platform.tesla_client import (
     safe_config_document,
     telemetry_config_hash,
 )
-from tesla_personal_platform.tesla_client.models import JsonValue, TokenSet
+from tesla_personal_platform.tesla_client.models import FleetStatus, JsonValue, TokenSet
 from tesla_personal_platform.tesla_client.requests import (
     FleetTelemetryConfig,
     FleetTelemetryConfigRequest,
@@ -192,6 +192,24 @@ class Fleet:
         self.fail_vins: set[str] = set()
         self.malformed_vins: set[str] = set()
         self.create_error: Exception | None = None
+        self.fleet_telemetry_version = "1.2.0"
+        self.firmware_version = "2026.20"
+
+    def fleet_status(
+        self, access_token: str, *, base_url: str, vins: list[str]
+    ) -> dict[str, FleetStatus]:
+        return {
+            vin: FleetStatus(
+                vin=vin,
+                key_paired=True,
+                vehicle_command_protocol_required=True,
+                firmware_version=self.firmware_version,
+                fleet_telemetry_version=self.fleet_telemetry_version,
+                total_number_of_keys=2,
+                raw={},
+            )
+            for vin in vins
+        }
 
     def fleet_telemetry_config_get(
         self, access_token: str, *, base_url: str, vin: str
@@ -269,7 +287,7 @@ def test_profile_is_a_complete_declarative_tessie_comparison() -> None:
     assert profile.capability_omissions == {}
     assert comparison["baseline_field_count"] == 93
     assert comparison["woodhouse_field_count"] == 131
-    assert len(comparison["overrides"]) == 14  # type: ignore[arg-type]
+    assert len(comparison["overrides"]) == 16  # type: ignore[arg-type]
     assert len(comparison["additions"]) == 40  # type: ignore[arg-type]
     assert len(comparison["removals"]) == 2  # type: ignore[arg-type]
     assert len(comparison["catalog_omissions"]) == 106  # type: ignore[arg-type]
@@ -278,7 +296,23 @@ def test_profile_is_a_complete_declarative_tessie_comparison() -> None:
 def test_profile_uses_deltas_only_for_defensible_measurements() -> None:
     profile = broad_profile("1.3.0")
 
-    assert profile.version == "broad-v2"
+    assert profile.version == "broad-v3"
+    assert profile.fields["Gear"].include_fields == (
+        "Odometer",
+        "EnergyRemaining",
+        "Soc",
+        "Location",
+    )
+    assert profile.fields["DetailedChargeState"].include_fields == (
+        "ACChargingEnergyIn",
+        "DCChargingEnergyIn",
+        "Soc",
+        "EnergyRemaining",
+        "Odometer",
+        "ACChargingPower",
+        "DCChargingPower",
+        "ChargerVoltage",
+    )
     assert profile.fields["Location"].interval_seconds == 5
     assert profile.fields["Location"].minimum_delta == 5
     assert profile.fields["GpsHeading"].interval_seconds == 5
@@ -323,6 +357,8 @@ def test_capability_projection_handles_self_driving_and_synchronized_includes() 
     assert profile.fields["VehicleSpeed"].include_fields == ()
     assert "LongitudinalAcceleration" in profile.fields
     assert set(profile.capability_omissions) == {
+        "DetailedChargeState.include_fields",
+        "Gear.include_fields",
         "LongitudinalAcceleration.include_fields",
         "MilesSinceReset",
         "SelfDrivingMilesSinceReset",
@@ -333,6 +369,8 @@ def test_capability_projection_handles_self_driving_and_synchronized_includes() 
     assert version_1_2.fields["VehicleSpeed"].include_fields == ()
     assert version_1_2.fields["LongitudinalAcceleration"].include_fields == ()
     assert set(version_1_2.capability_omissions) == {
+        "DetailedChargeState.include_fields",
+        "Gear.include_fields",
         "LongitudinalAcceleration.include_fields",
         "MilesSinceReset.include_fields",
         "SelfDrivingMilesSinceReset.include_fields",
@@ -341,10 +379,53 @@ def test_capability_projection_handles_self_driving_and_synchronized_includes() 
 
     version_1_3 = broad_profile("1.3.0")
     assert version_1_3.fields["VehicleSpeed"].include_fields == ("LongitudinalAcceleration",)
+    assert version_1_3.fields["Gear"].include_fields == (
+        "Odometer",
+        "EnergyRemaining",
+        "Soc",
+        "Location",
+    )
+    assert "ACChargingEnergyIn" in version_1_3.fields["DetailedChargeState"].include_fields
     assert version_1_3.fields["LongitudinalAcceleration"].include_fields == ("VehicleSpeed",)
     assert version_1_3.fields["SelfDrivingMilesSinceReset"].include_fields == ("MilesSinceReset",)
     assert version_1_3.fields["MilesSinceReset"].include_fields == ("SelfDrivingMilesSinceReset",)
     assert version_1_3.capability_omissions == {}
+
+
+def test_inspect_uses_live_fleet_status_capability_and_reports_firmware_mismatch() -> None:
+    controller, _, fleet = service()
+    fleet.firmware_version = "2026.26.6"
+    fleet.fleet_telemetry_version = "1.2.0"
+
+    plan = controller.inspect(context(), "veh_one")
+    capability = plan["capability"]
+
+    assert isinstance(capability, dict)
+    assert capability["vehicle_firmware"] == "2026.26.6"
+    assert capability["fleet_telemetry_client"] == "1.2.0"
+    assert capability["include_fields_supported"] is False
+    assert capability["include_fields_requested"] is False
+    assert capability["status"] == "firmware_client_capability_mismatch"
+
+
+def test_inspect_detects_stale_stored_status_and_projects_live_1_3_profile() -> None:
+    controller, _, fleet = service()
+    fleet.firmware_version = "2026.26.6"
+    fleet.fleet_telemetry_version = "1.3.0"
+
+    plan = controller.inspect(context(), "veh_one")
+    capability = plan["capability"]
+    difference = plan["diff"]
+
+    assert isinstance(capability, dict)
+    assert capability["stored_fleet_telemetry_client"] == "1.2.0"
+    assert capability["fleet_telemetry_client"] == "1.3.0"
+    assert capability["include_fields_supported"] is True
+    assert capability["include_fields_requested"] is True
+    assert capability["status"] == "stored_fleet_status_stale"
+    assert isinstance(difference, dict)
+    assert "Gear" in str(difference)
+    assert "DetailedChargeState" in str(difference)
 
 
 def test_config_hash_separates_field_profile_from_stable_trust_profile() -> None:
@@ -502,7 +583,7 @@ def test_verify_repairs_provenance_without_reapplying_vehicle_config() -> None:
     assert result["status"] == "verified"
     assert fleet.created == []
     persisted = store.states["veh_one"]
-    assert persisted.profile_version == "broad-v2"
+    assert persisted.profile_version == "broad-v3"
     assert persisted.config_hash == result["config_hash"]
     assert persisted.status == "synced"
     assert persisted.transport_maintenance_opt_in is True
@@ -514,6 +595,7 @@ def test_verify_repairs_provenance_without_reapplying_vehicle_config() -> None:
 def test_vehicle_client_without_delta_support_is_not_configured() -> None:
     old_vehicle = replace(vehicle(), fleet_telemetry_version="0.9.0")
     controller, _, fleet = service(MemoryStore([old_vehicle]))
+    fleet.fleet_telemetry_version = "0.9.0"
 
     with pytest.raises(TelemetryConfigurationError, match="1.0.0"):
         controller.inspect(context(), old_vehicle.vehicle_id)

@@ -58,7 +58,7 @@ TELEMETRY_FIELD_CATALOG = AnalyticsObject(
         (
             "configured",
             "BOOLEAN",
-            "Whether the full broad-v2 profile requests this field; not proof of emission.",
+            "Whether the full broad-v3 profile requests this field; not proof of emission.",
         ),
         ("interval_seconds", "INTEGER", "Requested minimum emission interval."),
         ("minimum_delta", "FLOAT64", "Requested change threshold when configured."),
@@ -101,6 +101,8 @@ TELEMETRY_OBSERVATIONS = AnalyticsObject(
         ("transport_message_id", "STRING", "Tesla transaction identifier."),
         ("pubsub_message_id", "STRING", "Google Pub/Sub message identifier."),
         ("telemetry_client_version", "STRING", "Vehicle telemetry client version."),
+        ("telemetry_receiver_version", "STRING", "Pinned receiver build version."),
+        ("receiver_record_version", "INTEGER", "Receiver-decoded record protocol version."),
     ),
     partition_hint="Always filter source_timestamp for bounded historical scans.",
 )
@@ -130,6 +132,31 @@ VEHICLE_STATE_CHANGES = AnalyticsObject(
     partition_hint="Filter source_timestamp and field_name before transition analysis.",
 )
 
+DRIVE_METRIC_BOUNDARIES = AnalyticsObject(
+    "drive_metric_boundaries",
+    "view",
+    "Selected start/end state for each Gear-defined drive with inspectable provenance.",
+    _columns(
+        ("drive_id", "STRING", "Deterministic vehicle/start-time drive identifier."),
+        ("vehicle_id", "STRING", "Opaque internal vehicle identifier."),
+        ("started_at", "TIMESTAMP", "Driving Gear transition."),
+        ("ended_at", "TIMESTAMP", "Subsequent non-driving Gear transition."),
+        ("boundary_name", "STRING", "start or end."),
+        ("field_name", "STRING", "Boundary metric: odometer, energy, SOC, or location."),
+        ("boundary_at", "TIMESTAMP", "Actual Gear boundary timestamp."),
+        ("selected_observation_at", "TIMESTAMP", "Chosen metric observation timestamp."),
+        ("observation_offset_milliseconds", "INTEGER", "Signed observation age at boundary."),
+        ("selected_numeric_value", "FLOAT64", "Chosen numeric boundary value."),
+        ("selected_latitude", "FLOAT64", "Chosen boundary latitude."),
+        ("selected_longitude", "FLOAT64", "Chosen boundary longitude."),
+        ("inference_method", "STRING", "Exact, stationary, or sparse fallback method."),
+        ("boundary_message_id", "STRING", "Pub/Sub delivery containing the Gear transition."),
+        ("observation_message_id", "STRING", "Pub/Sub delivery containing the chosen value."),
+    ),
+    join_keys=("drive_id", "vehicle_id"),
+    partition_hint="Filter started_at for bounded boundary diagnostics.",
+)
+
 DRIVES = AnalyticsObject(
     "drives",
     "view",
@@ -141,12 +168,14 @@ DRIVES = AnalyticsObject(
         ("ended_at", "TIMESTAMP", "First subsequent non-driving Gear transition."),
         ("is_ongoing", "BOOLEAN", "No ending Gear transition has arrived yet."),
         ("duration_seconds", "INTEGER", "Observed session duration."),
-        ("start_odometer_miles", "FLOAT64", "First odometer observation in session."),
-        ("end_odometer_miles", "FLOAT64", "Last odometer observation in session."),
+        ("start_odometer_miles", "FLOAT64", "Odometer selected at the Gear start boundary."),
+        ("end_odometer_miles", "FLOAT64", "Odometer selected at the Gear end boundary."),
         ("distance_miles", "FLOAT64", "Non-negative odometer delta."),
-        ("start_energy_kwh", "FLOAT64", "First EnergyRemaining observation."),
-        ("end_energy_kwh", "FLOAT64", "Last EnergyRemaining observation."),
+        ("start_energy_kwh", "FLOAT64", "EnergyRemaining selected at the start boundary."),
+        ("end_energy_kwh", "FLOAT64", "EnergyRemaining selected at the end boundary."),
         ("energy_used_kwh", "FLOAT64", "Non-negative EnergyRemaining decrease."),
+        ("start_soc_percent", "FLOAT64", "Usable SOC selected at the start boundary."),
+        ("end_soc_percent", "FLOAT64", "Usable SOC selected at the end boundary."),
         ("efficiency_wh_per_mile", "FLOAT64", "Energy used divided by distance."),
         ("maximum_speed_mph", "FLOAT64", "Maximum observed VehicleSpeed."),
         ("start_latitude", "FLOAT64", "First observed session latitude."),
@@ -156,6 +185,7 @@ DRIVES = AnalyticsObject(
         ("observation_count", "INTEGER", "Typed observations assigned to the session."),
         ("largest_sample_gap_seconds", "INTEGER", "Largest source-time gap in the session."),
         ("telemetry_config_hash", "STRING", "Most recent profile hash in the session."),
+        ("boundary_quality", "STRING", "Exact, stationary inference, or sparse fallback."),
     ),
     partition_hint="Filter started_at for trip/date questions.",
 )
@@ -163,7 +193,7 @@ DRIVES = AnalyticsObject(
 CHARGE_SESSIONS = AnalyticsObject(
     "charge_sessions",
     "view",
-    "Charging sessions reconstructed from DetailedChargeState/ChargeState transitions.",
+    "Charging sessions from authoritative DetailedChargeState with bounded ChargeState fallback.",
     _columns(
         ("charge_session_id", "STRING", "Deterministic vehicle/start-time identifier."),
         ("vehicle_id", "STRING", "Opaque internal vehicle identifier."),
@@ -176,14 +206,152 @@ CHARGE_SESSIONS = AnalyticsObject(
         ("soc_added_percent", "FLOAT64", "Non-negative SOC increase."),
         ("ac_energy_added_kwh", "FLOAT64", "AC charging-energy counter increase."),
         ("dc_energy_added_kwh", "FLOAT64", "DC charging-energy counter increase."),
+        ("battery_energy_added_kwh", "FLOAT64", "Battery-side energy added for AC or DC."),
+        ("charging_efficiency_percent", "FLOAT64", "Battery energy divided by AC wall energy."),
+        ("start_energy_remaining_kwh", "FLOAT64", "Battery energy at session start."),
+        ("end_energy_remaining_kwh", "FLOAT64", "Battery energy at session end."),
+        ("start_odometer_miles", "FLOAT64", "Odometer at charge start."),
+        ("end_odometer_miles", "FLOAT64", "Odometer at charge end."),
+        (
+            "distance_since_previous_charge_miles",
+            "FLOAT64",
+            "Odometer distance since the previous charge ended.",
+        ),
         ("maximum_ac_power_kw", "FLOAT64", "Maximum observed AC charging power."),
         ("maximum_dc_power_kw", "FLOAT64", "Maximum observed DC charging power."),
         ("maximum_voltage", "FLOAT64", "Maximum observed charger voltage."),
         ("start_latitude", "FLOAT64", "First observed charging latitude."),
         ("start_longitude", "FLOAT64", "First observed charging longitude."),
+        ("end_latitude", "FLOAT64", "Charge-end latitude when available."),
+        ("end_longitude", "FLOAT64", "Charge-end longitude when available."),
         ("observation_count", "INTEGER", "Typed observations assigned to the session."),
+        ("state_source", "STRING", "Detailed state or coarse fallback session source."),
+        ("soc_boundary_method", "STRING", "SOC boundary inference provenance."),
+        ("odometer_boundary_method", "STRING", "Odometer boundary inference provenance."),
+        ("ac_energy_method", "STRING", "Exact, observed, or bounded power integration."),
+        ("dc_energy_method", "STRING", "Battery counter boundary inference provenance."),
+        ("telemetry_config_hash", "STRING", "Most recent profile hash in the session."),
     ),
     partition_hint="Filter started_at for billing or charging-history questions.",
+)
+
+DRIVE_PATH_POINTS = AnalyticsObject(
+    "drive_path_points",
+    "view",
+    "Route points with GPS distance scaled to the drive odometer boundary distance.",
+    _columns(
+        ("drive_id", "STRING", "Drive identifier."),
+        ("vehicle_id", "STRING", "Opaque internal vehicle identifier."),
+        ("source_timestamp", "TIMESTAMP", "Location observation time."),
+        ("latitude", "FLOAT64", "Route latitude."),
+        ("longitude", "FLOAT64", "Route longitude."),
+        ("speed_mph", "FLOAT64", "Most recent speed at this point."),
+        ("soc_percent", "FLOAT64", "Most recent SOC at this point."),
+        ("distance_into_drive_miles", "FLOAT64", "Scaled distance from drive start."),
+        ("segment_distance_miles", "FLOAT64", "Raw GPS distance from prior point."),
+        ("raw_route_distance_miles", "FLOAT64", "Total unscaled GPS polyline distance."),
+        ("boundary_distance_miles", "FLOAT64", "Odometer-derived drive distance."),
+    ),
+    join_keys=("drive_id", "vehicle_id", "source_timestamp"),
+    partition_hint="Filter source_timestamp or join through a bounded drive window.",
+)
+
+DRIVE_FSD_SEGMENTS = AnalyticsObject(
+    "drive_fsd_segments",
+    "view",
+    "Distance buckets inferred as manual, FSD, or uncertain from cumulative counters.",
+    _columns(
+        ("drive_id", "STRING", "Drive identifier."),
+        ("segment_index", "INTEGER", "Distance-ordered segment number."),
+        ("started_at", "TIMESTAMP", "Nearest route time to inferred segment start."),
+        ("ended_at", "TIMESTAMP", "Nearest route time to inferred segment end."),
+        ("start_latitude", "FLOAT64", "Nearest route latitude at segment start."),
+        ("start_longitude", "FLOAT64", "Nearest route longitude at segment start."),
+        ("end_latitude", "FLOAT64", "Nearest route latitude at segment end."),
+        ("end_longitude", "FLOAT64", "Nearest route longitude at segment end."),
+        ("start_distance_miles", "FLOAT64", "Distance from drive start."),
+        ("end_distance_miles", "FLOAT64", "Distance from drive start."),
+        ("distance_miles", "FLOAT64", "Inferred segment distance."),
+        ("state", "STRING", "manual, fsd, or uncertain."),
+        ("confidence", "FLOAT64", "Inference confidence from zero to one."),
+        ("inference_method", "STRING", "Counter pairing/allocation method."),
+        ("transition_lower_bound_miles", "FLOAT64", "Lower distance bound for transition."),
+        ("transition_upper_bound_miles", "FLOAT64", "Upper distance bound for transition."),
+    ),
+    join_keys=("drive_id",),
+    partition_hint="Filter started_at or select bounded drive IDs.",
+)
+
+DRIVE_FSD_SUMMARY = AnalyticsObject(
+    "drive_fsd_summary",
+    "view",
+    "Per-drive aggregate FSD/manual/uncertain distance with explicit confidence.",
+    _columns(
+        ("drive_id", "STRING", "Drive identifier."),
+        ("vehicle_id", "STRING", "Opaque internal vehicle identifier."),
+        ("started_at", "TIMESTAMP", "Drive start."),
+        ("ended_at", "TIMESTAMP", "Drive end."),
+        ("total_distance_miles", "FLOAT64", "Boundary-derived drive distance."),
+        ("fsd_distance_miles", "FLOAT64", "Distance inferred as FSD."),
+        ("manual_distance_miles", "FLOAT64", "Distance inferred as manual."),
+        ("uncertain_distance_miles", "FLOAT64", "Distance lacking counter evidence."),
+        ("fsd_percent", "FLOAT64", "FSD distance divided by drive distance."),
+        ("minimum_confidence", "FLOAT64", "Lowest segment confidence."),
+        ("segment_count", "INTEGER", "Number of inferred segments."),
+    ),
+    join_keys=("drive_id", "vehicle_id"),
+    partition_hint="Filter started_at for trip/date analysis.",
+)
+
+DRIVE_PATH = AnalyticsObject(
+    "drive_path",
+    "view",
+    "Route-friendly points annotated with inferred FSD state and confidence.",
+    _columns(
+        ("drive_id", "STRING", "Drive identifier."),
+        ("vehicle_id", "STRING", "Opaque internal vehicle identifier."),
+        ("source_timestamp", "TIMESTAMP", "Route point time."),
+        ("latitude", "FLOAT64", "Route latitude."),
+        ("longitude", "FLOAT64", "Route longitude."),
+        ("speed_mph", "FLOAT64", "Carried speed context."),
+        ("soc_percent", "FLOAT64", "Carried SOC context."),
+        ("distance_into_drive_miles", "FLOAT64", "Distance from drive start."),
+        ("fsd_state", "STRING", "manual, fsd, or uncertain."),
+        ("fsd_confidence", "FLOAT64", "Segment inference confidence."),
+        ("fsd_inference_method", "STRING", "Segment inference provenance."),
+    ),
+    join_keys=("drive_id", "vehicle_id", "source_timestamp"),
+    partition_hint="Filter source_timestamp or select bounded drive IDs.",
+)
+
+TELEMETRY_CAPABILITY_DIAGNOSTICS = AnalyticsObject(
+    "telemetry_capability_diagnostics",
+    "view",
+    "Latest client/receiver/profile metadata and seven-day include-fields evidence.",
+    _columns(
+        ("vehicle_id", "STRING", "Opaque internal vehicle identifier."),
+        ("vehicle_firmware", "STRING", "Latest telemetry-reported firmware."),
+        ("telemetry_client_version", "STRING", "Latest connection client version."),
+        ("observed_client_versions", "ARRAY<STRING>", "Client versions seen in history."),
+        ("current_client_first_seen_at", "TIMESTAMP", "First row using the current client."),
+        ("current_client_last_seen_at", "TIMESTAMP", "Latest row using the current client."),
+        ("telemetry_receiver_version", "STRING", "Pinned receiver build."),
+        ("desired_profile_version", "STRING", "Trusted applied profile version."),
+        ("desired_profile_hash", "STRING", "Trusted applied profile hash."),
+        ("minimum_client_for_include_fields", "STRING", "Required client capability."),
+        ("include_fields_requested", "BOOLEAN", "Applied profile/client imply includes."),
+        ("include_fields_observed_recently", "BOOLEAN", "Recent synchronized payload evidence."),
+        ("gear_anchor_messages", "INTEGER", "Recent Gear anchor messages."),
+        ("synchronized_gear_messages", "INTEGER", "Gear messages carrying boundary fields."),
+        ("charge_anchor_messages", "INTEGER", "Recent DetailedChargeState messages."),
+        ("synchronized_charge_messages", "INTEGER", "Charge anchors carrying metrics."),
+        ("fsd_counter_messages", "INTEGER", "Recent FSD/total counter messages."),
+        ("synchronized_fsd_messages", "INTEGER", "Messages carrying both counters."),
+        ("capability_status", "STRING", "Healthy, limited, missing evidence, or mismatch."),
+        ("latest_telemetry_at", "TIMESTAMP", "Latest received vehicle datum time."),
+    ),
+    join_keys=("vehicle_id",),
+    partition_hint="This diagnostic intentionally considers only recent evidence.",
 )
 
 MEDIA_HISTORY = AnalyticsObject(
@@ -274,8 +442,14 @@ ANALYTICS_OBJECTS: Final = (
     TELEMETRY_OBSERVATIONS,
     *CATEGORY_SAMPLE_OBJECTS,
     VEHICLE_STATE_CHANGES,
+    DRIVE_METRIC_BOUNDARIES,
     DRIVES,
     CHARGE_SESSIONS,
+    DRIVE_PATH_POINTS,
+    DRIVE_FSD_SEGMENTS,
+    DRIVE_FSD_SUMMARY,
+    DRIVE_PATH,
+    TELEMETRY_CAPABILITY_DIAGNOSTICS,
     MEDIA_HISTORY,
     DAILY_VEHICLE_SUMMARY,
 )
@@ -313,6 +487,24 @@ EXAMPLE_QUERIES: Final = (
             "SELECT vehicle_id, COUNT(*) AS drives, SUM(distance_miles) AS miles "
             "FROM drives WHERE started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), "
             "INTERVAL 90 DAY) GROUP BY vehicle_id ORDER BY miles DESC"
+        ),
+    },
+    {
+        "purpose": "Summarize inferred Full Self-Driving share with uncertainty",
+        "sql": (
+            "SELECT drive_id, total_distance_miles, fsd_distance_miles, fsd_percent, "
+            "uncertain_distance_miles, minimum_confidence FROM drive_fsd_summary "
+            "WHERE started_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY) "
+            "ORDER BY started_at"
+        ),
+    },
+    {
+        "purpose": "Diagnose Fleet Telemetry include-fields capability",
+        "sql": (
+            "SELECT vehicle_id, vehicle_firmware, telemetry_client_version, "
+            "telemetry_receiver_version, desired_profile_version, "
+            "include_fields_requested, include_fields_observed_recently, capability_status "
+            "FROM telemetry_capability_diagnostics"
         ),
     },
     {

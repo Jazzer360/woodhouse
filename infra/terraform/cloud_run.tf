@@ -27,6 +27,7 @@ locals {
     FLEET_TELEMETRY_CONTROL_ENABLED = var.enable_fleet_telemetry_control ? "true" : "false"
     TELEMETRY_HOSTNAME              = var.telemetry_hostname
     TELEMETRY_PORT                  = tostring(var.fleet_telemetry_port)
+    TELEMETRY_RECEIVER_VERSION      = var.fleet_telemetry_receiver_version
     TELEMETRY_TRUST_PROFILE_ID      = coalesce(var.telemetry_trust_profile_id, "disabled")
   }
 

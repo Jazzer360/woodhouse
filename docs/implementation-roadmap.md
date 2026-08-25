@@ -150,12 +150,13 @@ No real vehicle Fleet Telemetry configuration is applied in this phase.
 
 ## Phase 8 — Cost-conscious Fleet Telemetry configuration
 
-Implementation status: `broad-v2` is implemented declaratively from the
-operator-supplied 93-field Tessie baseline with 14 reasoned overrides, 40
+Implementation status: `broad-v3` is implemented declaratively from the
+operator-supplied 93-field Tessie baseline with 16 reasoned overrides, 40
 additions, and 2 removals. The resulting 131-field passenger-vehicle profile
 explicitly accounts for all 239 catalog fields, uses opt-in deltas,
-capability-projects synchronized speed/acceleration payloads for Fleet
-Telemetry 1.3+, provides safe exact Tessie/current/desired diff, signed
+capability-projects synchronized speed/acceleration, drive-boundary,
+charge-boundary, and FSD-pair payloads from live `fleet_status` capability for
+Fleet Telemetry 1.3+, provides safe exact Tessie/current/desired diff, signed
 apply/verify/repair/remove, error inspection, audit, separate trust hashes, and
 a canary-first opted-in transport reconciler. The first real vehicle remains
 behind the required operator checkpoint in
@@ -192,7 +193,9 @@ applies configuration.
 
 **Goal:** Make permanent history broadly queryable without building one-off analytical endpoints.
 
-**Status:** Implemented in code; live deployment and operator checkpoint pending.
+**Status:** Implemented in code, including boundary-correct drives, authoritative
+charge sessions, uncertainty-preserving FSD route segments/summaries, and
+telemetry capability diagnostics; live deployment and operator checkpoint pending.
 
 **Prompt:** `docs/prompt-pack.md` → **Prompt 9 — Generic historical analytics MCP**
 
