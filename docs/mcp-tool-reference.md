@@ -1815,4 +1815,4 @@ Arguments:
 |---|---:|---|---|
 | `sql` | yes | string | One read-only BigQuery Standard SQL SELECT/WITH query using only unqualified names returned by get_analytics_schema. |
 
-Result: bounded columns and rows plus truncation, job ID, duration, referenced in-scope objects, and processed/billed bytes. SQL is AST-validated, canonicalized, dry-run first, capped at 1 GiB billed, 30 seconds, 200 rows, and 512 KiB.
+Result: bounded columns and rows plus truncation, job ID, duration, referenced in-scope objects, and processed/billed bytes. SQL is AST-validated, canonicalized, dry-run first, capped at 1 GiB billed, 30 seconds, 1,000 returned rows, and 1 MiB of serialized result data. BigQuery can aggregate or correlate more source rows; the row and result-size limits bound only the response returned through MCP.

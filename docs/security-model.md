@@ -331,7 +331,9 @@ requires each physical table to be an unqualified static-catalog object, and
 rejects generic/user-defined calls except a narrow deterministic geography
 constructor allowlist. BigQuery then independently receives the trusted
 dataset as `defaultDataset`, a 1 GiB `maximumBytesBilled` cap, and a 30-second
-job timeout. Results are bounded to 200 rows/512 KiB. The gateway service
+job timeout. Results are bounded to 1,000 rows/1 MiB; this limits response
+transport and model context, not the number of source rows BigQuery can
+aggregate within the other safety ceilings. The gateway service
 account has dataset-level read access and project-level job creation only; it
 cannot use caller SQL to acquire another dataset grant.
 
