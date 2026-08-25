@@ -1,10 +1,10 @@
 # MCP Tool Catalog
 
-**Status:** Phase 6 typed live surface.
+**Status:** Phase 6 typed live surface plus Phase 9 generic historical analytics.
 
 For the complete argument-by-argument endpoint reference, including Tesla
 method/path, scope, wake behavior, risk, retry policy, audit behavior,
-constraints, result semantics, and all 82 live tools, see the generated
+constraints, result semantics, all live tools, and the two historical tools, see the generated
 [`mcp-tool-reference.md`](mcp-tool-reference.md). Regenerate it from the typed
 registry with `uv run python scripts/dev/generate-mcp-tool-reference.py`; CI
 checks that every live tool and input field remains documented.
@@ -19,6 +19,14 @@ Issuer, audience, expiry, signature, and scope are validated before the manual
 allowlist. Tools never
 accept a user ID, email, dataset ID, VIN, ownership claim, Tesla token, or
 arbitrary HTTP method/path. Current state always comes from Fleet API.
+
+Historical questions use exactly two general tools: `get_analytics_schema` and
+`run_analytics_query`. The former describes the authenticated user's private
+catalog without revealing its physical dataset ID. The latter accepts one
+read-only Standard SQL `SELECT`/`WITH` statement against that server-derived
+default dataset. It is not a Tesla endpoint and never wakes a vehicle. There
+are intentionally no dedicated trip, charging, efficiency, or playlist tools;
+the model composes those questions from the catalog.
 
 ## Common vehicle-selection rule
 

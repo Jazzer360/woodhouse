@@ -3,7 +3,14 @@ name = "tpp-analytics"
 version = "0.0.0"
 description = "Read-only analytics boundary for the Tesla Personal Platform"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+  "google-cloud-bigquery>=3.30,<4",
+  "sqlglot==30.17.0",
+  "tpp-shared-models",
+]
+
+[tool.uv.sources]
+tpp-shared-models = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

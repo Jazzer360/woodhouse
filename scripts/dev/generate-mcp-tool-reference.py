@@ -9,11 +9,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-from tesla_personal_platform.mcp_gateway.mcp_tools import MCP_TOOL_SPECS, ToolSpec
+from tesla_personal_platform.mcp_gateway.mcp_tools import (
+    MCP_TOOL_SPECS,
+    ToolSpec,
+    analytics_tool_documents,
+)
 from tesla_personal_platform.tesla_client.coverage import COMMAND_NAMES
 
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "docs" / "mcp-tool-reference.md"
+ANALYTICS_TOOLS = analytics_tool_documents()
 
 _ENDPOINTS = {
     "tesla_charging_history": ("GET", "/api/1/dx/charging/history"),
@@ -240,6 +245,50 @@ def tool_section(spec: ToolSpec) -> list[str]:
     return lines
 
 
+def analytics_tool_section(document: dict[str, Any]) -> list[str]:
+    name = str(document["name"])
+    schema = document["inputSchema"]
+    required = set(schema.get("required", []))
+    lines = [
+        f"### `{name}`",
+        "",
+        str(document["description"]),
+        "",
+        "- Data source: authenticated user's server-derived BigQuery default dataset",
+        "- Platform scope: `mcp:access`",
+        "- Vehicle wake: `never`",
+        "- Risk: `read_only`",
+        "- Retry: no automatic retry after execution begins",
+        "- Audit/logging: query job metadata only; SQL and result rows are excluded",
+        "",
+        "Arguments:",
+        "",
+        "| Name | Required | Type/constraints | Meaning |",
+        "|---|---:|---|---|",
+    ]
+    properties = schema.get("properties", {})
+    if not properties:
+        lines.append("| _none_ | — | — | Identity and dataset are derived from OAuth. |")
+    for argument, value in properties.items():
+        lines.append(
+            f"| `{argument}` | {'yes' if argument in required else 'no'} | "
+            f"{schema_summary(value)} | {value.get('description', '')} |"
+        )
+    if name == "get_analytics_schema":
+        result = (
+            "Result: user-safe object/field descriptions, join keys, partition hints, "
+            "examples, and active query limits; the physical dataset ID is not returned."
+        )
+    else:
+        result = (
+            "Result: bounded columns and rows plus truncation, job ID, duration, referenced "
+            "in-scope objects, and processed/billed bytes. SQL is AST-validated, canonicalized, "
+            "dry-run first, capped at 1 GiB billed, 30 seconds, 200 rows, and 512 KiB."
+        )
+    lines.extend(["", result, ""])
+    return lines
+
+
 def render_reference() -> str:
     undocumented_commands = {
         spec.client_method
@@ -274,7 +323,7 @@ def render_reference() -> str:
         "  `vehicle_not_owned`, `reauthorization_required`, validation errors, Tesla rejection,",
         "  and indeterminate transport failure. Use `correlation_id` for redacted logs/audit.",
         "",
-        f"## Tool index ({len(MCP_TOOL_SPECS)})",
+        f"## Tool index ({len(MCP_TOOL_SPECS) + len(ANALYTICS_TOOLS)})",
         "",
         "| Tool | Tesla operation | Scope | Risk | Wake |",
         "|---|---|---|---|---|",
@@ -285,9 +334,17 @@ def render_reference() -> str:
             f"| [`{spec.name}`](#{spec.name.replace('_', '-')}) | `{method} {path}` | "
             f"`{spec.required_scope}` | `{spec.risk}` | `{spec.wake_behavior}` |"
         )
+    for document in ANALYTICS_TOOLS:
+        name = str(document["name"])
+        lines.append(
+            f"| [`{name}`](#{name.replace('_', '-')}) | `BigQuery read-only` | "
+            "`mcp:access` | `read_only` | `never` |"
+        )
     lines.extend(["", "## Detailed tools", ""])
     for spec in MCP_TOOL_SPECS:
         lines.extend(tool_section(spec))
+    for document in ANALYTICS_TOOLS:
+        lines.extend(analytics_tool_section(document))
     return "\n".join(lines).rstrip() + "\n"
 
 

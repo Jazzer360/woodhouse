@@ -172,6 +172,30 @@ Historical chronology uses source time. Transport health diagnostics use both.
 
 Raw truth remains permanent. Build derived views/materialized tables on top.
 
+Phase 9 provisions the following dependency-ordered logical views in every
+approved user's existing private dataset whenever `add-user` is run:
+
+The typed `Value` mapping was rechecked on 2026-08-24 against Tesla's current
+official `fleet-telemetry/protos/vehicle_data.proto`. Known scalar enum oneofs
+are promoted to `string_value`; structured `time_value`/`tire_location_value`
+and every future/unknown representation remain intact in `value_json`.
+
+| View | Interpretation |
+|---|---|
+| `telemetry_observations` | Expands each `V` payload datum into typed numeric, string/enum, boolean, location, and complete JSON values. Exact Pub/Sub redeliveries are de-duplicated by `pubsub_message_id` here; Tesla-marked resends remain observations. |
+| `vehicle_state_changes` | Orders valid values by vehicle/field/source time and exposes the previous typed value. |
+| `drives` | Reconstructs forward/reverse Gear intervals and summarizes time, odometer distance, energy, speed, endpoints, sample count/gaps, and config provenance. |
+| `charge_sessions` | Reconstructs charging-state intervals and summarizes SOC, AC/DC energy counters, power, voltage, location, and sample count. |
+| `media_history` | Carries emitted media changes forward and groups contiguous title/artist/album/station/source/playback-state intervals, including playback position and volume. |
+| `daily_vehicle_summary` | UTC daily per-vehicle drive, efficiency, charging, SOC, temperature, and maximum-speed summary. |
+
+These are rebuildable views, not additional sources of truth. Their session
+boundaries are only as complete as the emitted source changes; open sessions
+remain explicitly marked. Query callers should filter `source_timestamp`,
+`started_at`, or `summary_date` to preserve raw partition pruning through the
+view chain. `semantic_events` is intentionally absent until Phase 10 produces
+real semantic events.
+
 Initial useful concepts:
 
 ```text
@@ -309,6 +333,23 @@ Security requirements:
 - maximum-bytes safety cap.
 
 The safety cap prevents accidental giant queries. It is not a per-user commercial quota.
+
+The implemented bounds are one parsed/canonicalized BigQuery statement, 32 KiB
+of SQL text, a 1 GiB `maximumBytesBilled` ceiling, a 15-second dry-run request,
+a 30-second execution/job timeout, 200 returned rows, and 512 KiB of serialized
+row data. The AST must resolve every physical table to one unqualified name in
+the static analytics catalog. CTEs and subqueries are allowed; project/dataset
+qualification, unknown objects, DML/DDL, scripts, `EXPORT DATA`,
+`EXTERNAL_QUERY`, and remote/user-defined functions are rejected. A narrow
+allowlist exists only for deterministic BigQuery geography constructors that
+SQLGlot 30.17 represents generically. The canonical AST rendering—not the
+caller's original SQL string—is sent to BigQuery.
+
+Successful operational logs contain the opaque authenticated `user_id`,
+correlation/job IDs, duration, processed/billed bytes, referenced in-scope
+object names, returned-row count/bytes, and truncation. Failure logs contain a
+safe category/type and the same non-row metadata. SQL text and result rows are
+not copied to general logs.
 
 ---
 

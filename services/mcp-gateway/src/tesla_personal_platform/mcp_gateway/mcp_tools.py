@@ -21,6 +21,7 @@ from typing import (
     get_type_hints,
 )
 
+from tesla_personal_platform.analytics import AnalyticsContext, AnalyticsQueryError
 from tesla_personal_platform.auth import CrossUserAccessError, UserContext
 from tesla_personal_platform.mcp_gateway.mcp_auth import MCP_ACCESS_SCOPE
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
@@ -136,6 +137,20 @@ class CommandAuditStore(Protocol):
         result: str,
         error_category: str | None,
     ) -> None: ...
+
+
+class AnalyticsProvider(Protocol):
+    """Historical analytics boundary, already scoped by authenticated context."""
+
+    def get_schema(self, context: AnalyticsContext, *, correlation_id: str) -> Document: ...
+
+    def run_query(
+        self,
+        context: AnalyticsContext,
+        sql: str,
+        *,
+        correlation_id: str,
+    ) -> Document: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,6 +519,61 @@ def _build_specs() -> tuple[ToolSpec, ...]:
 MCP_TOOL_SPECS = _build_specs()
 MCP_TOOLS_BY_NAME = {spec.name: spec for spec in MCP_TOOL_SPECS}
 
+ANALYTICS_TOOL_SCHEMAS: dict[str, Document] = {
+    "get_analytics_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False,
+    },
+    "run_analytics_query": {
+        "type": "object",
+        "properties": {
+            "sql": {
+                "type": "string",
+                "description": (
+                    "One read-only BigQuery Standard SQL SELECT/WITH query using only "
+                    "unqualified names returned by get_analytics_schema."
+                ),
+            }
+        },
+        "required": ["sql"],
+        "additionalProperties": False,
+    },
+}
+
+
+def analytics_tool_documents(*, oauth_protected: bool = True) -> list[Document]:
+    """Return the two general historical tools; no one-off history endpoints."""
+    descriptions = {
+        "get_analytics_schema": (
+            "Describe the authenticated user's private historical analytics catalog, including "
+            "tables/views, fields, join keys, partition hints, limits, and useful SQL examples."
+        ),
+        "run_analytics_query": (
+            "Dry-run and execute one bounded, read-only Standard SQL SELECT/WITH query in the "
+            "authenticated user's server-derived BigQuery dataset. Qualified names, scripting, "
+            "DML/DDL, external queries, and remote/user-defined functions are rejected."
+        ),
+    }
+    documents: list[Document] = []
+    for name in ("get_analytics_schema", "run_analytics_query"):
+        document: Document = {
+            "name": name,
+            "description": descriptions[name],
+            "inputSchema": ANALYTICS_TOOL_SCHEMAS[name],
+            "annotations": {
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "idempotentHint": True,
+                "openWorldHint": True,
+            },
+        }
+        if oauth_protected:
+            document["securitySchemes"] = [{"type": "oauth2", "scopes": [MCP_ACCESS_SCOPE]}]
+        documents.append(document)
+    return documents
+
 
 class TeslaMCPService:
     """Execute typed operations inside the authenticated user's boundary."""
@@ -516,6 +586,7 @@ class TeslaMCPService:
         credentials: TeslaAccessProvider,
         store: TeslaOnboardingStore,
         audit_store: CommandAuditStore,
+        analytics: AnalyticsProvider | None = None,
         sleep: Callable[[float], None] = time.sleep,
         oauth_protected: bool = True,
     ) -> None:
@@ -523,11 +594,17 @@ class TeslaMCPService:
         self._commands = PerUserTeslaClient(command_fleet, credentials)
         self._store = store
         self._audit_store = audit_store
+        self._analytics = analytics
         self._sleep = sleep
         self._oauth_protected = oauth_protected
 
     def tools(self) -> list[Document]:
-        return [spec.mcp_document(oauth_protected=self._oauth_protected) for spec in MCP_TOOL_SPECS]
+        tools = [
+            spec.mcp_document(oauth_protected=self._oauth_protected) for spec in MCP_TOOL_SPECS
+        ]
+        if self._analytics is not None:
+            tools.extend(analytics_tool_documents(oauth_protected=self._oauth_protected))
+        return tools
 
     def call(self, context: UserContext, name: str, arguments: object) -> Document:
         correlation_id = f"corr_{secrets.token_hex(16)}"
@@ -546,12 +623,34 @@ class TeslaMCPService:
         *,
         correlation_id: str,
     ) -> Document:
-        spec = MCP_TOOLS_BY_NAME.get(name)
-        if spec is None:
-            raise MCPToolError("unknown_tool", "Unknown Tesla MCP tool")
         if not isinstance(arguments, dict) or not all(isinstance(key, str) for key in arguments):
             raise MCPToolError("invalid_arguments", "Tool arguments must be a JSON object")
         values = dict(arguments)
+        analytics_schema = ANALYTICS_TOOL_SCHEMAS.get(name)
+        if analytics_schema is not None:
+            if self._analytics is None:
+                raise MCPToolError("analytics_unavailable", "Historical analytics is unavailable")
+            _validate_schema(values, analytics_schema)
+            try:
+                if name == "get_analytics_schema":
+                    document = self._analytics.get_schema(
+                        context,
+                        correlation_id=correlation_id,
+                    )
+                else:
+                    document = self._analytics.run_query(
+                        context,
+                        str(values["sql"]),
+                        correlation_id=correlation_id,
+                    )
+            except AnalyticsQueryError as error:
+                raise MCPToolError(error.category, str(error)) from error
+            document["correlation_id"] = correlation_id
+            return document
+
+        spec = MCP_TOOLS_BY_NAME.get(name)
+        if spec is None:
+            raise MCPToolError("unknown_tool", "Unknown MCP tool")
         if (
             spec.risk == "security_sensitive"
             and values.get("explicit_current_turn_intent") is not True
@@ -969,7 +1068,7 @@ class MCPProtocol:
             except Exception:
                 return _tool_result(
                     request_id,
-                    {"error": "internal_error", "message": "Tesla MCP operation failed"},
+                    {"error": "internal_error", "message": "MCP operation failed"},
                     True,
                 )
             return _tool_result(request_id, result, False)

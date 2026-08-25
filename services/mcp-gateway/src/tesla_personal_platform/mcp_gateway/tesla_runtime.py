@@ -5,7 +5,8 @@ from dataclasses import dataclass
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from google.cloud import firestore
+from google.cloud import bigquery, firestore
+from tesla_personal_platform.analytics import BigQueryAnalyticsService
 from tesla_personal_platform.mcp_gateway.mcp_tools import MCPProtocol, TeslaMCPService
 from tesla_personal_platform.mcp_gateway.telemetry_control import FleetTelemetryControlService
 from tesla_personal_platform.mcp_gateway.tesla_firestore import FirestoreTeslaOnboardingStore
@@ -76,6 +77,7 @@ def build_tesla_runtime(
     command_fleet = _build_command_fleet()
     mcp = (
         _build_mcp_runtime(
+            project_id,
             fleet,
             command_fleet,
             onboarding,
@@ -110,6 +112,7 @@ def _build_command_fleet() -> TeslaFleetClient | None:
 
 
 def _build_mcp_runtime(
+    project_id: str,
     fleet: TeslaFleetClient,
     command_fleet: TeslaFleetClient,
     onboarding: TeslaOnboardingService,
@@ -124,6 +127,11 @@ def _build_mcp_runtime(
             credentials=onboarding,
             store=store,
             audit_store=store,
+            analytics=BigQueryAnalyticsService(
+                bigquery.Client(project=project_id),
+                project_id,
+                os.environ.get("ANALYTICS_LOCATION", "us-central1").strip(),
+            ),
             oauth_protected=oauth_protected,
         )
     )

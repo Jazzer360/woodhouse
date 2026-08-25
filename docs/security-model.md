@@ -325,6 +325,16 @@ The server:
 - rejects explicit dataset/project references;
 - permits read-only SQL only.
 
+Phase 9 enforces this with SQLGlot's BigQuery AST and scope model before the
+query reaches BigQuery. It executes only the parser's canonical rendering,
+requires each physical table to be an unqualified static-catalog object, and
+rejects generic/user-defined calls except a narrow deterministic geography
+constructor allowlist. BigQuery then independently receives the trusted
+dataset as `defaultDataset`, a 1 GiB `maximumBytesBilled` cap, and a 30-second
+job timeout. Results are bounded to 200 rows/512 KiB. The gateway service
+account has dataset-level read access and project-level job creation only; it
+cannot use caller SQL to acquire another dataset grant.
+
 This keeps generic model-written SQL without requiring complex shared-row security.
 
 ---
@@ -345,6 +355,12 @@ Tesla access can additionally be revoked through Tesla consent management, and t
 ## 11. Sensitive logs
 
 Never log tokens, secrets, PINs, or unnecessary exact location.
+
+Analytics logs never contain model-authored SQL or returned rows. They contain
+only opaque user/correlation/job identifiers, referenced allowlisted object
+names, processed/billed bytes, duration, row/byte counts, truncation, and safe
+failure type/category. This preserves cost and performance diagnostics without
+copying historical location or media data into general logging.
 
 Command audit is required, but redacted.
 

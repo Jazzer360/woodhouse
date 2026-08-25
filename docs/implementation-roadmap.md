@@ -192,6 +192,8 @@ applies configuration.
 
 **Goal:** Make permanent history broadly queryable without building one-off analytical endpoints.
 
+**Status:** Implemented in code; live deployment and operator checkpoint pending.
+
 **Prompt:** `docs/prompt-pack.md` → **Prompt 9 — Generic historical analytics MCP**
 
 **Exit criteria:**

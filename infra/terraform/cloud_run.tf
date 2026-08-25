@@ -15,6 +15,7 @@ locals {
   }
 
   tesla_gateway_environment = {
+    ANALYTICS_LOCATION              = var.region
     TESLA_CLIENT_ID                 = var.tesla_client_id
     TESLA_APP_DOMAIN                = var.tesla_app_domain
     TESLA_OAUTH_REDIRECT_URI        = var.tesla_oauth_redirect_uri

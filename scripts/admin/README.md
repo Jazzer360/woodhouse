@@ -35,9 +35,10 @@ uv run python scripts/admin/reset-user-identity \
 The confirmation protects against resetting the wrong tenant. The operation
 preserves dataset, vehicle, Tesla connection, and historical data.
 
-After Phase 7 IAM is applied, re-run `add-user` once for every existing account.
+After Phase 9 is deployed, re-run `add-user` once for every existing account.
 The same idempotent command creates/repairs that user's non-expiring,
-source-time-partitioned `raw_telemetry_events` table without deleting data.
+source-time-partitioned `raw_telemetry_events` table and all rebuildable
+analytical views without deleting data.
 
 The commands never accept or print a token, secret, service-account key, or
 Tesla credential. See [`docs/deployment.md`](../../docs/deployment.md#manual-add-homer-workflow)

@@ -3,6 +3,7 @@
 from collections.abc import Iterable
 
 from google.cloud import bigquery
+from tesla_personal_platform.analytics import analytics_views
 from tesla_personal_platform.auth.models import AllowedUser
 from tesla_personal_platform.shared_models import RAW_TELEMETRY_SCHEMA, RAW_TELEMETRY_TABLE
 
@@ -161,3 +162,32 @@ class BigQueryDatasetProvisioner:
             ["description", "expires", "labels"],
             timeout=30,
         )
+        self._provision_analytics_views(user.dataset_id)
+
+    def _provision_analytics_views(self, dataset_id: str) -> None:
+        """Create or update dependency-ordered rebuildable views without touching raw truth."""
+        for definition in analytics_views(self._project_id, dataset_id):
+            view = bigquery.Table(f"{self._project_id}.{dataset_id}.{definition.name}")
+            view.description = definition.description
+            view.labels = {
+                "application": "tesla-personal-platform",
+                "data_class": "restricted-user-telemetry",
+                "managed_by": "add-user",
+                "layer": "analytics",
+            }
+            view.view_query = definition.sql
+            view.view_use_legacy_sql = False
+            self._client.create_table(view, exists_ok=True, timeout=30)
+
+            current_view = self._client.get_table(view.reference, timeout=30)
+            if current_view.table_type not in {None, "VIEW"}:
+                raise ValueError(f"Existing object {dataset_id}.{definition.name} is not a view")
+            current_view.description = view.description
+            current_view.labels = view.labels.copy()
+            current_view.view_query = view.view_query
+            current_view.view_use_legacy_sql = False
+            self._client.update_table(
+                current_view,
+                ["description", "labels", "view_query", "view_use_legacy_sql"],
+                timeout=30,
+            )

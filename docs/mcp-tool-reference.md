@@ -21,7 +21,7 @@ API documentation on 2026-08-24.
   `vehicle_not_owned`, `reauthorization_required`, validation errors, Tesla rejection,
   and indeterminate transport failure. Use `correlation_id` for redacted logs/audit.
 
-## Tool index (82)
+## Tool index (84)
 
 | Tool | Tesla operation | Scope | Risk | Wake |
 |---|---|---|---|---|
@@ -107,6 +107,8 @@ API documentation on 2026-08-24.
 | [`tesla_vehicle_data`](#tesla-vehicle-data) | `GET /api/1/vehicles/{vin}/vehicle_data` | `vehicle_device_data` | `read_only` | `requires_awake` |
 | [`tesla_wake_up`](#tesla-wake-up) | `POST /api/1/vehicles/{vin}/wake_up` | `vehicle_device_data` | `normal` | `explicit` |
 | [`tesla_window_control`](#tesla-window-control) | `POST /api/1/vehicles/{vin}/command/window_control` | `vehicle_cmds` | `security_sensitive` | `auto_if_needed` |
+| [`get_analytics_schema`](#get-analytics-schema) | `BigQuery read-only` | `mcp:access` | `read_only` | `never` |
+| [`run_analytics_query`](#run-analytics-query) | `BigQuery read-only` | `mcp:access` | `read_only` | `never` |
 
 ## Detailed tools
 
@@ -1776,3 +1778,41 @@ Arguments:
 | `explicit_current_turn_intent` | yes | boolean; must be `true` | Set true only when the user unambiguously requested this exact security-sensitive operation in the current turn. |
 
 Result: a sanitized structured result with `correlation_id`. Commands also return Tesla's success/reason outcome and, when an automatic wake was needed, `wake_correlation_id`.
+
+### `get_analytics_schema`
+
+Describe the authenticated user's private historical analytics catalog, including tables/views, fields, join keys, partition hints, limits, and useful SQL examples.
+
+- Data source: authenticated user's server-derived BigQuery default dataset
+- Platform scope: `mcp:access`
+- Vehicle wake: `never`
+- Risk: `read_only`
+- Retry: no automatic retry after execution begins
+- Audit/logging: query job metadata only; SQL and result rows are excluded
+
+Arguments:
+
+| Name | Required | Type/constraints | Meaning |
+|---|---:|---|---|
+| _none_ | — | — | Identity and dataset are derived from OAuth. |
+
+Result: user-safe object/field descriptions, join keys, partition hints, examples, and active query limits; the physical dataset ID is not returned.
+
+### `run_analytics_query`
+
+Dry-run and execute one bounded, read-only Standard SQL SELECT/WITH query in the authenticated user's server-derived BigQuery dataset. Qualified names, scripting, DML/DDL, external queries, and remote/user-defined functions are rejected.
+
+- Data source: authenticated user's server-derived BigQuery default dataset
+- Platform scope: `mcp:access`
+- Vehicle wake: `never`
+- Risk: `read_only`
+- Retry: no automatic retry after execution begins
+- Audit/logging: query job metadata only; SQL and result rows are excluded
+
+Arguments:
+
+| Name | Required | Type/constraints | Meaning |
+|---|---:|---|---|
+| `sql` | yes | string | One read-only BigQuery Standard SQL SELECT/WITH query using only unqualified names returned by get_analytics_schema. |
+
+Result: bounded columns and rows plus truncation, job ID, duration, referenced in-scope objects, and processed/billed bytes. SQL is AST-validated, canonicalized, dry-run first, capped at 1 GiB billed, 30 seconds, 200 rows, and 512 KiB.
