@@ -374,8 +374,12 @@ The safety cap prevents accidental giant queries. It is not a per-user commercia
 
 The implemented bounds are one parsed/canonicalized BigQuery statement, 32 KiB
 of SQL text, a 1 GiB `maximumBytesBilled` ceiling, a 15-second dry-run request,
-a 30-second execution/job timeout, 200 returned rows, and 512 KiB of serialized
-row data. The AST must resolve every physical table to one unqualified name in
+a 30-second execution/job timeout, 1,000 returned rows, and 1 MiB of serialized
+row data. These response bounds limit only the rows transferred back into the
+MCP/model context; BigQuery may aggregate or correlate many more input rows
+within the byte and time ceilings. Prefer SQL-side filtering, aggregation, and
+statistical calculation over returning a large raw extract. The AST must
+resolve every physical table to one unqualified name in
 the static analytics catalog. CTEs and subqueries are allowed; project/dataset
 qualification, unknown objects, DML/DDL, scripts, `EXPORT DATA`,
 `EXTERNAL_QUERY`, and remote/user-defined functions are rejected. A narrow

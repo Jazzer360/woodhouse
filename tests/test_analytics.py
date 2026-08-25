@@ -11,6 +11,7 @@ from google.cloud import bigquery
 from sqlglot import exp, parse_one
 from tesla_personal_platform.analytics import (
     ALLOWED_ANALYTICS_OBJECTS,
+    MAX_RESULT_BYTES,
     MAX_RESULT_ROWS,
     AnalyticsQueryError,
     BigQueryAnalyticsService,
@@ -184,6 +185,24 @@ def test_service_derives_default_dataset_and_bounds_results(
     assert "SELECT vehicle_id" not in caplog.text
 
 
+def test_service_returns_more_than_legacy_200_row_limit() -> None:
+    rows = [{"vehicle_id": "veh_private", "distance_miles": float(index)} for index in range(250)]
+    service = BigQueryAnalyticsService(
+        FakeBigQueryClient(rows),  # type: ignore[arg-type]
+        "woodhouse-project",
+        "us-central1",
+    )
+
+    result = service.run_query(
+        CONTEXT,
+        "SELECT vehicle_id, distance_miles FROM drives",
+        correlation_id="corr-deep-analysis",
+    )
+
+    assert result["row_count"] == 250
+    assert result["truncated"] is False
+
+
 def test_schema_is_descriptive_without_physical_namespace() -> None:
     service = BigQueryAnalyticsService(
         FakeBigQueryClient(),  # type: ignore[arg-type]
@@ -201,6 +220,10 @@ def test_schema_is_descriptive_without_physical_namespace() -> None:
     assert "join_keys" in serialized
     assert "partition_hint" in serialized
     assert result["unavailable_catalog_objects"] == []
+    assert result["query_limits"]["maximum_result_rows"] == 1_000
+    assert result["query_limits"]["maximum_result_bytes"] == 1_048_576
+    assert MAX_RESULT_ROWS == 1_000
+    assert MAX_RESULT_BYTES == 1_048_576
     assert "tesla_u_private" not in serialized
     assert "woodhouse-project" not in serialized
 
