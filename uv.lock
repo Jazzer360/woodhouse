@@ -1152,6 +1152,15 @@ wheels = [
 ]
 
 [[package]]
+name = "sqlglot"
+version = "30.17.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/56/d4/da49abcc81beebbb25f29ddf87f2980c63c949569d7f2da40c06d95fa415/sqlglot-30.17.0.tar.gz", hash = "sha256:2d6b8def93304fa300f4d20f48e3909e7f436fda56ca1fafd8975f6c561ef62c", size = 5999019, upload-time = "2026-08-12T19:36:50.587Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/bc/2a07cef49046e6cf5d1a8b1de553aaef8491b4170dbfe254c8687c764408/sqlglot-30.17.0-py3-none-any.whl", hash = "sha256:84435ac283a60173da31b5fd7d11a725037a1c3fd6ed1e21fb065de74ddb579f", size = 741795, upload-time = "2026-08-12T19:36:48.699Z" },
+]
+
+[[package]]
 name = "tesla-personal-platform"
 version = "0.0.0"
 source = { virtual = "." }
@@ -1226,6 +1235,18 @@ wheels = [
 name = "tpp-analytics"
 version = "0.0.0"
 source = { editable = "packages/analytics" }
+dependencies = [
+    { name = "google-cloud-bigquery" },
+    { name = "sqlglot" },
+    { name = "tpp-shared-models" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "google-cloud-bigquery", specifier = ">=3.30,<4" },
+    { name = "sqlglot", specifier = "==30.17.0" },
+    { name = "tpp-shared-models", editable = "packages/shared-models" },
+]
 
 [[package]]
 name = "tpp-auth"
@@ -1241,6 +1262,7 @@ dependencies = [
 [package.optional-dependencies]
 admin = [
     { name = "google-cloud-bigquery" },
+    { name = "tpp-analytics" },
 ]
 
 [package.metadata]
@@ -1249,6 +1271,7 @@ requires-dist = [
     { name = "google-cloud-bigquery", marker = "extra == 'admin'", specifier = ">=3.30,<4" },
     { name = "google-cloud-firestore", specifier = ">=2.20,<3" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
+    { name = "tpp-analytics", marker = "extra == 'admin'", editable = "packages/analytics" },
     { name = "tpp-shared-models", editable = "packages/shared-models" },
 ]
 provides-extras = ["admin"]
@@ -1285,6 +1308,7 @@ version = "0.0.0"
 source = { editable = "services/mcp-gateway" }
 dependencies = [
     { name = "cryptography" },
+    { name = "tpp-analytics" },
     { name = "tpp-auth" },
     { name = "tpp-tesla-client" },
 ]
@@ -1292,6 +1316,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=50,<51" },
+    { name = "tpp-analytics", editable = "packages/analytics" },
     { name = "tpp-auth", editable = "packages/auth" },
     { name = "tpp-tesla-client", editable = "packages/tesla-client" },
 ]

@@ -37,7 +37,7 @@ class RecordingBigQueryClient:
         self.current = current
         self.updated_fields: list[str] = []
         self.created_tables: list[bigquery.Table] = []
-        self.updated_table_fields: list[str] = []
+        self.updated_table_fields: list[list[str]] = []
 
     def create_dataset(
         self,
@@ -77,8 +77,12 @@ class RecordingBigQueryClient:
         return table
 
     def get_table(self, reference: object, *, timeout: int) -> bigquery.Table:
-        del reference, timeout
-        return self.created_tables[0]
+        del timeout
+        reference_text = str(reference)
+        for table in self.created_tables:
+            if str(table.reference) == reference_text:
+                return table
+        raise AssertionError(f"Unexpected table reference: {reference_text}")
 
     def update_table(
         self,
@@ -88,7 +92,7 @@ class RecordingBigQueryClient:
         timeout: int,
     ) -> bigquery.Table:
         del timeout
-        self.updated_table_fields = fields
+        self.updated_table_fields.append(fields)
         return table
 
 
@@ -154,8 +158,24 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
         "payload",
         "pubsub_message_id",
     }
-    assert set(client.updated_table_fields) == {
+    assert set(client.updated_table_fields[0]) == {
         "description",
         "expires",
         "labels",
     }
+    views = client.created_tables[1:]
+    assert [view.table_id for view in views] == [
+        "telemetry_observations",
+        "vehicle_state_changes",
+        "drives",
+        "charge_sessions",
+        "media_history",
+        "daily_vehicle_summary",
+    ]
+    assert all(view.view_query for view in views)
+    assert all(view.view_use_legacy_sql is False for view in views)
+    assert all(view.labels["layer"] == "analytics" for view in views)
+    assert all(
+        set(fields) == {"description", "labels", "view_query", "view_use_legacy_sql"}
+        for fields in client.updated_table_fields[1:]
+    )

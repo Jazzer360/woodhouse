@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from tesla_personal_platform.analytics import AnalyticsContext, AnalyticsQueryError
 from tesla_personal_platform.auth import CrossUserAccessError, UserContext
 from tesla_personal_platform.mcp_gateway.mcp_tools import (
     MCP_TOOL_SPECS,
@@ -200,11 +201,34 @@ class FailingAuditStore(FakeStore):
         super().complete_command_audit(**values)
 
 
+class FakeAnalytics:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[tuple[str, AnalyticsContext, object, str]] = []
+
+    def get_schema(self, context: AnalyticsContext, *, correlation_id: str) -> dict[str, Any]:
+        self.calls.append(("schema", context, None, correlation_id))
+        return {"objects": [{"name": "drives"}]}
+
+    def run_query(
+        self,
+        context: AnalyticsContext,
+        sql: str,
+        *,
+        correlation_id: str,
+    ) -> dict[str, Any]:
+        self.calls.append(("query", context, sql, correlation_id))
+        if self.fail:
+            raise AnalyticsQueryError("dataset_boundary", "Qualified names are not allowed")
+        return {"rows": [{"drive_count": 2}], "bytes_processed": 123}
+
+
 def service(
     store: FakeStore,
     *,
     direct: FakeFleet | None = None,
     proxy: FakeFleet | None = None,
+    analytics: FakeAnalytics | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> tuple[TeslaMCPService, FakeFleet, FakeFleet]:
     direct = direct or FakeFleet()
@@ -215,6 +239,7 @@ def service(
         credentials=FakeCredentials(),
         store=cast(Any, store),
         audit_store=store,
+        analytics=analytics,
         sleep=sleep or (lambda _seconds: None),
     )
     return instance, direct, proxy
@@ -631,6 +656,73 @@ def test_protocol_lists_typed_tools_and_reports_tool_errors_without_secrets() ->
     assert failed["result"]["structuredContent"]["error"] == "vehicle_ambiguous"
     assert failed["result"]["structuredContent"]["correlation_id"].startswith("corr_")
     assert "secret" not in str(failed)
+
+
+def test_protocol_exposes_and_executes_only_two_general_analytics_tools() -> None:
+    analytics = FakeAnalytics()
+    instance, direct, proxy = service(
+        FakeStore([vehicle("veh-one", "user-a", "VIN1")]),
+        analytics=analytics,
+    )
+    protocol = MCPProtocol(instance)
+
+    listed = protocol.handle(CONTEXT, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    schema = protocol.handle(
+        CONTEXT,
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "get_analytics_schema", "arguments": {}},
+        },
+    )
+    query = protocol.handle(
+        CONTEXT,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "run_analytics_query",
+                "arguments": {"sql": "SELECT COUNT(*) AS drive_count FROM drives"},
+            },
+        },
+    )
+
+    assert listed is not None and schema is not None and query is not None
+    tool_names = {tool["name"] for tool in listed["result"]["tools"]}
+    assert {"get_analytics_schema", "run_analytics_query"} <= tool_names
+    assert len(tool_names) == len(MCP_TOOL_SPECS) + 2
+    assert schema["result"]["structuredContent"]["objects"] == [{"name": "drives"}]
+    assert query["result"]["structuredContent"]["rows"] == [{"drive_count": 2}]
+    assert [call[0] for call in analytics.calls] == ["schema", "query"]
+    assert all(call[1] == CONTEXT for call in analytics.calls)
+    assert not direct.calls and not proxy.calls
+
+
+def test_protocol_returns_safe_analytics_validation_error() -> None:
+    analytics = FakeAnalytics(fail=True)
+    instance, _, _ = service(
+        FakeStore([vehicle("veh-one", "user-a", "VIN1")]),
+        analytics=analytics,
+    )
+
+    failed = MCPProtocol(instance).handle(
+        CONTEXT,
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "run_analytics_query",
+                "arguments": {"sql": "SELECT * FROM other.dataset.table"},
+            },
+        },
+    )
+
+    assert failed is not None
+    assert failed["result"]["isError"] is True
+    assert failed["result"]["structuredContent"]["error"] == "dataset_boundary"
 
 
 def test_protocol_tesla_failure_includes_transport_correlation() -> None:

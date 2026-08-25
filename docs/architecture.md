@@ -478,7 +478,7 @@ Required MCP tools:
 
 ```text
 get_analytics_schema()
-run_analytics_query(sql, parameters?)
+run_analytics_query(sql)
 ```
 
 ### 9.1 `get_analytics_schema`
@@ -510,6 +510,15 @@ Server rules:
 - use BigQuery dry-run before execution;
 - use a conservative `maximumBytesBilled` safety ceiling to prevent accidental runaway queries, not as a user quota;
 - record query metadata/cost for diagnostics.
+
+Phase 9 implements this with a pinned SQLGlot BigQuery AST/scope validator and
+executes the canonical AST rendering, not the original caller string. The
+trusted static catalog contains the permanent raw table plus
+`telemetry_observations`, `vehicle_state_changes`, `drives`,
+`charge_sessions`, `media_history`, and `daily_vehicle_summary`. The schema
+tool intersects that catalog with objects actually present in the user's
+dataset and never returns the physical dataset ID. See
+`docs/data-and-analytics.md` for the concrete query/response bounds.
 
 The safety ceiling is an implementation guardrail, not a commercial plan or per-user rate limit.
 

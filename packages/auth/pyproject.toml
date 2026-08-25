@@ -11,10 +11,14 @@ dependencies = [
 ]
 
 [tool.uv.sources]
+tpp-analytics = { workspace = true }
 tpp-shared-models = { workspace = true }
 
 [project.optional-dependencies]
-admin = ["google-cloud-bigquery>=3.30,<4"]
+admin = [
+  "google-cloud-bigquery>=3.30,<4",
+  "tpp-analytics",
+]
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

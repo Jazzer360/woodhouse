@@ -5,11 +5,13 @@ description = "Authenticated MCP gateway boundary"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "cryptography>=50,<51",
+  "tpp-analytics",
   "tpp-auth",
   "tpp-tesla-client",
 ]
 
 [tool.uv.sources]
+tpp-analytics = { workspace = true }
 tpp-auth = { workspace = true }
 tpp-tesla-client = { workspace = true }
 
