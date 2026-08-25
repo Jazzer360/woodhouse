@@ -50,6 +50,28 @@ def restricted_service_account_access(
     ]
 
 
+def temporary_view_provisioning_access(
+    owner_service_account: str,
+    gateway_service_account: str,
+    processor_service_account: str,
+    admin_service_account: str,
+) -> list[bigquery.AccessEntry]:
+    """Add the narrow read grant BigQuery requires while validating view SQL."""
+    return [
+        *restricted_service_account_access(
+            (),
+            owner_service_account,
+            gateway_service_account,
+            processor_service_account,
+        ),
+        bigquery.AccessEntry(
+            DATA_VIEWER_ACCESS_ROLE,
+            SERVICE_ACCOUNT_ENTITY_TYPE,
+            admin_service_account,
+        ),
+    ]
+
+
 class BigQueryDatasetProvisioner:
     """Create or repair one opaque, non-expiring, per-user dataset."""
 
@@ -61,6 +83,7 @@ class BigQueryDatasetProvisioner:
         owner_service_account: str,
         gateway_service_account: str,
         processor_service_account: str,
+        admin_service_account: str,
     ) -> None:
         self._client = client
         self._project_id = project_id
@@ -68,6 +91,7 @@ class BigQueryDatasetProvisioner:
         self._owner_service_account = owner_service_account
         self._gateway_service_account = gateway_service_account
         self._processor_service_account = processor_service_account
+        self._admin_service_account = admin_service_account
 
     def provision(self, user: AllowedUser) -> None:
         """Idempotently enforce the dataset and append-only raw table contract."""
@@ -165,29 +189,50 @@ class BigQueryDatasetProvisioner:
         self._provision_analytics_views(user.dataset_id)
 
     def _provision_analytics_views(self, dataset_id: str) -> None:
-        """Create or update dependency-ordered rebuildable views without touching raw truth."""
-        for definition in analytics_views(self._project_id, dataset_id):
-            view = bigquery.Table(f"{self._project_id}.{dataset_id}.{definition.name}")
-            view.description = definition.description
-            view.labels = {
-                "application": "tesla-personal-platform",
-                "data_class": "restricted-user-telemetry",
-                "managed_by": "add-user",
-                "layer": "analytics",
-            }
-            view.view_query = definition.sql
-            view.view_use_legacy_sql = False
-            self._client.create_table(view, exists_ok=True, timeout=30)
+        """Validate views with transient read, then restore the exact permanent ACL."""
+        dataset_reference = bigquery.DatasetReference(self._project_id, dataset_id)
+        dataset = self._client.get_dataset(dataset_reference, timeout=30)
+        dataset.access_entries = temporary_view_provisioning_access(
+            self._owner_service_account,
+            self._gateway_service_account,
+            self._processor_service_account,
+            self._admin_service_account,
+        )
+        self._client.update_dataset(dataset, ["access_entries"], timeout=30)
+        try:
+            for definition in analytics_views(self._project_id, dataset_id):
+                view = bigquery.Table(f"{self._project_id}.{dataset_id}.{definition.name}")
+                view.description = definition.description
+                view.labels = {
+                    "application": "tesla-personal-platform",
+                    "data_class": "restricted-user-telemetry",
+                    "managed_by": "add-user",
+                    "layer": "analytics",
+                }
+                view.view_query = definition.sql
+                view.view_use_legacy_sql = False
+                self._client.create_table(view, exists_ok=True, timeout=30)
 
-            current_view = self._client.get_table(view.reference, timeout=30)
-            if current_view.table_type not in {None, "VIEW"}:
-                raise ValueError(f"Existing object {dataset_id}.{definition.name} is not a view")
-            current_view.description = view.description
-            current_view.labels = view.labels.copy()
-            current_view.view_query = view.view_query
-            current_view.view_use_legacy_sql = False
-            self._client.update_table(
-                current_view,
-                ["description", "labels", "view_query", "view_use_legacy_sql"],
-                timeout=30,
+                current_view = self._client.get_table(view.reference, timeout=30)
+                if current_view.table_type not in {None, "VIEW"}:
+                    raise ValueError(
+                        f"Existing object {dataset_id}.{definition.name} is not a view"
+                    )
+                current_view.description = view.description
+                current_view.labels = view.labels.copy()
+                current_view.view_query = view.view_query
+                current_view.view_use_legacy_sql = False
+                self._client.update_table(
+                    current_view,
+                    ["description", "labels", "view_query", "view_use_legacy_sql"],
+                    timeout=30,
+                )
+        finally:
+            restored = self._client.get_dataset(dataset_reference, timeout=30)
+            restored.access_entries = restricted_service_account_access(
+                restored.access_entries,
+                self._owner_service_account,
+                self._gateway_service_account,
+                self._processor_service_account,
             )
+            self._client.update_dataset(restored, ["access_entries"], timeout=30)

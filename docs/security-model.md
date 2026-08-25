@@ -335,6 +335,16 @@ job timeout. Results are bounded to 200 rows/512 KiB. The gateway service
 account has dataset-level read access and project-level job creation only; it
 cannot use caller SQL to acquire another dataset grant.
 
+The operator-only `tpp-user-admin` is not a runtime query principal and has no
+BigQuery job role. BigQuery requires a view creator to hold `tables.getData` on
+referenced raw/views while validating the definition, so the idempotent
+provisioner temporarily grants that keyless identity `READER` on exactly the
+target user's dataset. It revokes the entry in a `finally` path on both success
+and failure, restoring the permanent owner/gateway-reader/processor-writer ACL.
+A subsequent repair also removes any transient entry left by process death
+before attempting view work. This is an audited operator-time exception, not a
+cross-user MCP or steady-state admin access path.
+
 This keeps generic model-written SQL without requiring complex shared-row security.
 
 ---
