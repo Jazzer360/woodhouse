@@ -182,7 +182,7 @@ and every future/unknown representation remain intact in `value_json`.
 
 | View | Interpretation |
 |---|---|
-| `telemetry_field_catalog` | All 239 fields in the pinned Tesla schema with category/type/description, broad-v2 inclusion, interval/delta/include-fields policy, exclusion reason, profile/schema versions, and the client-capability target used to expand that policy. `configured` describes the full policy, not proof that a particular vehicle supports or emitted the field. |
+| `telemetry_field_catalog` | All 239 fields in the pinned Tesla schema with category/type/description, broad-v3 inclusion, interval/delta/include-fields policy, exclusion reason, profile/schema versions, and the client-capability target used to expand that policy. `configured` describes the full policy, not proof that a particular vehicle supports or emitted the field. |
 | `telemetry_observations` | Expands each `V` payload datum into typed numeric, string/enum, boolean, location, and complete JSON values. Exact Pub/Sub redeliveries are de-duplicated by `pubsub_message_id` here; Tesla-marked resends remain observations. |
 | `charging_samples` | Sparse wide charging rows keyed by the exact emitted message timestamp and delivery ID. |
 | `climate_samples` | Sparse wide climate rows keyed by the exact emitted message timestamp and delivery ID. |
@@ -190,8 +190,14 @@ and every future/unknown representation remain intact in `value_json`.
 | `location_samples` | Sparse wide navigation/location rows; each configured `Location` value has separate latitude/longitude columns. |
 | `media_samples` | Sparse wide media rows for direct graphing or inspection of emitted playback metadata/state. |
 | `vehicle_state_changes` | Orders valid values by vehicle/field/source time and exposes the previous typed value. |
-| `drives` | Reconstructs forward/reverse Gear intervals and summarizes time, odometer distance, energy, speed, endpoints, sample count/gaps, and config provenance. |
-| `charge_sessions` | Reconstructs charging-state intervals and summarizes SOC, AC/DC energy counters, power, voltage, location, and sample count. |
+| `drive_metric_boundaries` | Selects Odometer, EnergyRemaining, SOC, and Location at each Gear boundary with exact/stationary/fallback method, source timestamp, signed age, and message provenance. |
+| `drives` | Reconstructs forward/reverse Gear intervals and summarizes boundary-correct odometer distance, energy, SOC, efficiency, speed, endpoints, sample gaps, config provenance, and boundary quality. |
+| `charge_sessions` | Uses DetailedChargeState authoritatively with coarse fallback, boundary-correct SOC/odometer/energy, bounded AC terminal-power integration, battery/wall efficiency, distance since prior charge, and inference methods. |
+| `drive_path_points` | Produces route points whose cumulative GPS distance is scaled to boundary-correct odometer distance, with carried speed and SOC. |
+| `drive_fsd_segments` | Allocates cumulative FSD-counter deltas into manual/FSD/uncertain route segments with confidence, method, and transition-distance bounds. |
+| `drive_fsd_summary` | Aggregates total, FSD, manual, and uncertain mileage and FSD percentage per drive. |
+| `drive_path` | Joins route points to inferred FSD state for future map/API rendering. |
+| `telemetry_capability_diagnostics` | Compares incoming client-version history/first-seen time, receiver/profile metadata, and seven-day synchronized Gear, charge, and FSD payload evidence. |
 | `media_history` | Carries emitted media changes forward and groups contiguous title/artist/album/station/source/playback-state intervals, including playback position and volume. |
 | `daily_vehicle_summary` | UTC daily per-vehicle drive, efficiency, charging, SOC, temperature, and maximum-speed summary. |
 
@@ -214,9 +220,27 @@ partitioned rebuildable table. Native materialized views may be used only when
 the derivation fits BigQuery's restricted materialized-view SQL; raw history
 remains authoritative either way.
 
+### Session boundary rules
+
+Drive identity remains Gear-defined. For each start metric, the selector first
+uses a field carried in the exact Gear message, then the nearest valid
+observation in the stationary interval before departure, and only then a
+bounded first-in-drive fallback. End metrics use the exact Gear message, then
+the stationary interval after parking, then a bounded last-in-drive fallback.
+Five-minute outer windows, adjacent drive boundaries, and 90-second interior
+fallbacks prevent borrowing state from another drive.
+
+For charging, `DetailedChargeStateCharging` starts active charging and
+`DetailedChargeStateDisconnected`, `NoPower`, `Complete`, or `Stopped` ends it;
+`Starting` is transitional. Once a recent detailed state is present it remains
+authoritative, so a coarse `ChargeState=Init` cannot terminate an active
+detailed session. Coarse `ChargeState` is used before detailed data exists or
+when an old terminal detailed state is followed by a new coarse charging state
+after the bounded fallback interval. Unknown values do not create transitions.
+
 Tesla's current Fleet Telemetry
 [system-behavior documentation](https://developer.tesla.com/docs/fleet-api/fleet-telemetry)
-was rechecked on 2026-08-24: changed fields enter a 500-millisecond collector
+was rechecked on 2026-08-25: changed fields enter a 500-millisecond collector
 bucket after their own interval/delta rules permit emission. The five
 `*_samples` views therefore
 group only fields in the same actual source message; they do not time-bucket,
@@ -232,6 +256,10 @@ Initial useful concepts:
 ```text
 drives
 charge_sessions
+drive_fsd_segments
+drive_fsd_summary
+drive_path
+telemetry_capability_diagnostics
 media_history
 acceleration_events
 semantic_events
@@ -246,7 +274,6 @@ trips
 geofence_visits
 parked_energy_intervals
 efficiency_by_temperature
-self_driving_summary
 charging_cost_summary
 ```
 
@@ -309,22 +336,35 @@ if the detection/interpolation method changes later.
 
 ---
 
-## 10. Self-driving mileage analysis
+## 10. Self-driving mileage and segment analysis
 
 `SelfDrivingMilesSinceReset` is an HW4 cumulative statistic, not a live FSD
 engagement state. Analyze it together with `MilesSinceReset`, its total-mile
 denominator. Fleet Telemetry 1.3.0+ can deliver either counter with the other in
 the same payload; client 1.2 can deliver them as independent observations.
 
-A derived `self_driving_summary` should:
+A reset-aware counter timeline:
 
 - align counter observations by source timestamp and vehicle/config version;
 - begin a new reset epoch whenever either cumulative counter decreases;
 - calculate FSD miles and share from counter deltas only within one epoch;
 - preserve the source observations used, their time span, and any pairing gap;
 - classify missing HW4/client support as unavailable rather than zero; and
-- avoid claiming trip-level FSD engagement or exact transition times from
-  one-mile-delta cumulative counters.
+- pairs same-message values exactly on client 1.3 and carries the nearest other
+  counter at reduced confidence for client 1.2 history;
+- maps milestones to `drive_path_points` distance;
+- treats each positive FSD delta as certifying the preceding distance in that
+  counter bucket;
+- allocates a mixed bucket as a manual prefix followed by the certified FSD
+  distance, with the transition bounded by the whole bucket;
+- carries the final inferred state to the Gear boundary only at reduced
+  confidence; and
+- emits `uncertain`, not zero/manual, when counter/reset/path evidence is insufficient.
+
+`drive_fsd_summary` aggregates these segments. `drive_path` attaches state,
+confidence, and inference method to route points. Neither view claims exact FSD
+engagement events: one-mile counter gating and sparse independent 1.2 emissions
+make the transition bounds part of the result.
 
 Tesla may reset the statistics after software updates, computer replacement,
 factory reset, or other triggers. Raw observations remain authoritative so

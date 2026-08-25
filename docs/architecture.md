@@ -515,8 +515,10 @@ Phase 9 implements this with a pinned SQLGlot BigQuery AST/scope validator and
 executes the canonical AST rendering, not the original caller string. The
 trusted static catalog contains the permanent raw table, complete pinned field
 catalog, universal long-form observations, sparse exact-emission wide sample
-views for charging/climate/driving/location/media, and the state/session/daily
-derived views. The schema tool intersects that catalog with objects actually
+views for charging/climate/driving/location/media, boundary-correct drive and
+charge sessions, uncertainty-preserving FSD route segments/summaries, telemetry
+capability diagnostics, and the state/session/daily derived views. The schema
+tool intersects that catalog with objects actually
 present in the user's dataset and never returns the physical dataset ID. See
 `docs/data-and-analytics.md` for the concrete query/response bounds.
 

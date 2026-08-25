@@ -252,6 +252,23 @@ def test_official_receiver_payload_and_transport_metadata_are_preserved() -> Non
     assert decoded.source_authentication == "tesla_mtls"
 
 
+def test_missing_receiver_client_version_stays_unknown_instead_of_becoming_stale_default() -> None:
+    body = push_body(
+        {"createdAt": "2026-08-20T01:02:03Z", "vin": "VIN-A", "data": []},
+        {
+            "vin": "VIN-A",
+            "receivedat": "1787486400000",
+            "txid": "tx-2",
+            "txtype": "V",
+            "version": "2",
+        },
+    )
+
+    decoded = decode_pubsub_push(body, now=NOW, source_policy=SOURCE_POLICY)
+
+    assert decoded.telemetry_client_version is None
+
+
 def test_operator_topic_cannot_impersonate_vehicle_telemetry_without_fixture_marker() -> None:
     body = push_body(
         {"createdAt": "2026-08-20T01:02:03Z", "vin": "VIN-A", "data": []},

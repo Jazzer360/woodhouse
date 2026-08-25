@@ -164,6 +164,7 @@ def _build_telemetry_runtime(
         credentials=onboarding,
         store=store,
         trust_profile=trust,
+        receiver_version=os.environ.get("TELEMETRY_RECEIVER_VERSION", "unknown").strip(),
     )
 
 

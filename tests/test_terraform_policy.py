@@ -207,6 +207,12 @@ def test_telemetry_trust_profile_is_shared_without_giving_renewer_tesla_secrets(
     assert "tesla_command_private_key" not in renewer_access
 
 
+def test_gateway_diagnostics_receive_the_same_pinned_receiver_version() -> None:
+    cloud_run = (TERRAFORM_ROOT / "cloud_run.tf").read_text(encoding="utf-8")
+
+    assert "TELEMETRY_RECEIVER_VERSION      = var.fleet_telemetry_receiver_version" in cloud_run
+
+
 def test_telemetry_edge_has_only_receiver_topics_and_gated_tls_secrets() -> None:
     pubsub = (TERRAFORM_ROOT / "pubsub.tf").read_text(encoding="utf-8")
     secrets = (TERRAFORM_ROOT / "secrets.tf").read_text(encoding="utf-8")

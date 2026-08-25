@@ -13,14 +13,16 @@
 # normal changed-value behavior.
 
 [profile]
-version = "broad-v2"
-schema_version = "fleet-telemetry-v0.9.4-2026-08-23"
+version = "broad-v3"
+schema_version = "fleet-telemetry-v0.9.4-2026-08-25"
 baseline = "tessie-operator-snapshot-2026-08-23"
 delivery_policy = "latest"
 alert_types = ["service", "customer", "service-fix"]
 
 # Changes to Tessie fields. Every deviation carries its review rationale.
 [overrides]
+"DetailedChargeState" = { interval_seconds = 1, include_fields = ["ACChargingEnergyIn", "DCChargingEnergyIn", "Soc", "EnergyRemaining", "Odometer", "ACChargingPower", "DCChargingPower", "ChargerVoltage"], rationale = "On Fleet Telemetry 1.3+, carry exact charge-session boundary counters and state when the authoritative detailed state changes; older clients retain the one-second top-level state." }
+"Gear" = { interval_seconds = 1, include_fields = ["Odometer", "EnergyRemaining", "Soc", "Location"], rationale = "On Fleet Telemetry 1.3+, carry exact odometer, battery, SOC, and location state at drive-gear boundaries; older clients retain the one-second top-level gear." }
 "GpsHeading" = { interval_seconds = 5, minimum_delta = 5, rationale = "Align heading with the five-second trip-path cadence while ignoring small directional jitter." }
 "HvacLeftTemperatureRequest" = { interval_seconds = 5, rationale = "A setpoint is discrete in practice; five-second latency is enough and needs no numeric delta." }
 "Location" = { interval_seconds = 5, minimum_delta = 5, rationale = "Improve trip-path and low-speed maneuver reconstruction while retaining a five-meter GPS-drift filter; observed signal volume leaves substantial monthly-discount headroom." }

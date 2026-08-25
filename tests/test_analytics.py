@@ -216,6 +216,10 @@ def test_schema_is_descriptive_without_physical_namespace() -> None:
     assert "telemetry_observations" in serialized
     assert "telemetry_field_catalog" in serialized
     assert "driving_samples" in serialized
+    assert "drive_fsd_segments" in serialized
+    assert "drive_fsd_summary" in serialized
+    assert "drive_path" in serialized
+    assert "telemetry_capability_diagnostics" in serialized
     assert "media_history" in serialized
     assert "join_keys" in serialized
     assert "partition_hint" in serialized
@@ -240,8 +244,14 @@ def test_derived_views_are_ordered_complete_and_raw_preserving() -> None:
         "location_samples",
         "media_samples",
         "vehicle_state_changes",
+        "drive_metric_boundaries",
         "drives",
         "charge_sessions",
+        "drive_path_points",
+        "drive_fsd_segments",
+        "drive_fsd_summary",
+        "drive_path",
+        "telemetry_capability_diagnostics",
         "media_history",
         "daily_vehicle_summary",
     ]
@@ -252,6 +262,98 @@ def test_derived_views_are_ordered_complete_and_raw_preserving() -> None:
         "DELETE" not in view.sql and "CREATE OR REPLACE TABLE" not in view.sql for view in views
     )
     assert all(isinstance(parse_one(view.sql, read="bigquery"), exp.Query) for view in views)
+
+
+def test_drive_boundaries_use_stationary_bounded_state_not_sparse_interior_samples() -> None:
+    views = {view.name: view for view in analytics_views("project", "dataset")}
+    boundaries = views["drive_metric_boundaries"].sql
+    drives = views["drives"].sql
+
+    assert "exact_synchronized_boundary" in boundaries
+    assert "stationary_pre_boundary" in boundaries
+    assert "stationary_post_boundary" in boundaries
+    assert "INTERVAL 5 MINUTE" in boundaries
+    assert "previous_drive_ended_at" in boundaries
+    assert "next_drive_started_at" in boundaries
+    assert "drive_metric_boundaries" in drives
+
+    start_odometer = 607.741444
+    end_odometer = 610.870669
+    start_energy = 67.38
+    end_energy = 66.88
+    distance = end_odometer - start_odometer
+    energy = start_energy - end_energy
+
+    assert distance == pytest.approx(3.129225, abs=0.000001)
+    assert energy == pytest.approx(0.50, abs=0.001)
+    assert energy * 1000 / distance == pytest.approx(159.78, abs=0.02)
+
+
+def test_detailed_charge_state_remains_authoritative_over_coarse_init() -> None:
+    charge_sql = next(
+        view.sql for view in analytics_views("project", "dataset") if view.name == "charge_sessions"
+    )
+
+    assert "detailed_class = 'active' THEN TRUE" in charge_sql
+    assert "coarse_at > TIMESTAMP_ADD(detailed_at, INTERVAL 15 MINUTE)" in charge_sql
+    assert "'Init'" in charge_sql
+    assert "'DetailedChargeStateStopped'" in charge_sql
+    assert "power_integrated" in charge_sql
+    assert "distance_since_previous_charge_miles" in charge_sql
+
+    started_at = datetime.fromisoformat("2026-08-25T07:44:06+00:00")
+    coarse_init_at = datetime.fromisoformat("2026-08-25T07:44:07+00:00")
+    ended_at = datetime.fromisoformat("2026-08-25T11:00:00.616185+00:00")
+    assert (coarse_init_at - started_at).total_seconds() == 1
+    assert (ended_at - started_at).total_seconds() == pytest.approx(11_754.616185)
+    assert 617.434835 - 604.640180 == pytest.approx(12.794655)
+
+
+def test_fsd_bucket_allocation_matches_supplied_trip_regression_and_bounds_transition() -> None:
+    views = {view.name: view for view in analytics_views("project", "dataset")}
+    segments = views["drive_fsd_segments"].sql
+
+    assert "counter_fsd_delta_miles" in segments
+    assert "counter_manual_delta_miles" in segments
+    assert "synchronized_counter_bucket" in segments
+    assert "counter_state_carried_to_drive_boundary" in segments
+    assert "insufficient_counter_evidence" in segments
+
+    total_distance = 3.05963
+    first_milestone_distance = 1.23963
+    second_milestone_distance = 2.252478
+    first_certified_fsd = 1.0
+    second_certified_fsd = 1.012848
+    manual_prefix = first_milestone_distance - first_certified_fsd
+    inferred_tail = total_distance - second_milestone_distance
+    fsd_distance = first_certified_fsd + second_certified_fsd + inferred_tail
+
+    assert manual_prefix == pytest.approx(0.23963)
+    assert fsd_distance == pytest.approx(2.82, abs=0.000001)
+    assert fsd_distance / total_distance * 100 == pytest.approx(92.17, abs=0.01)
+
+    # Linear route interpolation places the first transition about 39 seconds after
+    # the 06:33:21 start: after the manual 06:33:37 point and before 06:34:25.
+    first_milestone_seconds = 199.5
+    transition_seconds = first_milestone_seconds * manual_prefix / first_milestone_distance
+    assert 16 < transition_seconds < 64
+
+
+def test_capability_diagnostic_compares_profile_client_receiver_and_payload_evidence() -> None:
+    diagnostic = next(
+        view.sql
+        for view in analytics_views("project", "dataset")
+        if view.name == "telemetry_capability_diagnostics"
+    )
+
+    assert "telemetry_receiver_version" in diagnostic
+    assert "observed_client_versions" in diagnostic
+    assert "current_client_first_seen_at" in diagnostic
+    assert "minimum_client_for_include_fields" in diagnostic
+    assert "synchronized_gear_messages" in diagnostic
+    assert "synchronized_charge_messages" in diagnostic
+    assert "synchronized_fsd_messages" in diagnostic
+    assert "include_fields_not_observed" in diagnostic
 
 
 def test_field_catalog_is_complete_and_matches_the_reviewed_profile() -> None:

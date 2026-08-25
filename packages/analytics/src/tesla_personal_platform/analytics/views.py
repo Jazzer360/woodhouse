@@ -205,7 +205,9 @@ SELECT
   raw.telemetry_config_hash,
   raw.transport_message_id,
   raw.pubsub_message_id,
-  raw.telemetry_client_version
+  raw.telemetry_client_version,
+  raw.telemetry_receiver_version,
+  raw.receiver_record_version
 FROM raw_deduplicated AS raw
 CROSS JOIN UNNEST(JSON_QUERY_ARRAY(raw.payload, '$.data')) AS datum
 WHERE JSON_VALUE(datum, '$.key') IS NOT NULL
@@ -249,11 +251,12 @@ FROM ordered
 WHERE previous_value_text IS NULL OR previous_value_text != TO_JSON_STRING(value_json)
 """.strip()
 
-    drives = f"""
+    drive_metric_boundaries = f"""
 WITH gear_events AS (
   SELECT
     source_timestamp,
     vehicle_id,
+    pubsub_message_id,
     string_value AS gear,
     string_value IN ('ShiftStateD', 'ShiftStateR', 'D', 'R') AS is_driving
   FROM {table("vehicle_state_changes")}
@@ -282,7 +285,11 @@ WITH gear_events AS (
     vehicle_id,
     drive_number,
     MIN(IF(is_driving, source_timestamp, NULL)) AS started_at,
-    MIN(IF(NOT is_driving, source_timestamp, NULL)) AS ended_at
+    ARRAY_AGG(IF(is_driving, pubsub_message_id, NULL) IGNORE NULLS
+      ORDER BY source_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_gear_message_id,
+    MIN(IF(NOT is_driving, source_timestamp, NULL)) AS ended_at,
+    ARRAY_AGG(IF(NOT is_driving, pubsub_message_id, NULL) IGNORE NULLS
+      ORDER BY source_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS end_gear_message_id
   FROM sessionized_gears
   WHERE drive_number > 0
   GROUP BY vehicle_id, drive_number
@@ -292,16 +299,123 @@ WITH gear_events AS (
     TO_HEX(SHA256(CONCAT(vehicle_id, '|', CAST(started_at AS STRING)))) AS drive_id,
     vehicle_id,
     started_at,
-    ended_at
+    ended_at,
+    start_gear_message_id,
+    end_gear_message_id,
+    LAG(ended_at) OVER (PARTITION BY vehicle_id ORDER BY started_at)
+      AS previous_drive_ended_at,
+    LEAD(started_at) OVER (PARTITION BY vehicle_id ORDER BY started_at)
+      AS next_drive_started_at
   FROM segments
+), boundary_specs AS (
+  SELECT
+    drive.*,
+    boundary_name,
+    field_name,
+    IF(boundary_name = 'start', started_at, ended_at) AS boundary_at,
+    IF(boundary_name = 'start', start_gear_message_id, end_gear_message_id)
+      AS boundary_message_id,
+    IF(
+      boundary_name = 'start',
+      IF(previous_drive_ended_at IS NULL,
+        TIMESTAMP_SUB(started_at, INTERVAL 5 MINUTE),
+        GREATEST(TIMESTAMP_SUB(started_at, INTERVAL 5 MINUTE), previous_drive_ended_at)),
+      GREATEST(TIMESTAMP_SUB(ended_at, INTERVAL 90 SECOND), started_at)
+    ) AS candidate_window_start,
+    IF(
+      boundary_name = 'start',
+      LEAST(TIMESTAMP_ADD(started_at, INTERVAL 90 SECOND),
+        COALESCE(ended_at, TIMESTAMP_ADD(started_at, INTERVAL 90 SECOND))),
+      IF(next_drive_started_at IS NULL,
+        TIMESTAMP_ADD(ended_at, INTERVAL 5 MINUTE),
+        LEAST(TIMESTAMP_ADD(ended_at, INTERVAL 5 MINUTE), next_drive_started_at))
+    ) AS candidate_window_end
+  FROM identified AS drive
+  CROSS JOIN UNNEST([
+    STRUCT('start' AS boundary_name, 'Odometer' AS field_name),
+    STRUCT('start', 'EnergyRemaining'),
+    STRUCT('start', 'Soc'),
+    STRUCT('start', 'Location'),
+    STRUCT('end', 'Odometer'),
+    STRUCT('end', 'EnergyRemaining'),
+    STRUCT('end', 'Soc'),
+    STRUCT('end', 'Location')
+  ])
+  WHERE boundary_name = 'start' OR ended_at IS NOT NULL
+), candidates AS (
+  SELECT
+    boundary.*,
+    observation.source_timestamp AS selected_observation_at,
+    observation.numeric_value AS selected_numeric_value,
+    observation.latitude AS selected_latitude,
+    observation.longitude AS selected_longitude,
+    observation.pubsub_message_id AS observation_message_id,
+    CASE
+      WHEN observation.source_timestamp IS NULL THEN 'unavailable'
+      WHEN observation.pubsub_message_id = boundary.boundary_message_id
+        THEN 'exact_synchronized_boundary'
+      WHEN boundary.boundary_name = 'start'
+        AND observation.source_timestamp <= boundary.boundary_at
+        THEN 'stationary_pre_boundary'
+      WHEN boundary.boundary_name = 'end'
+        AND observation.source_timestamp >= boundary.boundary_at
+        THEN 'stationary_post_boundary'
+      ELSE 'inside_drive_fallback'
+    END AS inference_method,
+    ROW_NUMBER() OVER (
+      PARTITION BY boundary.drive_id, boundary.boundary_name, boundary.field_name
+      ORDER BY
+        CASE
+          WHEN observation.pubsub_message_id = boundary.boundary_message_id THEN 0
+          WHEN boundary.boundary_name = 'start'
+            AND observation.source_timestamp <= boundary.boundary_at THEN 1
+          WHEN boundary.boundary_name = 'end'
+            AND observation.source_timestamp >= boundary.boundary_at THEN 1
+          ELSE 2
+        END,
+        ABS(TIMESTAMP_DIFF(observation.source_timestamp, boundary.boundary_at, MILLISECOND)),
+        observation.source_timestamp
+    ) AS candidate_rank
+  FROM boundary_specs AS boundary
+  LEFT JOIN {table("telemetry_observations")} AS observation
+    ON observation.vehicle_id = boundary.vehicle_id
+    AND NOT observation.is_invalid
+    AND observation.field_name = boundary.field_name
+    AND observation.source_timestamp BETWEEN boundary.candidate_window_start
+      AND boundary.candidate_window_end
+)
+SELECT
+  drive_id,
+  vehicle_id,
+  started_at,
+  ended_at,
+  boundary_name,
+  field_name,
+  boundary_at,
+  selected_observation_at,
+  TIMESTAMP_DIFF(selected_observation_at, boundary_at, MILLISECOND)
+    AS observation_offset_milliseconds,
+  selected_numeric_value,
+  selected_latitude,
+  selected_longitude,
+  inference_method,
+  boundary_message_id,
+  observation_message_id
+FROM candidates
+WHERE candidate_rank = 1
+""".strip()
+
+    drives = f"""
+WITH sessions AS (
+  SELECT drive_id, vehicle_id, started_at, ended_at
+  FROM {table("drive_metric_boundaries")}
+  GROUP BY drive_id, vehicle_id, started_at, ended_at
 ), joined AS (
   SELECT
     drive.*,
     observation.source_timestamp AS observation_timestamp,
     observation.field_name,
     observation.numeric_value,
-    observation.latitude,
-    observation.longitude,
     observation.telemetry_config_hash,
     TIMESTAMP_DIFF(
       observation.source_timestamp,
@@ -310,47 +424,67 @@ WITH gear_events AS (
       ),
       SECOND
     ) AS sample_gap_seconds
-  FROM identified AS drive
+  FROM sessions AS drive
   LEFT JOIN {table("telemetry_observations")} AS observation
     ON observation.vehicle_id = drive.vehicle_id
     AND NOT observation.is_invalid
     AND observation.source_timestamp >= drive.started_at
     AND observation.source_timestamp <= COALESCE(drive.ended_at, CURRENT_TIMESTAMP())
-), aggregated AS (
+), observation_summary AS (
   SELECT
     drive_id,
     vehicle_id,
     started_at,
     ended_at,
-    ARRAY_AGG(IF(field_name = 'Odometer', numeric_value, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_odometer_miles,
-    ARRAY_AGG(IF(field_name = 'Odometer', numeric_value, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS end_odometer_miles,
-    ARRAY_AGG(IF(field_name = 'EnergyRemaining', numeric_value, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_energy_kwh,
-    ARRAY_AGG(IF(field_name = 'EnergyRemaining', numeric_value, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS end_energy_kwh,
     MAX(IF(field_name = 'VehicleSpeed', numeric_value, NULL)) AS maximum_speed_mph,
-    ARRAY_AGG(IF(field_name = 'Location', latitude, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_latitude,
-    ARRAY_AGG(IF(field_name = 'Location', longitude, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_longitude,
-    ARRAY_AGG(IF(field_name = 'Location', latitude, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS end_latitude,
-    ARRAY_AGG(IF(field_name = 'Location', longitude, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS end_longitude,
     COUNT(observation_timestamp) AS observation_count,
     MAX(sample_gap_seconds) AS largest_sample_gap_seconds,
     ARRAY_AGG(telemetry_config_hash IGNORE NULLS
       ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS telemetry_config_hash
   FROM joined
   GROUP BY drive_id, vehicle_id, started_at, ended_at
+), boundaries AS (
+  SELECT
+    drive_id,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Odometer',
+      selected_numeric_value, NULL)) AS start_odometer_miles,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Odometer',
+      selected_numeric_value, NULL)) AS end_odometer_miles,
+    MAX(IF(boundary_name = 'start' AND field_name = 'EnergyRemaining',
+      selected_numeric_value, NULL)) AS start_energy_kwh,
+    MAX(IF(boundary_name = 'end' AND field_name = 'EnergyRemaining',
+      selected_numeric_value, NULL)) AS end_energy_kwh,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Soc',
+      selected_numeric_value, NULL)) AS start_soc_percent,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Soc',
+      selected_numeric_value, NULL)) AS end_soc_percent,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Location',
+      selected_latitude, NULL)) AS start_latitude,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Location',
+      selected_longitude, NULL)) AS start_longitude,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Location',
+      selected_latitude, NULL)) AS end_latitude,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Location',
+      selected_longitude, NULL)) AS end_longitude,
+    CASE
+      WHEN COUNTIF(field_name IN ('Odometer', 'EnergyRemaining', 'Soc')
+        AND inference_method = 'exact_synchronized_boundary') = 6
+        THEN 'exact_synchronized_boundary'
+      WHEN COUNTIF(field_name IN ('Odometer', 'EnergyRemaining', 'Soc')
+        AND inference_method = 'inside_drive_fallback') = 0
+        THEN 'stationary_boundary_inference'
+      ELSE 'sparse_boundary_fallback'
+    END AS boundary_quality
+  FROM {table("drive_metric_boundaries")}
+  GROUP BY drive_id
 ), metrics AS (
   SELECT
-    *,
+    observation.*,
+    boundary.* EXCEPT(drive_id),
     GREATEST(end_odometer_miles - start_odometer_miles, 0) AS distance_miles,
     GREATEST(start_energy_kwh - end_energy_kwh, 0) AS energy_used_kwh
-  FROM aggregated
+  FROM observation_summary AS observation
+  JOIN boundaries AS boundary USING (drive_id)
 )
 SELECT
   drive_id,
@@ -366,6 +500,8 @@ SELECT
   start_energy_kwh,
   end_energy_kwh,
   energy_used_kwh,
+  start_soc_percent,
+  end_soc_percent,
   SAFE_DIVIDE(energy_used_kwh * 1000, NULLIF(distance_miles, 0))
     AS efficiency_wh_per_mile,
   maximum_speed_mph,
@@ -375,38 +511,91 @@ SELECT
   end_longitude,
   observation_count,
   largest_sample_gap_seconds,
-  telemetry_config_hash
+  telemetry_config_hash,
+  boundary_quality
 FROM metrics
 """.strip()
 
     charge_sessions = f"""
-WITH charge_candidates AS (
+WITH raw_charge_events AS (
   SELECT
     source_timestamp,
     vehicle_id,
+    pubsub_message_id,
     field_name,
-    string_value AS charge_state
+    string_value AS charge_state,
+    CASE
+      WHEN field_name = 'DetailedChargeState'
+        AND string_value IN ('DetailedChargeStateCharging') THEN 'active'
+      WHEN field_name = 'DetailedChargeState'
+        AND string_value IN (
+          'DetailedChargeStateDisconnected', 'DetailedChargeStateNoPower',
+          'DetailedChargeStateComplete', 'DetailedChargeStateStopped'
+        ) THEN 'terminal'
+      WHEN field_name = 'DetailedChargeState'
+        AND string_value IN ('DetailedChargeStateStarting') THEN 'starting'
+      WHEN field_name = 'ChargeState'
+        AND string_value IN ('Charging', 'ChargeStateCharging') THEN 'active'
+      WHEN field_name = 'ChargeState'
+        AND string_value IN (
+          'Disconnected', 'NoPower', 'Complete', 'Stopped', 'Idle', 'Init',
+          'ChargeStateDisconnected', 'ChargeStateNoPower', 'ChargeStateComplete',
+          'ChargeStateStopped', 'ChargeStateStarting', 'Starting'
+        ) THEN 'terminal'
+      ELSE 'unknown'
+    END AS state_class
   FROM {table("telemetry_observations")}
   WHERE NOT is_invalid
     AND field_name IN ('DetailedChargeState', 'ChargeState')
     AND string_value IS NOT NULL
-  QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY vehicle_id, source_timestamp
-    ORDER BY IF(field_name = 'DetailedChargeState', 0, 1), pubsub_message_id
-  ) = 1
+), stateful_charge_events AS (
+  SELECT
+    *,
+    LAST_VALUE(IF(field_name = 'DetailedChargeState' AND state_class != 'unknown',
+      state_class, NULL) IGNORE NULLS) OVER event_window AS detailed_class,
+    LAST_VALUE(IF(field_name = 'DetailedChargeState' AND state_class != 'unknown',
+      source_timestamp, NULL) IGNORE NULLS) OVER event_window AS detailed_at,
+    LAST_VALUE(IF(field_name = 'DetailedChargeState' AND state_class != 'unknown',
+      pubsub_message_id, NULL) IGNORE NULLS) OVER event_window AS detailed_message_id,
+    LAST_VALUE(IF(field_name = 'ChargeState' AND state_class != 'unknown',
+      state_class, NULL) IGNORE NULLS) OVER event_window AS coarse_class,
+    LAST_VALUE(IF(field_name = 'ChargeState' AND state_class != 'unknown',
+      source_timestamp, NULL) IGNORE NULLS) OVER event_window AS coarse_at
+  FROM raw_charge_events
+  WINDOW event_window AS (
+    PARTITION BY vehicle_id ORDER BY source_timestamp, pubsub_message_id
+    ROWS UNBOUNDED PRECEDING
+  )
 ), charge_events AS (
   SELECT
     *,
-    charge_state IN ('DetailedChargeStateCharging', 'ChargeStateCharging', 'Charging')
-      AS is_charging
-  FROM charge_candidates
+    CASE
+      WHEN detailed_class = 'active' THEN TRUE
+      WHEN detailed_class IN ('terminal', 'starting')
+        AND NOT (coarse_class = 'active'
+          AND coarse_at > TIMESTAMP_ADD(detailed_at, INTERVAL 15 MINUTE)) THEN FALSE
+      WHEN coarse_class = 'active' THEN TRUE
+      WHEN coarse_class = 'terminal' THEN FALSE
+      ELSE NULL
+    END AS is_charging,
+    CASE
+      WHEN detailed_class = 'active' THEN 'detailed_charge_state'
+      WHEN detailed_class IN ('terminal', 'starting')
+        AND NOT (coarse_class = 'active'
+          AND coarse_at > TIMESTAMP_ADD(detailed_at, INTERVAL 15 MINUTE))
+        THEN 'detailed_charge_state'
+      ELSE 'coarse_charge_state_fallback'
+    END AS state_source
+  FROM stateful_charge_events
 ), ordered_charge AS (
   SELECT
     *,
-    LAG(is_charging, 1, FALSE) OVER (
-      PARTITION BY vehicle_id ORDER BY source_timestamp
-    ) AS was_charging
+    LAG(is_charging, 1, FALSE) OVER event_window AS was_charging
   FROM charge_events
+  WHERE is_charging IS NOT NULL
+  WINDOW event_window AS (
+    PARTITION BY vehicle_id ORDER BY source_timestamp, pubsub_message_id
+  )
 ), marked_charge AS (
   SELECT
     *,
@@ -416,7 +605,8 @@ WITH charge_candidates AS (
   SELECT
     *,
     SUM(begins_charge) OVER (
-      PARTITION BY vehicle_id ORDER BY source_timestamp ROWS UNBOUNDED PRECEDING
+      PARTITION BY vehicle_id ORDER BY source_timestamp, pubsub_message_id
+      ROWS UNBOUNDED PRECEDING
     ) AS charge_number
   FROM marked_charge
 ), segments AS (
@@ -424,7 +614,13 @@ WITH charge_candidates AS (
     vehicle_id,
     charge_number,
     MIN(IF(is_charging, source_timestamp, NULL)) AS started_at,
-    MIN(IF(NOT is_charging, source_timestamp, NULL)) AS ended_at
+    ARRAY_AGG(IF(is_charging, detailed_message_id, NULL) IGNORE NULLS
+      ORDER BY source_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_state_message_id,
+    MIN(IF(NOT is_charging, source_timestamp, NULL)) AS ended_at,
+    ARRAY_AGG(IF(NOT is_charging, detailed_message_id, NULL) IGNORE NULLS
+      ORDER BY source_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS end_state_message_id,
+    ARRAY_AGG(state_source ORDER BY source_timestamp LIMIT 1)[SAFE_OFFSET(0)]
+      AS state_source
   FROM sessionized_charge
   WHERE charge_number > 0
   GROUP BY vehicle_id, charge_number
@@ -435,8 +631,99 @@ WITH charge_candidates AS (
       AS charge_session_id,
     vehicle_id,
     started_at,
-    ended_at
+    ended_at,
+    start_state_message_id,
+    end_state_message_id,
+    state_source,
+    LAG(ended_at) OVER (PARTITION BY vehicle_id ORDER BY started_at)
+      AS previous_charge_ended_at,
+    LEAD(started_at) OVER (PARTITION BY vehicle_id ORDER BY started_at)
+      AS next_charge_started_at
   FROM segments
+), boundary_specs AS (
+  SELECT
+    session.*,
+    boundary_name,
+    field_name,
+    IF(boundary_name = 'start', started_at, ended_at) AS boundary_at,
+    IF(boundary_name = 'start', start_state_message_id, end_state_message_id)
+      AS boundary_message_id,
+    IF(
+      boundary_name = 'start',
+      IF(previous_charge_ended_at IS NULL,
+        TIMESTAMP_SUB(started_at, INTERVAL 10 MINUTE),
+        GREATEST(TIMESTAMP_SUB(started_at, INTERVAL 10 MINUTE), previous_charge_ended_at)),
+      GREATEST(TIMESTAMP_SUB(ended_at, INTERVAL 5 MINUTE), started_at)
+    ) AS candidate_window_start,
+    IF(
+      boundary_name = 'start',
+      LEAST(TIMESTAMP_ADD(started_at, INTERVAL 2 MINUTE),
+        COALESCE(ended_at, TIMESTAMP_ADD(started_at, INTERVAL 2 MINUTE))),
+      IF(next_charge_started_at IS NULL,
+        TIMESTAMP_ADD(ended_at, INTERVAL 2 MINUTE),
+        LEAST(TIMESTAMP_ADD(ended_at, INTERVAL 2 MINUTE), next_charge_started_at))
+    ) AS candidate_window_end
+  FROM identified AS session
+  CROSS JOIN UNNEST([
+    STRUCT('start' AS boundary_name, 'Soc' AS field_name),
+    STRUCT('start', 'EnergyRemaining'),
+    STRUCT('start', 'Odometer'),
+    STRUCT('start', 'Location'),
+    STRUCT('start', 'ACChargingEnergyIn'),
+    STRUCT('start', 'DCChargingEnergyIn'),
+    STRUCT('end', 'Soc'),
+    STRUCT('end', 'EnergyRemaining'),
+    STRUCT('end', 'Odometer'),
+    STRUCT('end', 'Location'),
+    STRUCT('end', 'ACChargingEnergyIn'),
+    STRUCT('end', 'DCChargingEnergyIn')
+  ])
+  WHERE boundary_name = 'start' OR ended_at IS NOT NULL
+), boundary_candidates AS (
+  SELECT
+    boundary.*,
+    observation.source_timestamp AS selected_observation_at,
+    observation.numeric_value AS selected_numeric_value,
+    observation.latitude AS selected_latitude,
+    observation.longitude AS selected_longitude,
+    observation.pubsub_message_id AS observation_message_id,
+    CASE
+      WHEN observation.source_timestamp IS NULL THEN 'unavailable'
+      WHEN observation.pubsub_message_id = boundary.boundary_message_id
+        THEN 'exact_synchronized_boundary'
+      WHEN boundary.boundary_name = 'start'
+        AND observation.source_timestamp <= boundary.boundary_at
+        THEN 'pre_boundary_observation'
+      WHEN boundary.boundary_name = 'end'
+        AND observation.source_timestamp >= boundary.boundary_at
+        THEN 'post_boundary_observation'
+      ELSE 'inside_session_fallback'
+    END AS inference_method,
+    ROW_NUMBER() OVER (
+      PARTITION BY boundary.charge_session_id, boundary.boundary_name, boundary.field_name
+      ORDER BY
+        CASE
+          WHEN observation.pubsub_message_id = boundary.boundary_message_id THEN 0
+          WHEN boundary.boundary_name = 'start'
+            AND observation.source_timestamp <= boundary.boundary_at THEN 1
+          WHEN boundary.boundary_name = 'end'
+            AND observation.source_timestamp >= boundary.boundary_at THEN 1
+          ELSE 2
+        END,
+        ABS(TIMESTAMP_DIFF(observation.source_timestamp, boundary.boundary_at, MILLISECOND)),
+        observation.source_timestamp
+    ) AS candidate_rank
+  FROM boundary_specs AS boundary
+  LEFT JOIN {table("telemetry_observations")} AS observation
+    ON observation.vehicle_id = boundary.vehicle_id
+    AND NOT observation.is_invalid
+    AND observation.field_name = boundary.field_name
+    AND observation.source_timestamp BETWEEN boundary.candidate_window_start
+      AND boundary.candidate_window_end
+), selected_boundaries AS (
+  SELECT * EXCEPT(candidate_rank)
+  FROM boundary_candidates
+  WHERE candidate_rank = 1
 ), joined AS (
   SELECT
     session.*,
@@ -444,7 +731,8 @@ WITH charge_candidates AS (
     observation.field_name,
     observation.numeric_value,
     observation.latitude,
-    observation.longitude
+    observation.longitude,
+    observation.telemetry_config_hash
   FROM identified AS session
   LEFT JOIN {table("telemetry_observations")} AS observation
     ON observation.vehicle_id = session.vehicle_id
@@ -457,28 +745,108 @@ WITH charge_candidates AS (
     vehicle_id,
     started_at,
     ended_at,
-    ARRAY_AGG(IF(field_name = 'Soc', numeric_value, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_soc_percent,
-    ARRAY_AGG(IF(field_name = 'Soc', numeric_value, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS end_soc_percent,
-    ARRAY_AGG(IF(field_name = 'ACChargingEnergyIn', numeric_value, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_ac_energy_kwh,
-    ARRAY_AGG(IF(field_name = 'ACChargingEnergyIn', numeric_value, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS end_ac_energy_kwh,
-    ARRAY_AGG(IF(field_name = 'DCChargingEnergyIn', numeric_value, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_dc_energy_kwh,
-    ARRAY_AGG(IF(field_name = 'DCChargingEnergyIn', numeric_value, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS end_dc_energy_kwh,
     MAX(IF(field_name = 'ACChargingPower', numeric_value, NULL)) AS maximum_ac_power_kw,
     MAX(IF(field_name = 'DCChargingPower', numeric_value, NULL)) AS maximum_dc_power_kw,
     MAX(IF(field_name = 'ChargerVoltage', numeric_value, NULL)) AS maximum_voltage,
-    ARRAY_AGG(IF(field_name = 'Location', latitude, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_latitude,
-    ARRAY_AGG(IF(field_name = 'Location', longitude, NULL) IGNORE NULLS
-      ORDER BY observation_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_longitude,
-    COUNT(observation_timestamp) AS observation_count
+    COUNT(observation_timestamp) AS observation_count,
+    ARRAY_AGG(telemetry_config_hash IGNORE NULLS
+      ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS telemetry_config_hash
   FROM joined
   GROUP BY charge_session_id, vehicle_id, started_at, ended_at
+), boundary_values AS (
+  SELECT
+    charge_session_id,
+    MAX(state_source) AS state_source,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Soc',
+      selected_numeric_value, NULL)) AS start_soc_percent,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Soc',
+      selected_numeric_value, NULL)) AS end_soc_percent,
+    MAX(IF(boundary_name = 'start' AND field_name = 'EnergyRemaining',
+      selected_numeric_value, NULL)) AS start_energy_remaining_kwh,
+    MAX(IF(boundary_name = 'end' AND field_name = 'EnergyRemaining',
+      selected_numeric_value, NULL)) AS end_energy_remaining_kwh,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Odometer',
+      selected_numeric_value, NULL)) AS start_odometer_miles,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Odometer',
+      selected_numeric_value, NULL)) AS end_odometer_miles,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Location',
+      selected_latitude, NULL)) AS start_latitude,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Location',
+      selected_longitude, NULL)) AS start_longitude,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Location',
+      selected_latitude, NULL)) AS end_latitude,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Location',
+      selected_longitude, NULL)) AS end_longitude,
+    MAX(IF(boundary_name = 'start' AND field_name = 'ACChargingEnergyIn'
+      AND inference_method = 'exact_synchronized_boundary', selected_numeric_value, 0))
+      AS start_ac_energy_kwh,
+    MAX(IF(boundary_name = 'end' AND field_name = 'ACChargingEnergyIn',
+      selected_numeric_value, NULL)) AS observed_end_ac_energy_kwh,
+    MAX(IF(boundary_name = 'end' AND field_name = 'ACChargingEnergyIn',
+      selected_observation_at, NULL)) AS end_ac_observed_at,
+    MAX(IF(boundary_name = 'end' AND field_name = 'ACChargingEnergyIn',
+      inference_method, NULL)) AS ac_energy_method,
+    MAX(IF(boundary_name = 'start' AND field_name = 'DCChargingEnergyIn'
+      AND inference_method = 'exact_synchronized_boundary', selected_numeric_value, 0))
+      AS start_dc_energy_kwh,
+    MAX(IF(boundary_name = 'end' AND field_name = 'DCChargingEnergyIn',
+      selected_numeric_value, NULL)) AS end_dc_energy_kwh,
+    MAX(IF(boundary_name = 'end' AND field_name = 'DCChargingEnergyIn',
+      inference_method, NULL)) AS dc_energy_method,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Odometer',
+      inference_method, NULL)) AS odometer_boundary_method,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Soc',
+      inference_method, NULL)) AS soc_boundary_method
+  FROM selected_boundaries
+  GROUP BY charge_session_id
+), terminal_power AS (
+  SELECT
+    session.charge_session_id,
+    ARRAY_AGG(STRUCT(observation.source_timestamp, observation.numeric_value)
+      ORDER BY observation.source_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS sample
+  FROM identified AS session
+  JOIN {table("telemetry_observations")} AS observation
+    ON observation.vehicle_id = session.vehicle_id
+    AND observation.field_name = 'ACChargingPower'
+    AND NOT observation.is_invalid
+    AND observation.source_timestamp BETWEEN TIMESTAMP_SUB(session.ended_at, INTERVAL 5 MINUTE)
+      AND session.ended_at
+  WHERE session.ended_at IS NOT NULL
+  GROUP BY session.charge_session_id
+), corrected AS (
+  SELECT
+    aggregate.*,
+    boundary.* EXCEPT(charge_session_id, ac_energy_method),
+    CASE
+      WHEN boundary.observed_end_ac_energy_kwh IS NULL THEN NULL
+      WHEN boundary.end_ac_observed_at < aggregate.ended_at
+        AND TIMESTAMP_DIFF(aggregate.ended_at, boundary.end_ac_observed_at, SECOND)
+          BETWEEN 1 AND 120
+        AND power.sample.source_timestamp <= aggregate.ended_at
+        AND power.sample.numeric_value > 0
+      THEN boundary.observed_end_ac_energy_kwh
+        + power.sample.numeric_value
+          * TIMESTAMP_DIFF(aggregate.ended_at, boundary.end_ac_observed_at, MILLISECOND)
+          / 3600000.0
+      ELSE boundary.observed_end_ac_energy_kwh
+    END AS end_ac_energy_kwh,
+    CASE
+      WHEN boundary.observed_end_ac_energy_kwh IS NOT NULL
+        AND boundary.end_ac_observed_at < aggregate.ended_at
+        AND TIMESTAMP_DIFF(aggregate.ended_at, boundary.end_ac_observed_at, SECOND)
+          BETWEEN 1 AND 120
+        AND power.sample.numeric_value > 0 THEN 'power_integrated'
+      ELSE boundary.ac_energy_method
+    END AS ac_energy_method
+  FROM aggregated AS aggregate
+  JOIN boundary_values AS boundary USING (charge_session_id)
+  LEFT JOIN terminal_power AS power USING (charge_session_id)
+), with_previous_charge AS (
+  SELECT
+    *,
+    LAG(end_odometer_miles) OVER (PARTITION BY vehicle_id ORDER BY started_at)
+      AS previous_charge_end_odometer_miles
+  FROM corrected
 )
 SELECT
   charge_session_id,
@@ -493,13 +861,515 @@ SELECT
   GREATEST(end_soc_percent - start_soc_percent, 0) AS soc_added_percent,
   GREATEST(end_ac_energy_kwh - start_ac_energy_kwh, 0) AS ac_energy_added_kwh,
   GREATEST(end_dc_energy_kwh - start_dc_energy_kwh, 0) AS dc_energy_added_kwh,
+  GREATEST(end_dc_energy_kwh - start_dc_energy_kwh, 0) AS battery_energy_added_kwh,
+  SAFE_MULTIPLY(100, SAFE_DIVIDE(
+    GREATEST(end_dc_energy_kwh - start_dc_energy_kwh, 0),
+    NULLIF(GREATEST(end_ac_energy_kwh - start_ac_energy_kwh, 0), 0)
+  )) AS charging_efficiency_percent,
+  start_energy_remaining_kwh,
+  end_energy_remaining_kwh,
+  start_odometer_miles,
+  end_odometer_miles,
+  GREATEST(start_odometer_miles - previous_charge_end_odometer_miles, 0)
+    AS distance_since_previous_charge_miles,
   maximum_ac_power_kw,
   maximum_dc_power_kw,
   maximum_voltage,
   start_latitude,
   start_longitude,
-  observation_count
-FROM aggregated
+  end_latitude,
+  end_longitude,
+  observation_count,
+  state_source,
+  soc_boundary_method,
+  odometer_boundary_method,
+  ac_energy_method,
+  dc_energy_method,
+  telemetry_config_hash
+FROM with_previous_charge
+""".strip()
+
+    drive_path_points = f"""
+WITH drive_events AS (
+  SELECT
+    drive.drive_id,
+    drive.vehicle_id,
+    drive.started_at,
+    drive.ended_at,
+    drive.distance_miles,
+    observation.source_timestamp,
+    MAX(IF(observation.field_name = 'Location', observation.latitude, NULL)) AS latitude,
+    MAX(IF(observation.field_name = 'Location', observation.longitude, NULL)) AS longitude,
+    MAX(IF(observation.field_name = 'VehicleSpeed', observation.numeric_value, NULL))
+      AS speed_update,
+    MAX(IF(observation.field_name = 'Soc', observation.numeric_value, NULL)) AS soc_update
+  FROM {table("drives")} AS drive
+  JOIN {table("telemetry_observations")} AS observation
+    ON observation.vehicle_id = drive.vehicle_id
+    AND NOT observation.is_invalid
+    AND observation.field_name IN ('Location', 'VehicleSpeed', 'Soc')
+    AND observation.source_timestamp BETWEEN drive.started_at
+      AND COALESCE(drive.ended_at, CURRENT_TIMESTAMP())
+  GROUP BY drive.drive_id, drive.vehicle_id, drive.started_at, drive.ended_at,
+    drive.distance_miles, observation.source_timestamp
+), stateful AS (
+  SELECT
+    *,
+    LAST_VALUE(speed_update IGNORE NULLS) OVER drive_window AS speed_mph,
+    LAST_VALUE(soc_update IGNORE NULLS) OVER drive_window AS soc_percent
+  FROM drive_events
+  WINDOW drive_window AS (
+    PARTITION BY drive_id ORDER BY source_timestamp ROWS UNBOUNDED PRECEDING
+  )
+), location_points AS (
+  SELECT
+    *,
+    ST_GEOGPOINT(longitude, latitude) AS point,
+    LAG(ST_GEOGPOINT(longitude, latitude)) OVER (
+      PARTITION BY drive_id ORDER BY source_timestamp
+    ) AS previous_point
+  FROM stateful
+  WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+), route_distances AS (
+  SELECT
+    *,
+    COALESCE(ST_DISTANCE(previous_point, point) / 1609.344, 0) AS segment_distance_miles
+  FROM location_points
+), cumulative AS (
+  SELECT
+    *,
+    SUM(segment_distance_miles) OVER (
+      PARTITION BY drive_id ORDER BY source_timestamp ROWS UNBOUNDED PRECEDING
+    ) AS raw_distance_into_drive_miles
+  FROM route_distances
+), scaled AS (
+  SELECT
+    *,
+    MAX(raw_distance_into_drive_miles) OVER (PARTITION BY drive_id)
+      AS raw_route_distance_miles
+  FROM cumulative
+)
+SELECT
+  drive_id,
+  vehicle_id,
+  source_timestamp,
+  latitude,
+  longitude,
+  speed_mph,
+  soc_percent,
+  CASE
+    WHEN raw_route_distance_miles > 0 AND distance_miles IS NOT NULL
+      THEN raw_distance_into_drive_miles * distance_miles / raw_route_distance_miles
+    ELSE raw_distance_into_drive_miles
+  END AS distance_into_drive_miles,
+  segment_distance_miles,
+  raw_route_distance_miles,
+  distance_miles AS boundary_distance_miles
+FROM scaled
+""".strip()
+
+    drive_fsd_segments = f"""
+WITH counter_updates AS (
+  SELECT
+    vehicle_id,
+    source_timestamp,
+    pubsub_message_id,
+    MAX(IF(field_name = 'MilesSinceReset', numeric_value, NULL)) AS total_update,
+    MAX(IF(field_name = 'SelfDrivingMilesSinceReset', numeric_value, NULL)) AS fsd_update,
+    COUNTIF(field_name = 'MilesSinceReset') > 0
+      AND COUNTIF(field_name = 'SelfDrivingMilesSinceReset') > 0 AS synchronized_pair
+  FROM {table("telemetry_observations")}
+  WHERE NOT is_invalid
+    AND field_name IN ('MilesSinceReset', 'SelfDrivingMilesSinceReset')
+  GROUP BY vehicle_id, source_timestamp, pubsub_message_id
+), counter_state AS (
+  SELECT
+    *,
+    LAST_VALUE(total_update IGNORE NULLS) OVER counter_window AS total_miles,
+    LAST_VALUE(fsd_update IGNORE NULLS) OVER counter_window AS fsd_miles,
+    LAST_VALUE(IF(total_update IS NOT NULL, source_timestamp, NULL) IGNORE NULLS)
+      OVER counter_window AS total_observed_at,
+    LAST_VALUE(IF(fsd_update IS NOT NULL, source_timestamp, NULL) IGNORE NULLS)
+      OVER counter_window AS fsd_observed_at
+  FROM counter_updates
+  WINDOW counter_window AS (
+    PARTITION BY vehicle_id ORDER BY source_timestamp, pubsub_message_id
+    ROWS UNBOUNDED PRECEDING
+  )
+), paired_changes AS (
+  SELECT
+    *,
+    ABS(TIMESTAMP_DIFF(total_observed_at, fsd_observed_at, SECOND)) AS pairing_gap_seconds
+  FROM counter_state
+  WHERE total_miles IS NOT NULL AND fsd_miles IS NOT NULL
+  QUALIFY LAG(TO_JSON_STRING(STRUCT(total_miles, fsd_miles))) OVER (
+    PARTITION BY vehicle_id ORDER BY source_timestamp, pubsub_message_id
+  ) IS DISTINCT FROM TO_JSON_STRING(STRUCT(total_miles, fsd_miles))
+), drive_candidates AS (
+  SELECT
+    drive.drive_id,
+    drive.vehicle_id,
+    drive.started_at,
+    drive.ended_at,
+    drive.distance_miles,
+    counter.* EXCEPT(vehicle_id),
+    IF(counter.source_timestamp < drive.started_at,
+      ROW_NUMBER() OVER (
+        PARTITION BY drive.drive_id, counter.source_timestamp < drive.started_at
+        ORDER BY counter.source_timestamp DESC
+      ), 1) AS before_rank
+  FROM {table("drives")} AS drive
+  JOIN paired_changes AS counter
+    ON counter.vehicle_id = drive.vehicle_id
+    AND counter.source_timestamp BETWEEN TIMESTAMP_SUB(drive.started_at, INTERVAL 15 MINUTE)
+      AND COALESCE(drive.ended_at, CURRENT_TIMESTAMP())
+), selected_points AS (
+  SELECT *
+  FROM drive_candidates
+  WHERE source_timestamp >= started_at OR before_rank = 1
+), mapped_points AS (
+  SELECT
+    selected.*,
+    CASE
+      WHEN source_timestamp <= started_at THEN 0
+      WHEN ended_at IS NOT NULL AND source_timestamp >= ended_at THEN distance_miles
+      ELSE (
+        SELECT path.distance_into_drive_miles
+        FROM {table("drive_path_points")} AS path
+        WHERE path.drive_id = selected.drive_id
+        ORDER BY ABS(TIMESTAMP_DIFF(path.source_timestamp, selected.source_timestamp,
+          MILLISECOND))
+        LIMIT 1
+      )
+    END AS distance_into_drive_miles
+  FROM selected_points AS selected
+), deltas AS (
+  SELECT
+    *,
+    LAG(source_timestamp) OVER point_window AS previous_counter_at,
+    LAG(distance_into_drive_miles) OVER point_window AS previous_distance_miles,
+    LAG(total_miles) OVER point_window AS previous_total_miles,
+    LAG(fsd_miles) OVER point_window AS previous_fsd_miles
+  FROM mapped_points
+  WINDOW point_window AS (
+    PARTITION BY drive_id ORDER BY source_timestamp, pubsub_message_id
+  )
+), buckets AS (
+  SELECT
+    *,
+    distance_into_drive_miles - previous_distance_miles AS bucket_distance_miles,
+    total_miles - previous_total_miles AS counter_total_delta_miles,
+    fsd_miles - previous_fsd_miles AS counter_fsd_delta_miles,
+    (total_miles - previous_total_miles) - (fsd_miles - previous_fsd_miles)
+      AS counter_manual_delta_miles
+  FROM deltas
+  WHERE previous_distance_miles IS NOT NULL
+    AND distance_into_drive_miles > previous_distance_miles
+), valid_buckets AS (
+  SELECT
+    *,
+    CASE
+      WHEN counter_total_delta_miles > 0 THEN bucket_distance_miles * LEAST(
+        1.0, GREATEST(SAFE_DIVIDE(counter_fsd_delta_miles,
+          counter_total_delta_miles), 0.0)
+      )
+      ELSE LEAST(bucket_distance_miles, GREATEST(counter_fsd_delta_miles, 0))
+    END AS inferred_fsd_miles,
+    CASE
+      WHEN synchronized_pair AND pairing_gap_seconds = 0 THEN 0.9
+      WHEN pairing_gap_seconds <= 30 THEN 0.75
+      ELSE 0.55
+    END AS base_confidence,
+    CASE
+      WHEN synchronized_pair AND pairing_gap_seconds = 0
+        THEN 'synchronized_counter_bucket'
+      ELSE 'counter_milestone_inferred'
+    END AS base_method
+  FROM buckets
+  WHERE counter_total_delta_miles >= 0
+    AND counter_fsd_delta_miles >= 0
+    AND counter_manual_delta_miles >= -0.01
+), bucket_segments AS (
+  SELECT
+    drive_id,
+    vehicle_id,
+    started_at AS drive_started_at,
+    ended_at AS drive_ended_at,
+    distance_miles AS drive_distance_miles,
+    previous_distance_miles AS start_distance_miles,
+    distance_into_drive_miles - inferred_fsd_miles AS end_distance_miles,
+    'manual' AS state,
+    IF(inferred_fsd_miles > 0, base_confidence * 0.8, base_confidence) AS confidence,
+    base_method AS inference_method,
+    previous_distance_miles AS transition_lower_bound_miles,
+    distance_into_drive_miles AS transition_upper_bound_miles
+  FROM valid_buckets
+  WHERE bucket_distance_miles - inferred_fsd_miles > 0.001
+  UNION ALL
+  SELECT
+    drive_id,
+    vehicle_id,
+    started_at,
+    ended_at,
+    distance_miles,
+    distance_into_drive_miles - inferred_fsd_miles,
+    distance_into_drive_miles,
+    'fsd',
+    IF(inferred_fsd_miles < bucket_distance_miles, base_confidence * 0.8, base_confidence),
+    base_method,
+    previous_distance_miles,
+    distance_into_drive_miles
+  FROM valid_buckets
+  WHERE inferred_fsd_miles > 0.001
+), last_segment AS (
+  SELECT *
+  FROM bucket_segments
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY drive_id ORDER BY end_distance_miles DESC, start_distance_miles DESC
+  ) = 1
+), tail_segments AS (
+  SELECT
+    drive_id,
+    vehicle_id,
+    drive_started_at,
+    drive_ended_at,
+    drive_distance_miles,
+    end_distance_miles AS start_distance_miles,
+    drive_distance_miles AS end_distance_miles,
+    state,
+    confidence * 0.6 AS confidence,
+    'counter_state_carried_to_drive_boundary' AS inference_method,
+    end_distance_miles AS transition_lower_bound_miles,
+    drive_distance_miles AS transition_upper_bound_miles
+  FROM last_segment
+  WHERE drive_distance_miles - end_distance_miles > 0.001
+), inferred_segments AS (
+  SELECT * FROM bucket_segments
+  UNION ALL
+  SELECT * FROM tail_segments
+), fallback_segments AS (
+  SELECT
+    drive.drive_id,
+    drive.vehicle_id,
+    drive.started_at AS drive_started_at,
+    drive.ended_at AS drive_ended_at,
+    drive.distance_miles AS drive_distance_miles,
+    0.0 AS start_distance_miles,
+    drive.distance_miles AS end_distance_miles,
+    'uncertain' AS state,
+    0.0 AS confidence,
+    'insufficient_counter_evidence' AS inference_method,
+    0.0 AS transition_lower_bound_miles,
+    drive.distance_miles AS transition_upper_bound_miles
+  FROM {table("drives")} AS drive
+  WHERE NOT EXISTS (
+    SELECT 1 FROM inferred_segments AS segment WHERE segment.drive_id = drive.drive_id
+  )
+), all_segments AS (
+  SELECT * FROM inferred_segments
+  UNION ALL
+  SELECT * FROM fallback_segments
+), located AS (
+  SELECT
+    segment.*,
+    (SELECT AS STRUCT path.source_timestamp, path.latitude, path.longitude
+      FROM {table("drive_path_points")} AS path
+      WHERE path.drive_id = segment.drive_id
+      ORDER BY ABS(path.distance_into_drive_miles - segment.start_distance_miles)
+      LIMIT 1) AS start_point,
+    (SELECT AS STRUCT path.source_timestamp, path.latitude, path.longitude
+      FROM {table("drive_path_points")} AS path
+      WHERE path.drive_id = segment.drive_id
+      ORDER BY ABS(path.distance_into_drive_miles - segment.end_distance_miles)
+      LIMIT 1) AS end_point
+  FROM all_segments AS segment
+)
+SELECT
+  drive_id,
+  ROW_NUMBER() OVER (
+    PARTITION BY drive_id ORDER BY start_distance_miles, end_distance_miles, state
+  ) AS segment_index,
+  COALESCE(start_point.source_timestamp, drive_started_at) AS started_at,
+  COALESCE(end_point.source_timestamp, drive_ended_at) AS ended_at,
+  start_point.latitude AS start_latitude,
+  start_point.longitude AS start_longitude,
+  end_point.latitude AS end_latitude,
+  end_point.longitude AS end_longitude,
+  start_distance_miles,
+  end_distance_miles,
+  GREATEST(end_distance_miles - start_distance_miles, 0) AS distance_miles,
+  state,
+  confidence,
+  inference_method,
+  transition_lower_bound_miles,
+  transition_upper_bound_miles
+FROM located
+WHERE end_distance_miles > start_distance_miles
+""".strip()
+
+    drive_fsd_summary = f"""
+SELECT
+  drive.drive_id,
+  drive.vehicle_id,
+  drive.started_at,
+  drive.ended_at,
+  drive.distance_miles AS total_distance_miles,
+  SUM(IF(segment.state = 'fsd', segment.distance_miles, 0)) AS fsd_distance_miles,
+  SUM(IF(segment.state = 'manual', segment.distance_miles, 0)) AS manual_distance_miles,
+  SUM(IF(segment.state = 'uncertain', segment.distance_miles, 0)) AS uncertain_distance_miles,
+  SAFE_MULTIPLY(100, SAFE_DIVIDE(
+    SUM(IF(segment.state = 'fsd', segment.distance_miles, 0)),
+    NULLIF(drive.distance_miles, 0)
+  )) AS fsd_percent,
+  MIN(segment.confidence) AS minimum_confidence,
+  COUNT(*) AS segment_count
+FROM {table("drives")} AS drive
+LEFT JOIN {table("drive_fsd_segments")} AS segment USING (drive_id)
+GROUP BY drive.drive_id, drive.vehicle_id, drive.started_at, drive.ended_at,
+  drive.distance_miles
+""".strip()
+
+    drive_path = f"""
+SELECT
+  path.drive_id,
+  path.vehicle_id,
+  path.source_timestamp,
+  path.latitude,
+  path.longitude,
+  path.speed_mph,
+  path.soc_percent,
+  path.distance_into_drive_miles,
+  COALESCE(segment.state, 'uncertain') AS fsd_state,
+  COALESCE(segment.confidence, 0) AS fsd_confidence,
+  COALESCE(segment.inference_method, 'insufficient_counter_evidence')
+    AS fsd_inference_method
+FROM {table("drive_path_points")} AS path
+LEFT JOIN {table("drive_fsd_segments")} AS segment
+  ON segment.drive_id = path.drive_id
+  AND path.distance_into_drive_miles >= segment.start_distance_miles
+  AND path.distance_into_drive_miles <= segment.end_distance_miles
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY path.drive_id, path.source_timestamp
+  ORDER BY segment.start_distance_miles DESC, segment.segment_index DESC
+) = 1
+""".strip()
+
+    telemetry_capability_diagnostics = f"""
+WITH message_fields AS (
+  SELECT
+    vehicle_id,
+    source_timestamp,
+    pubsub_message_id,
+    MAX(telemetry_client_version) AS telemetry_client_version,
+    MAX(telemetry_receiver_version) AS telemetry_receiver_version,
+    MAX(telemetry_config_version) AS telemetry_config_version,
+    MAX(telemetry_config_hash) AS telemetry_config_hash,
+    ARRAY_AGG(DISTINCT field_name ORDER BY field_name) AS fields
+  FROM {table("telemetry_observations")}
+  GROUP BY vehicle_id, source_timestamp, pubsub_message_id
+), latest AS (
+  SELECT *
+  FROM message_fields
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY vehicle_id ORDER BY source_timestamp DESC, pubsub_message_id DESC
+  ) = 1
+), version_spans AS (
+  SELECT
+    vehicle_id,
+    telemetry_client_version,
+    MIN(source_timestamp) AS first_seen_at,
+    MAX(source_timestamp) AS last_seen_at
+  FROM message_fields
+  WHERE telemetry_client_version IS NOT NULL
+  GROUP BY vehicle_id, telemetry_client_version
+), version_history AS (
+  SELECT
+    vehicle_id,
+    ARRAY_AGG(telemetry_client_version ORDER BY first_seen_at) AS observed_client_versions
+  FROM version_spans
+  GROUP BY vehicle_id
+), firmware AS (
+  SELECT
+    vehicle_id,
+    ARRAY_AGG(string_value IGNORE NULLS ORDER BY source_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)]
+      AS vehicle_firmware
+  FROM {table("telemetry_observations")}
+  WHERE field_name = 'Version' AND NOT is_invalid
+  GROUP BY vehicle_id
+), anchors AS (
+  SELECT
+    vehicle_id,
+    COUNTIF('Gear' IN UNNEST(fields)) AS gear_anchor_messages,
+    COUNTIF('Gear' IN UNNEST(fields) AND (
+      'Odometer' IN UNNEST(fields) OR 'EnergyRemaining' IN UNNEST(fields)
+      OR 'Soc' IN UNNEST(fields) OR 'Location' IN UNNEST(fields)
+    )) AS synchronized_gear_messages,
+    COUNTIF('DetailedChargeState' IN UNNEST(fields)) AS charge_anchor_messages,
+    COUNTIF('DetailedChargeState' IN UNNEST(fields) AND (
+      'ACChargingEnergyIn' IN UNNEST(fields) OR 'DCChargingEnergyIn' IN UNNEST(fields)
+      OR 'Soc' IN UNNEST(fields) OR 'Odometer' IN UNNEST(fields)
+    )) AS synchronized_charge_messages,
+    COUNTIF('MilesSinceReset' IN UNNEST(fields)
+      OR 'SelfDrivingMilesSinceReset' IN UNNEST(fields)) AS fsd_counter_messages,
+    COUNTIF('MilesSinceReset' IN UNNEST(fields)
+      AND 'SelfDrivingMilesSinceReset' IN UNNEST(fields)) AS synchronized_fsd_messages
+  FROM message_fields
+  WHERE source_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
+  GROUP BY vehicle_id
+)
+SELECT
+  latest.vehicle_id,
+  firmware.vehicle_firmware,
+  latest.telemetry_client_version,
+  history.observed_client_versions,
+  span.first_seen_at AS current_client_first_seen_at,
+  span.last_seen_at AS current_client_last_seen_at,
+  latest.telemetry_receiver_version,
+  latest.telemetry_config_version AS desired_profile_version,
+  latest.telemetry_config_hash AS desired_profile_hash,
+  '1.3.0' AS minimum_client_for_include_fields,
+  latest.telemetry_config_version = 'broad-v3'
+    AND (
+      SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) > 1
+      OR (
+        SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) = 1
+        AND SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(1)] AS INT64) >= 3
+      )
+    )
+    AS include_fields_requested,
+  COALESCE(anchors.synchronized_gear_messages, 0) > 0
+    OR COALESCE(anchors.synchronized_charge_messages, 0) > 0
+    OR COALESCE(anchors.synchronized_fsd_messages, 0) > 0
+    AS include_fields_observed_recently,
+  COALESCE(anchors.gear_anchor_messages, 0) AS gear_anchor_messages,
+  COALESCE(anchors.synchronized_gear_messages, 0) AS synchronized_gear_messages,
+  COALESCE(anchors.charge_anchor_messages, 0) AS charge_anchor_messages,
+  COALESCE(anchors.synchronized_charge_messages, 0) AS synchronized_charge_messages,
+  COALESCE(anchors.fsd_counter_messages, 0) AS fsd_counter_messages,
+  COALESCE(anchors.synchronized_fsd_messages, 0) AS synchronized_fsd_messages,
+  CASE
+    WHEN latest.telemetry_client_version IS NULL THEN 'client_version_unavailable'
+    WHEN SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) < 1
+      OR (SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) = 1
+        AND SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(1)] AS INT64) < 3)
+      THEN 'client_capability_limited'
+    WHEN latest.telemetry_config_version != 'broad-v3' THEN 'profile_upgrade_required'
+    WHEN COALESCE(anchors.gear_anchor_messages, 0)
+      + COALESCE(anchors.charge_anchor_messages, 0)
+      + COALESCE(anchors.fsd_counter_messages, 0) = 0 THEN 'insufficient_recent_evidence'
+    WHEN COALESCE(anchors.synchronized_gear_messages, 0)
+      + COALESCE(anchors.synchronized_charge_messages, 0)
+      + COALESCE(anchors.synchronized_fsd_messages, 0) = 0 THEN 'include_fields_not_observed'
+    ELSE 'healthy'
+  END AS capability_status,
+  latest.source_timestamp AS latest_telemetry_at
+FROM latest
+LEFT JOIN version_spans AS span
+  ON span.vehicle_id = latest.vehicle_id
+  AND span.telemetry_client_version = latest.telemetry_client_version
+LEFT JOIN version_history AS history USING (vehicle_id)
+LEFT JOIN firmware USING (vehicle_id)
+LEFT JOIN anchors USING (vehicle_id)
 """.strip()
 
     media_history = f"""
@@ -692,8 +1562,38 @@ LEFT JOIN charge_daily AS charge USING (summary_date, vehicle_id)
             "Successive valid typed field transitions.",
             state_changes,
         ),
+        AnalyticsView(
+            "drive_metric_boundaries",
+            "Inspectable drive-boundary state selections with inference provenance.",
+            drive_metric_boundaries,
+        ),
         AnalyticsView("drives", "Rebuildable drive sessions.", drives),
         AnalyticsView("charge_sessions", "Rebuildable charging sessions.", charge_sessions),
+        AnalyticsView(
+            "drive_path_points",
+            "Distance-scaled route points with carried speed and SOC context.",
+            drive_path_points,
+        ),
+        AnalyticsView(
+            "drive_fsd_segments",
+            "Manual, FSD, and uncertain route segments inferred from cumulative counters.",
+            drive_fsd_segments,
+        ),
+        AnalyticsView(
+            "drive_fsd_summary",
+            "Aggregate FSD/manual/uncertain mileage and share for each drive.",
+            drive_fsd_summary,
+        ),
+        AnalyticsView(
+            "drive_path",
+            "Route-friendly points annotated with inferred FSD state and confidence.",
+            drive_path,
+        ),
+        AnalyticsView(
+            "telemetry_capability_diagnostics",
+            "Recent receiver/client/profile and synchronized-field evidence by vehicle.",
+            telemetry_capability_diagnostics,
+        ),
         AnalyticsView("media_history", "Rebuildable media playback intervals.", media_history),
         AnalyticsView(
             "daily_vehicle_summary",

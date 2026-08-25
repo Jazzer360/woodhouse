@@ -257,7 +257,7 @@ both pairing lists as unknown rather than guessing its state.
 
 ## 9. Fleet Telemetry configuration per vehicle
 
-Official documentation re-audited **2026-08-23**. Prerequisites currently
+Official documentation re-audited **2026-08-25**. Prerequisites currently
 include firmware `2024.26+` for supported vehicles (`2025.20+` for legacy
 Intel-based Model S/X), application Virtual Key pairing, required scopes, and a
 public receiver using a certificate issued by a commonly trusted CA. The
@@ -338,6 +338,15 @@ For every eligible vehicle:
 5. inspect telemetry errors;
 6. record field/interval config hash and server trust-profile hash/version in
    platform state.
+
+Every inspect/apply/verify first reads the selected VIN through `fleet_status`
+and capability-projects from its actual `fleet_telemetry_version`. Firmware is
+displayed as diagnostic context only. In particular, firmware `2026.26.6` does
+not authorize `include_fields` when Tesla still reports client `1.2.0`.
+Inspection also compares Tesla's returned configuration with the desired
+include relationships and displays the pinned receiver version; incoming
+payload evidence is available in the authenticated analytics view
+`telemetry_capability_diagnostics`.
 
 Do not let one vehicle's pairing/config failure prevent other vehicles on the account from working.
 
