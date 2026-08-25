@@ -109,6 +109,13 @@ def telemetry_configuration_page(
           <h2>Exact configuration plan</h2>
           <pre>{safe_json}</pre>
           <div class="actions telemetry-actions">
+            <form method="post" action="/onboarding/vehicles/{encoded_id}/telemetry/verify">
+              <input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}">
+              <p>Read Tesla's current configuration and errors. If it exactly matches this
+                plan and is synchronized, record the trusted profile version and hash without
+                changing or waking the vehicle.</p>
+              <button class="button ghost" type="submit">Verify and record provenance</button>
+            </form>
             <form method="post" action="/onboarding/vehicles/{encoded_id}/telemetry/apply">
               <input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}">
               <input type="hidden" name="expected_config_hash"

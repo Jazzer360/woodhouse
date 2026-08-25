@@ -30,6 +30,8 @@ CERT_NAME: Final = "telemetry-edge"
 SERVICE_NAME: Final = "telemetry-certificate-renewer"
 MAX_STATE_BYTES: Final = 60_000
 MAX_EXTRACTED_STATE_BYTES: Final = 5_000_000
+MINIMUM_ACTIVATION_REMAINING: Final = timedelta(days=7)
+SHORT_LIVED_CERTIFICATE_LIFETIME: Final = timedelta(days=10)
 PEM_CERTIFICATE = re.compile(
     rb"-----BEGIN CERTIFICATE-----\s+.*?-----END CERTIFICATE-----",
     re.DOTALL,
@@ -63,15 +65,11 @@ class Settings:
     trust_profile_secret: str
     trust_profile_id: str
     trust_readiness_secret: str
-    renewal_minimum_days: int = 45
     deployment_timeout_seconds: int = 600
 
     @classmethod
     def from_environment(cls) -> Settings:
-        minimum_days = int(os.environ.get("RENEWAL_MINIMUM_DAYS", "45"))
         deployment_timeout = int(os.environ.get("DEPLOYMENT_TIMEOUT_SECONDS", "600"))
-        if minimum_days < 30 or minimum_days > 60:
-            raise ValueError("RENEWAL_MINIMUM_DAYS must be between 30 and 60")
         if deployment_timeout < 120 or deployment_timeout > 1200:
             raise ValueError("DEPLOYMENT_TIMEOUT_SECONDS must be between 120 and 1200")
         return cls(
@@ -88,7 +86,6 @@ class Settings:
             trust_profile_secret=_required_env("TELEMETRY_TRUST_PROFILE_SECRET"),
             trust_profile_id=_required_env("TELEMETRY_TRUST_PROFILE_ID"),
             trust_readiness_secret=_required_env("TELEMETRY_TRUST_READINESS_SECRET"),
-            renewal_minimum_days=minimum_days,
             deployment_timeout_seconds=deployment_timeout,
         )
 
@@ -99,6 +96,7 @@ class CertificateMaterial:
     private_key: bytes
     leaf_sha256: str
     fullchain_sha256: str
+    not_before: datetime
     not_after: datetime
 
 
@@ -113,6 +111,15 @@ class TrustProfile:
 class SecretValue:
     data: bytes
     version: str
+
+
+class CertbotError(RuntimeError):
+    """A safely categorized Certbot failure whose raw output must not be logged."""
+
+    def __init__(self, category: str, returncode: int) -> None:
+        super().__init__(f"certbot_failed_exit_{returncode}")
+        self.category = category
+        self.returncode = returncode
 
 
 def _required_env(name: str) -> str:
@@ -224,18 +231,85 @@ def _run_certbot(
             "--agree-tos",
             "--no-eff-email",
             "--non-interactive",
-            "--keep-until-expiring",
+            # Woodhouse invokes Certbot only after its lifetime-relative due
+            # threshold is crossed, then forces this one selected lineage.
+            "--force-renewal",
         ],
         check=False,
         capture_output=True,
         timeout=900,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"certbot_failed_exit_{result.returncode}")
+        raise CertbotError(
+            _certbot_failure_category(result.stdout + b"\n" + result.stderr),
+            result.returncode,
+        )
+
+
+def _certbot_failure_category(output: bytes) -> str:
+    """Map Certbot output to a stable category without returning raw diagnostics."""
+    normalized = output.decode("utf-8", errors="replace").lower()
+    patterns = (
+        (
+            "dns_provider_authorization",
+            (
+                "invalid request headers",
+                "authentication error",
+                "invalid api token",
+                "invalid access token",
+                "insufficient permissions",
+                "permission denied",
+                "error determining zone_id",
+            ),
+        ),
+        (
+            "dns_provider_unavailable",
+            ("api.cloudflare.com", "cloudflare api error", "cloudflare.exceptions"),
+        ),
+        (
+            "dns_propagation",
+            ("dns problem", "unauthorized", "incorrect txt record", "propagation"),
+        ),
+        (
+            "acme_rate_limited",
+            ("rate limit", "too many certificates", "too many failed authorizations"),
+        ),
+        (
+            "acme_unavailable",
+            (
+                "connectionerror",
+                "connection refused",
+                "connection reset",
+                "name or service not known",
+                "temporary failure in name resolution",
+                "read timed out",
+                "connect timeout",
+                "service unavailable",
+            ),
+        ),
+        (
+            "acme_state_invalid",
+            (
+                "renewal configuration file",
+                "expected cert.pem to be a symlink",
+                "parsefailures",
+                "malformed",
+                "no such file or directory",
+            ),
+        ),
+    )
+    for category, needles in patterns:
+        if any(needle in normalized for needle in needles):
+            return category
+    return "certbot_failed"
 
 
 def _load_and_validate_material(
-    config_dir: Path, hostname: str, *, minimum_days: int
+    config_dir: Path,
+    hostname: str,
+    *,
+    minimum_remaining: timedelta = MINIMUM_ACTIVATION_REMAINING,
+    now: datetime | None = None,
 ) -> CertificateMaterial:
     live_dir = config_dir / "live" / CERT_NAME
     fullchain = (live_dir / "fullchain.pem").read_bytes()
@@ -247,8 +321,10 @@ def _load_and_validate_material(
     names = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     if hostname not in names.get_values_for_type(x509.DNSName):
         raise ValueError("certificate SAN does not contain the telemetry hostname")
+    checked_at = now or datetime.now(UTC)
+    not_before = leaf.not_valid_before_utc
     not_after = leaf.not_valid_after_utc
-    if not_after < datetime.now(UTC) + timedelta(days=minimum_days):
+    if not_after < checked_at + minimum_remaining:
         raise ValueError("certificate validity is shorter than the deployment safety window")
     key = serialization.load_pem_private_key(private_key, password=None)
     public_format = {
@@ -264,8 +340,19 @@ def _load_and_validate_material(
         private_key=private_key,
         leaf_sha256=leaf.fingerprint(hashes.SHA256()).hex(),
         fullchain_sha256=hashlib.sha256(fullchain).hexdigest(),
+        not_before=not_before,
         not_after=not_after,
     )
+
+
+def _certificate_is_due(material: CertificateMaterial, *, now: datetime | None = None) -> bool:
+    """Match Certbot's lifetime-relative renewal policy without contacting ACME."""
+    checked_at = now or datetime.now(UTC)
+    lifetime = material.not_after - material.not_before
+    if lifetime <= timedelta(0):
+        return True
+    divisor = 2 if lifetime <= SHORT_LIVED_CERTIFICATE_LIFETIME else 3
+    return material.not_after - checked_at < lifetime / divisor
 
 
 def _load_trust_profile(profile_id: str, pem: bytes) -> TrustProfile:
@@ -496,20 +583,37 @@ def renew_certificate(
         if state is not None:
             _extract_state(state.data, config_dir)
         credentials = root / "cloudflare.ini"
-        credentials.write_text(
-            f"dns_cloudflare_api_token = {settings.cloudflare_api_token}\n",
-            encoding="utf-8",
-        )
-        credentials.chmod(0o600)
         try:
-            _run_certbot(settings, config_dir, credentials, runner)
+            # A healthy stored certificate needs neither ACME nor Cloudflare.
+            # This keeps twice-daily health checks independent of transient
+            # external outages and avoids needless CA traffic. Renewal becomes
+            # due when less than one third of the issued lifetime remains (one
+            # half for certificates lasting at most ten days), matching modern
+            # Certbot behavior as CA lifetimes shorten.
+            try:
+                material = _load_and_validate_material(
+                    config_dir,
+                    settings.hostname,
+                )
+                should_renew = _certificate_is_due(material)
+            except (FileNotFoundError, OSError, ValueError, x509.ExtensionNotFound):
+                should_renew = True
+            if should_renew:
+                credentials.write_text(
+                    f"dns_cloudflare_api_token = {settings.cloudflare_api_token}\n",
+                    encoding="utf-8",
+                )
+                credentials.chmod(0o600)
+                try:
+                    _run_certbot(settings, config_dir, credentials, runner)
+                    material = _load_and_validate_material(
+                        config_dir,
+                        settings.hostname,
+                    )
+                finally:
+                    credentials.unlink(missing_ok=True)
         finally:
             credentials.unlink(missing_ok=True)
-        material = _load_and_validate_material(
-            config_dir,
-            settings.hostname,
-            minimum_days=settings.renewal_minimum_days,
-        )
         _validate_candidate_against_trust_profile(material, trust, root, runner)
         trust_profile_changed = (
             active is None
@@ -571,7 +675,13 @@ def renew_certificate(
         return "renewed"
 
 
-def _log_event(status: str, *, severity: str = "INFO", error_type: str | None = None) -> None:
+def _log_event(
+    status: str,
+    *,
+    severity: str = "INFO",
+    error_type: str | None = None,
+    error_category: str | None = None,
+) -> None:
     event: dict[str, object] = {
         "event": "telemetry_certificate_check",
         "service": SERVICE_NAME,
@@ -580,6 +690,8 @@ def _log_event(status: str, *, severity: str = "INFO", error_type: str | None = 
     }
     if error_type is not None:
         event["error_type"] = error_type
+    if error_category is not None:
+        event["error_category"] = error_category
     print(json.dumps(event, sort_keys=True), flush=True)
 
 
@@ -596,7 +708,18 @@ def main() -> None:
             session,
         )
     except Exception as exc:
-        _log_event("failed", severity="ERROR", error_type=type(exc).__name__)
+        category = exc.category if isinstance(exc, CertbotError) else None
+        if (
+            isinstance(exc, RuntimeError)
+            and str(exc) == "certificate_deployment_verification_timed_out"
+        ):
+            category = "certificate_deployment_verification_timeout"
+        _log_event(
+            "failed",
+            severity="ERROR",
+            error_type=type(exc).__name__,
+            error_category=category,
+        )
         raise SystemExit(1) from exc
     _log_event(status)
 

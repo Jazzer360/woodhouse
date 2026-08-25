@@ -2,6 +2,13 @@
 
 **Status:** Phase 6 typed live surface.
 
+For the complete argument-by-argument endpoint reference, including Tesla
+method/path, scope, wake behavior, risk, retry policy, audit behavior,
+constraints, result semantics, and all 82 live tools, see the generated
+[`mcp-tool-reference.md`](mcp-tool-reference.md). Regenerate it from the typed
+registry with `uv run python scripts/dev/generate-mcp-tool-reference.py`; CI
+checks that every live tool and input field remains documented.
+
 The gateway implements stateless MCP Streamable HTTP JSON-RPC at `POST /mcp`.
 It publishes RFC 9728 protected-resource metadata and uses OAuth 2.1
 authorization-code + PKCE through the configured authorization server. Every

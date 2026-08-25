@@ -278,13 +278,15 @@ def test_profile_is_a_complete_declarative_tessie_comparison() -> None:
 def test_profile_uses_deltas_only_for_defensible_measurements() -> None:
     profile = broad_profile("1.3.0")
 
-    assert profile.fields["Location"].interval_seconds == 10
-    assert profile.fields["Location"].minimum_delta == 10
+    assert profile.version == "broad-v2"
+    assert profile.fields["Location"].interval_seconds == 5
+    assert profile.fields["Location"].minimum_delta == 5
+    assert profile.fields["GpsHeading"].interval_seconds == 5
     assert profile.fields["VehicleSpeed"].interval_seconds == 1
     assert profile.fields["VehicleSpeed"].minimum_delta == 1
     assert profile.fields["VehicleSpeed"].include_fields == ("LongitudinalAcceleration",)
     assert profile.fields["LongitudinalAcceleration"].interval_seconds == 1
-    assert profile.fields["LongitudinalAcceleration"].minimum_delta == 1.0
+    assert profile.fields["LongitudinalAcceleration"].minimum_delta == 0.5
     assert profile.fields["LongitudinalAcceleration"].include_fields == ("VehicleSpeed",)
     assert profile.fields["BrakePedal"].interval_seconds == 1
     assert profile.fields["SelfDrivingMilesSinceReset"].minimum_delta == 1
@@ -425,10 +427,10 @@ def test_diff_detects_missing_synchronized_include_fields() -> None:
         },
     }
     assert changed["LongitudinalAcceleration"] == {
-        "current": {"interval_seconds": 1, "minimum_delta": 1.0},
+        "current": {"interval_seconds": 1, "minimum_delta": 0.5},
         "desired": {
             "interval_seconds": 1,
-            "minimum_delta": 1.0,
+            "minimum_delta": 0.5,
             "include_fields": ["VehicleSpeed"],
         },
     }
@@ -483,6 +485,29 @@ def test_apply_requires_exact_confirmation_persists_only_after_sync_and_audits()
     assert store.states["veh_one"].status == "synced"
     assert store.states["veh_one"].transport_maintenance_opt_in is True
     assert list(store.audits.values())[0]["result"] == "succeeded"
+
+
+def test_verify_repairs_provenance_without_reapplying_vehicle_config() -> None:
+    controller, store, fleet = service()
+    desired = controller._trust.build_config(broad_profile("1.2.0"))  # noqa: SLF001
+    fleet.configs[vehicle().vin] = desired
+    store.states["veh_one"] = TelemetryConfigurationState(
+        vehicle_id="veh_one",
+        transport_maintenance_opt_in=True,
+    )
+
+    result = controller.verify(context(), "veh_one")
+
+    assert result["status"] == "verified"
+    assert fleet.created == []
+    persisted = store.states["veh_one"]
+    assert persisted.profile_version == "broad-v2"
+    assert persisted.config_hash == result["config_hash"]
+    assert persisted.status == "synced"
+    assert persisted.transport_maintenance_opt_in is True
+    audit = list(store.audits.values())[0]
+    assert audit["operation"] == "verify"
+    assert audit["result"] == "succeeded"
 
 
 def test_vehicle_client_without_delta_support_is_not_configured() -> None:

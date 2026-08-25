@@ -17,9 +17,12 @@ resource "google_cloud_run_v2_job" "telemetry_certificate_renewer" {
     parallelism = 1
 
     template {
-      service_account       = google_service_account.platform["certificate_renewer"].email
-      timeout               = "1200s"
-      max_retries           = 0
+      service_account = google_service_account.platform["certificate_renewer"].email
+      timeout         = "1200s"
+      # Renewal and deployment are idempotent around the immutable release
+      # manifest. Retry transient ACME, Secret Manager, or VM-control failures
+      # within the same scheduled execution before alerting an operator.
+      max_retries           = 2
       execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
 
       containers {
