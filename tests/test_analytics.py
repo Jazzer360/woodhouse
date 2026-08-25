@@ -318,6 +318,14 @@ def test_fsd_bucket_allocation_matches_supplied_trip_regression_and_bounds_trans
     assert "synchronized_counter_bucket" in segments
     assert "counter_state_carried_to_drive_boundary" in segments
     assert "insufficient_counter_evidence" in segments
+    assert "mapped_candidates" in segments
+    assert "LEFT JOIN `project.dataset.drive_path_points` AS path" in segments
+    assert "ARRAY_AGG(" in segments
+    assert "IGNORE NULLS" in segments
+    assert "CROSS JOIN UNNEST(ARRAY_CONCAT(" in segments
+    assert "UNION ALL" not in segments
+    assert "NOT EXISTS" not in segments
+    assert "SELECT AS STRUCT path" not in segments
 
     total_distance = 3.05963
     first_milestone_distance = 1.23963

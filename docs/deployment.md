@@ -628,6 +628,11 @@ Require a successful build. The reconciler's final postcondition re-lists each
 dataset and fails unless its Woodhouse-managed analytics view names exactly
 match the source definition set; create/update/delete API failures also fail the
 build. Unmanaged views and all non-view objects are ignored by that comparison.
+Logical-view create/update calls use a 120-second validation deadline because
+BigQuery performs a dry-run-style semantic planning pass before accepting the
+metadata change. This does not run or bill the historical query. Planner errors
+such as unsupported correlated table subqueries must be fixed in the checked-in
+SQL; the longer deadline exists so Cloud Build reports the real diagnostic.
 
 The initial adoption of an existing environment is an import, not a recreate.
 After this configuration is merged, import the three existing regional triggers
