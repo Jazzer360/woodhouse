@@ -70,13 +70,22 @@ datasets, and update dataset metadata/ACLs through a custom role containing only
 `bigquery.datasets.create`, `bigquery.datasets.get`,
 `bigquery.datasets.update`, `bigquery.tables.create`, `bigquery.tables.get`,
 and `bigquery.tables.update`. It cannot run BigQuery jobs, delete tables, read
-table data, access Secret Manager, deploy Cloud Run, or call vehicle APIs.
+table data under its steady-state project/dataset IAM, access Secret Manager,
+deploy Cloud Run, or call vehicle APIs. BigQuery nevertheless requires
+`bigquery.tables.getData` on referenced tables while it validates a logical-view
+definition. The Phase 9 `add-user` transaction therefore adds a dataset-scoped
+`READER` entry for this identity immediately before validating the managed
+views and removes it in `finally`, whether validation succeeds or fails. The
+identity still has no BigQuery job role. A process-kill between grant and
+cleanup is detectable ACL drift; re-running `add-user` removes it before doing
+any other repair and again on normal completion.
 
 The keyless `tpp-dataset-owner` service account has no project-level roles, keys,
 or operator impersonation binding. BigQuery requires every dataset policy to
 retain a direct owner, so each per-user dataset grants that otherwise dormant
 identity `OWNER`. Keeping this mandatory data-capable entry separate prevents
-the impersonatable `tpp-user-admin` path from reading user telemetry.
+the impersonatable `tpp-user-admin` path from retaining telemetry access after
+the narrow view-validation transaction.
 
 Firestore IAM is database-wide and cannot scope `roles/datastore.user` to only
 the `allowed_users` collection. This is the principal Phase 3 IAM tradeoff: the
@@ -133,7 +142,7 @@ self-reference cycle.
 | `tpp-pubsub-push` | Invoker on telemetry-processor only |
 | `tpp-build-validator` | Log writer only; no deploy, secret, or data permission |
 | `tpp-build-deployer` | Artifact Registry writer, Cloud Run developer, `actAs` on Cloud Run runtimes, and—when enabled—`actAs` plus metadata/reset/health access only for `tpp-telemetry-edge` |
-| `tpp-user-admin` | Firestore user; BigQuery dataset/raw-table creator and metadata updater; no table-data access |
+| `tpp-user-admin` | Firestore user; BigQuery dataset/raw-table/view metadata updater; no steady-state table-data or query-job access; temporary per-dataset read only while BigQuery validates managed view definitions |
 | `tpp-partner-admin` | Secret accessor only for Tesla client-secret and public-key containers; no project role or runtime impersonation |
 | `tpp-dataset-owner` | Required direct owner on per-user datasets; no project roles, keys, or impersonation binding |
 
@@ -161,6 +170,14 @@ table expiration. Phase 9 additionally creates or updates the dependency-ordered
 `charge_sessions`, `media_history`, and `daily_vehicle_summary` logical views.
 Re-run `add-user` once for each existing approved user after Phase 9 is deployed;
 the operation is idempotent and does not alter or delete existing raw data.
+
+The three ACL entries above are the permanent contract. During managed view
+creation/update only, `add-user` temporarily adds `tpp-user-admin` as `READER`
+because BigQuery refuses to validate a view unless its creator has
+`tables.getData` on each referenced object. A `finally` cleanup restores the
+three-entry contract on success or failure. This narrowly scoped, short-lived
+grant is an implementation requirement of BigQuery view validation, not a
+runtime analytics permission.
 
 The gateway already has project-level `roles/bigquery.jobUser` so it can run scoped queries. No caller supplies a dataset ID, and no shared project-level data-reader/writer role is granted.
 
@@ -436,7 +453,9 @@ The command transactionally allocates stable random `user_id` and `dataset_id`
 values, creates or repairs the `us-central1` dataset with no default table or
 partition expiration, grants the dormant `tpp-dataset-owner` identity the direct
 owner entry required by BigQuery, and enforces only gateway read and processor
-write runtime ACLs, then
+write runtime ACLs. While creating/updating Phase 9 views it briefly grants its
+own keyless identity dataset read solely for BigQuery validation, removes that
+entry in `finally`, then
 marks the invitation active. Re-running the command reuses the
 same identifiers and repairs drift. If dataset provisioning fails for a new
 invitation, the record remains disabled and a safe retry completes it.

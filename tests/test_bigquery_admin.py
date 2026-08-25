@@ -1,9 +1,11 @@
 """BigQuery per-user ACL construction tests."""
 
+import pytest
 from google.cloud import bigquery
 from tesla_personal_platform.auth.bigquery_admin import (
     BigQueryDatasetProvisioner,
     restricted_service_account_access,
+    temporary_view_provisioning_access,
 )
 from tesla_personal_platform.auth.models import AllowedUser, UserStatus
 
@@ -33,11 +35,13 @@ def test_dataset_access_is_exact_minimal_and_idempotent() -> None:
 
 
 class RecordingBigQueryClient:
-    def __init__(self, current: bigquery.Dataset) -> None:
+    def __init__(self, current: bigquery.Dataset, *, fail_view_creation: bool = False) -> None:
         self.current = current
-        self.updated_fields: list[str] = []
+        self.updated_dataset_fields: list[list[str]] = []
+        self.dataset_access_snapshots: list[set[tuple[str, str, str]]] = []
         self.created_tables: list[bigquery.Table] = []
         self.updated_table_fields: list[list[str]] = []
+        self.fail_view_creation = fail_view_creation
 
     def create_dataset(
         self,
@@ -62,7 +66,10 @@ class RecordingBigQueryClient:
     ) -> bigquery.Dataset:
         del timeout
         self.current = dataset
-        self.updated_fields = fields
+        self.updated_dataset_fields.append(fields)
+        self.dataset_access_snapshots.append(
+            {(entry.role, entry.entity_type, entry.entity_id) for entry in dataset.access_entries}
+        )
         return dataset
 
     def create_table(
@@ -73,6 +80,8 @@ class RecordingBigQueryClient:
         timeout: int,
     ) -> bigquery.Table:
         del exists_ok, timeout
+        if self.fail_view_creation and table.view_query is not None:
+            raise RuntimeError("view validation failed")
         self.created_tables.append(table)
         return table
 
@@ -112,6 +121,7 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
         "dataset-owner@example.iam",
         "gateway@example.iam",
         "processor@example.iam",
+        "admin@example.iam",
     )
 
     provisioner.provision(
@@ -138,7 +148,7 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
         ("READER", "userByEmail", "gateway@example.iam"),
         ("WRITER", "userByEmail", "processor@example.iam"),
     }
-    assert set(client.updated_fields) == {
+    assert set(client.updated_dataset_fields[0]) == {
         "access_entries",
         "default_partition_expiration_ms",
         "default_table_expiration_ms",
@@ -179,3 +189,62 @@ def test_existing_dataset_metadata_and_access_drift_are_repaired() -> None:
         set(fields) == {"description", "labels", "view_query", "view_use_legacy_sql"}
         for fields in client.updated_table_fields[1:]
     )
+    assert client.dataset_access_snapshots[-2] == {
+        ("OWNER", "userByEmail", "dataset-owner@example.iam"),
+        ("READER", "userByEmail", "gateway@example.iam"),
+        ("WRITER", "userByEmail", "processor@example.iam"),
+        ("READER", "userByEmail", "admin@example.iam"),
+    }
+    assert client.dataset_access_snapshots[-1] == {
+        ("OWNER", "userByEmail", "dataset-owner@example.iam"),
+        ("READER", "userByEmail", "gateway@example.iam"),
+        ("WRITER", "userByEmail", "processor@example.iam"),
+    }
+
+
+def test_view_validation_failure_restores_permanent_dataset_acl() -> None:
+    current = bigquery.Dataset("project.tesla_u_homer")
+    current.location = "us-central1"
+    current.access_entries = []
+    client = RecordingBigQueryClient(current, fail_view_creation=True)
+    provisioner = BigQueryDatasetProvisioner(
+        client,  # type: ignore[arg-type]
+        "project",
+        "us-central1",
+        "dataset-owner@example.iam",
+        "gateway@example.iam",
+        "processor@example.iam",
+        "admin@example.iam",
+    )
+
+    with pytest.raises(RuntimeError, match="view validation failed"):
+        provisioner.provision(
+            AllowedUser(
+                "homer@example.com",
+                "usr_homer",
+                "tesla_u_homer",
+                UserStatus.ACTIVE,
+            )
+        )
+
+    assert client.dataset_access_snapshots[-1] == {
+        ("OWNER", "userByEmail", "dataset-owner@example.iam"),
+        ("READER", "userByEmail", "gateway@example.iam"),
+        ("WRITER", "userByEmail", "processor@example.iam"),
+    }
+
+
+def test_temporary_view_access_adds_only_admin_read() -> None:
+    access = temporary_view_provisioning_access(
+        "dataset-owner@example.iam",
+        "gateway@example.iam",
+        "processor@example.iam",
+        "admin@example.iam",
+    )
+
+    assert {(entry.role, entry.entity_id) for entry in access} == {
+        ("OWNER", "dataset-owner@example.iam"),
+        ("READER", "gateway@example.iam"),
+        ("WRITER", "processor@example.iam"),
+        ("READER", "admin@example.iam"),
+    }
