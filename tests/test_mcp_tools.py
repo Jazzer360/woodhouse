@@ -202,8 +202,14 @@ class FailingAuditStore(FakeStore):
 
 
 class FakeAnalytics:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        failure: AnalyticsQueryError | None = None,
+    ) -> None:
         self.fail = fail
+        self.failure = failure
         self.calls: list[tuple[str, AnalyticsContext, object, str]] = []
 
     def get_schema(self, context: AnalyticsContext, *, correlation_id: str) -> dict[str, Any]:
@@ -218,8 +224,14 @@ class FakeAnalytics:
         correlation_id: str,
     ) -> dict[str, Any]:
         self.calls.append(("query", context, sql, correlation_id))
+        if self.failure is not None:
+            raise self.failure
         if self.fail:
-            raise AnalyticsQueryError("dataset_boundary", "Qualified names are not allowed")
+            raise AnalyticsQueryError(
+                "dataset_boundary",
+                "Qualified names are not allowed",
+                phase="validation",
+            )
         return {"rows": [{"drive_count": 2}], "bytes_processed": 123}
 
 
@@ -723,6 +735,53 @@ def test_protocol_returns_safe_analytics_validation_error() -> None:
     assert failed is not None
     assert failed["result"]["isError"] is True
     assert failed["result"]["structuredContent"]["error"] == "dataset_boundary"
+    assert failed["result"]["structuredContent"]["phase"] == "validation"
+
+
+def test_protocol_returns_structured_analytics_query_diagnostics() -> None:
+    analytics = FakeAnalytics(
+        failure=AnalyticsQueryError(
+            "query_failed",
+            "Unrecognized name: missing_column at [1:8]",
+            reason="invalidQuery",
+            phase="dry_run",
+            location={"line": 1, "column": 8},
+            job_metadata={"job_id": "safe-job-id", "bytes_processed": 0},
+        )
+    )
+    instance, _, _ = service(
+        FakeStore([vehicle("veh-one", "user-a", "VIN1")]),
+        analytics=analytics,
+    )
+
+    failed = MCPProtocol(instance).handle(
+        CONTEXT,
+        {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "run_analytics_query",
+                "arguments": {"sql": "SELECT missing_column FROM drives"},
+            },
+        },
+    )
+
+    assert failed is not None
+    result = failed["result"]
+    document = result["structuredContent"]
+    assert result["isError"] is True
+    assert document == {
+        "error": "query_failed",
+        "message": "Unrecognized name: missing_column at [1:8]",
+        "reason": "invalidQuery",
+        "phase": "dry_run",
+        "location": {"line": 1, "column": 8},
+        "job_id": "safe-job-id",
+        "bytes_processed": 0,
+        "correlation_id": document["correlation_id"],
+    }
+    assert document["correlation_id"].startswith("corr_")
 
 
 def test_protocol_tesla_failure_includes_transport_correlation() -> None:

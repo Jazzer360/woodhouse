@@ -99,6 +99,17 @@ _AUDIT_WHOLE_VALUE_FIELDS = {
     "navigation_request": frozenset({"value"}),
     "navigation_waypoints_request": frozenset({"waypoints"}),
 }
+_MCP_ERROR_DETAIL_FIELDS = frozenset(
+    {
+        "reason",
+        "phase",
+        "location",
+        "diagnostics",
+        "job_id",
+        "bytes_processed",
+        "bytes_billed",
+    }
+)
 
 
 class MCPToolError(Exception):
@@ -110,10 +121,14 @@ class MCPToolError(Exception):
         message: str,
         *,
         correlation_id: str | None = None,
+        details: Document | None = None,
     ) -> None:
         super().__init__(message)
         self.category = category
         self.correlation_id = correlation_id
+        self.details = {
+            key: value for key, value in (details or {}).items() if key in _MCP_ERROR_DETAIL_FIELDS
+        }
 
 
 class CommandAuditStore(Protocol):
@@ -553,7 +568,9 @@ def analytics_tool_documents(*, oauth_protected: bool = True) -> list[Document]:
         "run_analytics_query": (
             "Dry-run and execute one bounded, read-only Standard SQL SELECT/WITH query in the "
             "authenticated user's server-derived BigQuery dataset. Qualified names, scripting, "
-            "DML/DDL, external queries, and remote/user-defined functions are rejected."
+            "DML/DDL, external queries, and remote/user-defined functions are rejected. Failures "
+            "identify validation, dry-run, or execution phase and return sanitized BigQuery "
+            "reason/message/location diagnostics when available."
         ),
     }
     documents: list[Document] = []
@@ -644,7 +661,11 @@ class TeslaMCPService:
                         correlation_id=correlation_id,
                     )
             except AnalyticsQueryError as error:
-                raise MCPToolError(error.category, str(error)) from error
+                raise MCPToolError(
+                    error.category,
+                    str(error),
+                    details=error.response_details(),
+                ) from error
             document["correlation_id"] = correlation_id
             return document
 
@@ -1049,6 +1070,7 @@ class MCPProtocol:
                 )
             except MCPToolError as error:
                 document: Document = {"error": error.category, "message": str(error)}
+                document.update(error.details)
                 if error.correlation_id is not None:
                     document["correlation_id"] = error.correlation_id
                 return _tool_result(
