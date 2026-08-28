@@ -273,7 +273,7 @@ Configure refresh-token persistence for that connection:
    refresh; the maximum lifetime does not. Normal use at least once per idle
    window can therefore keep the connection usable until the one-year maximum.
 4. Do not add `offline_access` to Woodhouse's protected-resource metadata or
-   per-tool security schemes. It is an authorization-server request for a
+   gateway-required scopes. It is an authorization-server request for a
    refresh token, not a Woodhouse API permission. Auth0 publishes it through
    authorization-server discovery, and the ChatGPT OAuth client advertises the
    `refresh_token` grant.
@@ -592,9 +592,10 @@ After applying Terraform and deploying the reviewed gateway image:
 6. Enable the documented Auth0 offline-access and rotating refresh-token policy,
    then unlink and relink the ChatGPT connection once so the new grant contains
    a refresh token. Keep `offline_access` out of Woodhouse tool permissions.
-7. Refresh the plugin metadata, verify all typed tools declare `mcp:access`, and
-   run `tesla_list_vehicles` before any write. Continue to require explicit
-   current-turn intent for security-sensitive operations.
+7. Refresh the plugin metadata, verify the SDK protects all 13 semantic tools
+   with `mcp:access`, and run `get_tesla_account(action="list_vehicles")` before any
+   write. Continue to require explicit current-turn intent for
+   security-sensitive operations.
 
 Current OpenAI references:
 
@@ -1110,8 +1111,9 @@ Before planning the enabled revision:
 
 6. Existing Tesla connections predate the concrete `user_data` account-read
    tools. Re-run the normal `/tesla/oauth/start` flow once and approve the newly
-   requested `user_data` scope before testing `tesla_me`,
-   `tesla_feature_config`, or `tesla_orders`. Vehicle tools continue to enforce
+   requested `user_data` scope before testing `get_tesla_account(action="me")`,
+   `get_tesla_account(action="feature_config")`, or
+   `get_tesla_account(action="orders")`. Vehicle tools continue to enforce
    their narrower stored scopes.
 
 The full first-live-read, deliberate ambiguity, low-risk command, and Firestore

@@ -177,6 +177,17 @@ installs them for a new or repaired user, and the dedicated main-merge analytics
 reconciler updates the complete set in every active user's existing private
 dataset whenever the source definitions change:
 
+Definitions are packaged `.sql.j2` resources under
+`analytics/view_definitions/sql`, not Python string literals. A strict TOML
+manifest records dependency order, descriptions, sources, and the one shared
+category-sample template. Jinja runs with `StrictUndefined` and exposes only
+allowlisted `ref()`/`source()` helpers plus reviewed generated field fragments.
+After rendering, SQLGlot parses BigQuery SQL and verifies that every physical
+reference stays inside the trusted per-user project/dataset and appears in the
+manifest dependency contract. SQLFluff checks the template tree in PR CI. The
+small `analytics.views` module is only a compatibility import for existing
+callers.
+
 The typed `Value` mapping was rechecked on 2026-08-24 against Tesla's current
 official `fleet-telemetry/protos/vehicle_data.proto`. Known scalar enum oneofs
 are promoted to `string_value`; structured `time_value`/`tire_location_value`

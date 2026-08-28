@@ -114,7 +114,8 @@ remain operator checkpoint actions.
 
 **Exit criteria:**
 
-- `/mcp` publishes the current OAuth protected-resource and per-tool metadata;
+- `/mcp` is served by the official MCP SDK and publishes the current OAuth
+  protected-resource metadata plus Pydantic-generated semantic tool schemas;
 - access tokens are validated for issuer, MCP audience, expiry, and scope;
 - ChatGPT receives rotating, expiring refresh-token access so routine access-token
   expiry does not force interactive relinking;

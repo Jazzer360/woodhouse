@@ -1,10 +1,10 @@
 # Tesla Fleet API Coverage Contract
 
-**Audit date:** 2026-08-23
+**Audit date:** 2026-08-28
 **Vehicle command count on Tesla's current page:** 72
 
-**Phase 5 full audit:** 2026-08-22. **Phase 8 telemetry re-audit:**
-2026-08-23. The current official Vehicle Endpoints,
+**Phase 5 full audit:** 2026-08-22. **Library-refactor re-audit:**
+2026-08-28. The current official Vehicle Endpoints,
 Vehicle Commands, User Endpoints, Partner Endpoints, and Charging Endpoints
 pages and their published endpoint schema were compared with every row below.
 The documented surface remains 22 vehicle endpoint operations, 4 user
@@ -13,7 +13,7 @@ commands. No row additions, removals, method changes, or path changes were
 required. `charging_sessions` remains business-fleet-only, and
 `set_scheduled_charging`, `set_scheduled_departure`, and direct
 `fleet_telemetry_config_jws` remain compatibility-only/not recommended.
-The Phase 6 wake preflight was also rechecked against Tesla's current Best
+The wake preflight was also rechecked against Tesla's current Best
 Practices: applications must inspect connectivity before commands, and a wake
 may require 10-60 seconds before the vehicle is online. No coverage row changed.
 
@@ -21,9 +21,10 @@ This document is a completeness contract for the typed Tesla client and MCP surf
 
 **Implementation status:** Phase 5 implements and mocks every `Required`
 typed-client row, plus the three `Compatibility` rows directed by this matrix.
-Phase 6 maps every `MCP` row to an explicit typed tool, integrates the official
-Vehicle Command Proxy, and keeps `Internal`, `Excluded`, and compatibility-only
-operations off the MCP surface. Phase 8 implements authenticated per-vehicle
+The current gateway maps every `MCP` row to a typed private operation policy and
+then to one of 13 Pydantic semantic tools served by the official MCP SDK. It
+integrates the official Vehicle Command Proxy and keeps `Internal`, `Excluded`,
+and compatibility-only operations off the MCP surface. Phase 8 implements authenticated per-vehicle
 inspection, exact diff, signed apply/repair, verification, error inspection,
 removal, and transport-trust reconciliation. These administrative writes remain
 off the MCP tool surface and are never invoked by CI.

@@ -205,8 +205,9 @@ Make the public /mcp endpoint compatible with ChatGPT's current OAuth 2.1/MCP
 authorization contract using an established authorization server, Auth0 by
 default, with Google as the upstream identity provider. Publish protected
 resource metadata, validate access-token signature/issuer/audience/expiry/scope,
-advertise per-tool security schemes, and return discovery challenges. Preserve
-the Firestore manual allowlist and immutable issuer+subject binding.
+protect the official MCP transport and semantic tool schemas with the required
+scope, and return discovery challenges. Preserve the Firestore manual allowlist
+and immutable issuer+subject binding.
 
 Add a minimal browser onboarding flow at the application domain. After an
 operator runs add-user, the approved user signs in, authorizes Tesla, sees all

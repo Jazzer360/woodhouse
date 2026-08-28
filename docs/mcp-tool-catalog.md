@@ -1,253 +1,115 @@
 # MCP Tool Catalog
 
-**Status:** Phase 6 typed live surface plus Phase 9 generic historical analytics.
+**Status:** official MCP Python SDK v2, Streamable HTTP at `/mcp`.
 
-For the complete argument-by-argument endpoint reference, including Tesla
-method/path, scope, wake behavior, risk, retry policy, audit behavior,
-constraints, result semantics, all live tools, and the two historical tools, see the generated
-[`mcp-tool-reference.md`](mcp-tool-reference.md). Regenerate it from the typed
-registry with `uv run python scripts/dev/generate-mcp-tool-reference.py`; CI
-checks that every live tool and input field remains documented.
+Woodhouse exposes 13 semantic tools. The SDK owns MCP protocol negotiation,
+transport sessions, OAuth middleware, tool schemas, and validation of the
+Pydantic request models. There is no application-owned JSON-RPC parser, schema
+generator, or generic Tesla HTTP passthrough.
 
-The gateway implements stateless MCP Streamable HTTP JSON-RPC at `POST /mcp`.
-It publishes RFC 9728 protected-resource metadata and uses OAuth 2.1
-authorization-code + PKCE through the configured authorization server. Every
-tool declares `securitySchemes: [{type: oauth2, scopes: [mcp:access]}]`.
-Unauthenticated tool calls return an MCP `mcp/www_authenticate` challenge;
-invalid bearer requests also receive an HTTP `WWW-Authenticate` challenge.
-Issuer, audience, expiry, signature, and scope are validated before the manual
-allowlist. Tools never
-accept a user ID, email, dataset ID, VIN, ownership claim, Tesla token, or
-arbitrary HTTP method/path. Current state always comes from Fleet API.
+RFC 9728 protected-resource metadata is available at
+`/.well-known/oauth-protected-resource` and
+`/.well-known/oauth-protected-resource/mcp`. The SDK verifies the bearer token
+before a tool handler runs. Woodhouse then resolves the immutable OIDC identity
+through the manual allowlist and derives `user_id` and `dataset_id` on the
+server. Tools never accept those values, an email, a VIN ownership assertion,
+or a Tesla credential.
 
-Historical questions use exactly two general tools: `get_analytics_schema` and
-`run_analytics_query`. The former describes the authenticated user's private
-catalog without revealing its physical dataset ID. The latter accepts one
-read-only Standard SQL `SELECT`/`WITH` statement against that server-derived
-default dataset. It is not a Tesla endpoint and never wakes a vehicle. There
-are intentionally no dedicated trip, charging, efficiency, or playlist tools;
-the model composes those questions from the catalog.
+## Public tools
 
-The catalog includes permanent raw history, universal long-form typed
-observations, the complete pinned Tesla/Woodhouse field catalog, five sparse
-exact-emission wide sample views (`charging_samples`, `climate_samples`,
-`driving_samples`, `location_samples`, and `media_samples`), and the higher
-level session/summary views. This lets a caller write novel read-only SQL when
-the prebuilt interpretations are insufficient without opening another dataset
-or an unrestricted BigQuery surface.
+| Tool | Purpose | Input model |
+|---|---|---|
+| `get_tesla_account` | Account metadata and owned-vehicle discovery | `action`: `feature_config`, `me`, `orders`, or `list_vehicles` |
+| `get_vehicle_status` | Live per-vehicle reads without implicit wake | `action` selects vehicle metadata, Fleet status, telemetry status/errors, mobile capability, nearby charging, alerts, release notes, service data, or targeted vehicle data |
+| `get_charging_records` | Charging history and invoice reads | `action`: `charging_history` or `charging_invoice` |
+| `control_vehicle_access` | Locks, openings, HomeLink, keyless drive, lights, horn, and Guest Mode | typed `action` plus only the family fields needed by that operation |
+| `control_vehicle_climate` | Cabin, seat, steering-wheel, keeper, and overheat controls | typed `action` plus climate fields |
+| `control_vehicle_charging` | Charging state, limits/current, port, and supported schedule controls | typed `action` plus charging/schedule fields |
+| `control_vehicle_media` | Playback, favorites, volume, and boombox | typed `action` plus media fields |
+| `control_vehicle_navigation` | Coordinates, structured destinations, Superchargers, and waypoints | typed `action` plus navigation fields |
+| `control_vehicle_security` | Sentry, PIN, valet, parental, and speed-limit controls | typed `action`, required PIN/settings fields, and current-turn intent |
+| `control_vehicle_settings` | Software update, vehicle name, sunroof, and calendar integration | typed `action` plus setting fields |
+| `wake_vehicle` | Explicitly wake an owned vehicle | optional internal `vehicle_id` |
+| `get_analytics_schema` | Describe the authenticated user's historical catalog | no input |
+| `run_analytics_query` | Run one bounded read-only Standard SQL query | `sql` only |
 
-## Common vehicle-selection rule
+The complete Tesla endpoint/command coverage remains in
+[`fleet-api-coverage.md`](fleet-api-coverage.md). Each matrix row marked `MCP`
+maps to exactly one private operation policy and then to one of the semantic
+families above. The private mapping records required Tesla scope, vehicle
+scope, wake behavior, risk, retry policy, audit behavior, typed client request,
+and exclusions. It is not itself advertised as an MCP tool surface.
 
-Vehicle-scoped tools accept an optional opaque internal `vehicle_id`. The
-gateway resolves it against trusted Firestore ownership. Omission succeeds only
-when the authenticated user has exactly one active vehicle; zero vehicles fails,
-and two or more returns `vehicle_ambiguous` with the eligible opaque IDs. The
-gateway never guesses from last use or accepts a VIN.
+## Vehicle selection and current state
 
-## Read tools
+Vehicle-family requests accept an optional opaque internal `vehicle_id`.
+Woodhouse resolves it against trusted Firestore ownership. Omission succeeds
+only when exactly one active eligible vehicle exists; zero vehicles fails and
+multiple vehicles return `vehicle_ambiguous`. VINs and last-used-vehicle guesses
+are forbidden.
 
-Reads are not command-audited. Safe GET reads use the typed client's bounded
-retry policy. `requires_awake` means the gateway does not wake the vehicle; an
-asleep/unavailable response is returned and `tesla_wake_up` must be requested
-separately.
+Current state comes from Fleet API. A normal read never wakes the car. The
+caller must invoke `wake_vehicle` explicitly when a read requires an awake
+vehicle.
 
-| Coverage row | MCP tool | Scope | Vehicle | Wake | Retry |
-|---|---|---|---|---|---|
-| `drivers` | `tesla_drivers` | `vehicle_device_data` | selected | never | safe read |
-| `fleet_status` | `tesla_fleet_status` | `vehicle_device_data` | selected | never | safe read |
-| `fleet_telemetry_config get` | `tesla_fleet_telemetry_config_get` | `vehicle_device_data` | selected | never | safe read |
-| `fleet_telemetry_errors` | `tesla_fleet_telemetry_errors` | `vehicle_device_data` | selected | never | safe read |
-| `list` | `tesla_list_vehicles` | `vehicle_device_data` | all owned | never | safe read |
-| `mobile_enabled` | `tesla_mobile_enabled` | `vehicle_device_data` | selected | requires awake | safe read |
-| `nearby_charging_sites` | `tesla_nearby_charging_sites` | `vehicle_device_data` | selected | requires awake | safe read |
-| `recent_alerts` | `tesla_recent_alerts` | `vehicle_device_data` | selected | requires awake | safe read |
-| `release_notes` | `tesla_release_notes` | `vehicle_device_data` | selected | requires awake | safe read |
-| `service_data` | `tesla_service_data` | `vehicle_device_data` | selected | requires awake | safe read |
-| `vehicle` | `tesla_vehicle` | `vehicle_device_data` | selected | never | safe read |
-| `vehicle_data` | `tesla_vehicle_data` | `vehicle_device_data`; `vehicle_location` when `location_data` is requested | selected | requires awake | safe read |
-| `feature_config` | `tesla_feature_config` | `user_data` | account | never | safe read |
-| `me` | `tesla_me` | `user_data` | account | never | safe read |
-| `orders` | `tesla_orders` | `user_data` | account | never | safe read |
-| `charging_history` | `tesla_charging_history` | `vehicle_charging_cmds` | selected | never | safe read |
-| `charging_invoice` | `tesla_charging_invoice` | `vehicle_charging_cmds` | account-owned invoice | never | safe read |
+## Command safety and audit
 
-`tesla_vehicle_data` requires one or more explicitly named data sections; it is
-not a broad polling operation. `tesla_list_vehicles` calls Tesla live and
-intersects the result with the authenticated user's trusted registry before
-returning internal IDs.
+Normal reversible controls require clear user intent. Security-sensitive
+actions require `explicit_current_turn_intent=true`; the caller may set it only
+when the current user turn unambiguously requests that exact action. Examples
+include unlock, trunk/frunk, windows, HomeLink, keyless driving, PIN/valet,
+parental/speed-limit changes, and software-update or sunroof operations marked
+security-sensitive by the coverage matrix.
 
-## Write tools and audit
+Before a command, the service checks ownership, required Tesla scopes, and live
+connectivity. When the policy permits automatic wake, it records and sends at
+most one wake request, polls for at most 60 seconds, then dispatches the intended
+command exactly once. Commands are never retried after dispatch because a
+missing response does not prove non-execution.
 
-`wake_up` maps to `tesla_wake_up`. It uses `vehicle_device_data`, is an explicit
-write, is never retried, and receives the same audit treatment as commands.
+Every attempted write—success or failure—creates a Firestore audit record with:
 
-Every MCP vehicle-command row maps one-to-one to `tesla_<matrix-command-name>`.
-The name is an allowlisted registry entry bound to one typed client method and
-input schema; this naming convention is not a generic passthrough. All command
-tools:
+- timestamp and correlation ID;
+- server-derived user and internal vehicle IDs;
+- private operation name and `source=chatgpt-mcp`;
+- redacted parameters;
+- result and safe error category.
 
-- are vehicle-scoped and require both their command scope and
-  `vehicle_device_data` for the live-state/wake preflight;
-- fetch the live vehicle state first and, when it is not online, audit and send
-  one automatic `tesla_wake_up`, then poll every 10 seconds for at most 60
-  seconds before sending the command;
-- send the requested command exactly once and never retry it after dispatch,
-  because a missing response does not prove non-execution;
-- route through the instance-local, non-ingress official Vehicle Command Proxy;
-- create an `attempted` Firestore audit record before contacting Tesla, then
-  finalize it as `success`, `rejected`, or `failure`;
-- record timestamp, server-derived user ID, internal vehicle ID, tool name,
-  redacted arguments, result/error category, correlation ID, and
-  `source=chatgpt-mcp`;
-- never audit PINs, passwords, location coordinates, tokens, VINs, calendar
-  payloads, or response bodies.
+PINs, passwords, coordinates, tokens, VINs, calendar/navigation payloads, and
+response bodies are not written to audit or application logs.
 
-Every MCP read result and command result, including expected validation and
-Tesla failure results, includes a generated `correlation_id`.
-The gateway propagates that ID into structured `tesla_api_call` transport events
-for each associated direct Tesla or command-proxy network attempt. Automatic
-wake calls use their separate `wake_correlation_id`; preflight checks remain
-linked to the requested command correlation, while wake and wake-poll calls use
-the wake correlation. See `docs/deployment.md` for Cloud Logging queries. Logs
-contain only route templates, field names, sizes, status/outcome, timing, and
-sanitized diagnostic fields—not request/response payloads or vehicle secrets.
+## Historical analytics
 
-Charging command scope `vehicle_charging_cmds` applies to:
+Historical questions use only `get_analytics_schema` and
+`run_analytics_query`. Dataset selection is server-derived. SQLGlot validates a
+single Standard SQL `SELECT`/`WITH` AST, rejects qualified cross-dataset names,
+DML/DDL, scripts, exports, external queries/connections, and remote functions,
+then BigQuery dry-runs with byte and result limits before execution.
 
-```text
-add_charge_schedule
-charge_max_range
-charge_port_door_close
-charge_port_door_open
-charge_standard
-charge_start
-charge_stop
-remove_charge_schedule
-set_charge_limit
-set_charging_amps
-```
-
-Every other exposed command uses `vehicle_cmds`.
-
-### Risk classes
-
-Normal reversible operations require clear user intent and no redundant second
-confirmation. They include climate, charging, schedule, media, navigation,
-lock, lights/horn, Sentry, cabin settings, and other Tier 1 rows in the coverage
-matrix.
-
-The following security-sensitive tools require
-`explicit_current_turn_intent=true`. The tool description instructs the MCP
-client to set it only for an unambiguous request for that exact operation in the
-current user turn:
-
-```text
-tesla_actuate_trunk
-tesla_cancel_software_update
-tesla_door_unlock
-tesla_guest_mode
-tesla_parental_controls_activate
-tesla_parental_controls_deactivate
-tesla_parental_controls_enable_setting
-tesla_parental_controls_set_speed_limit
-tesla_remote_start_drive
-tesla_schedule_software_update
-tesla_set_pin_to_drive
-tesla_set_valet_mode
-tesla_speed_limit_activate
-tesla_speed_limit_clear_pin
-tesla_speed_limit_deactivate
-tesla_speed_limit_set_limit
-tesla_sun_roof_control
-tesla_trigger_homelink
-tesla_window_control
-```
+The model composes novel drive, charging, efficiency, media, location, and
+cross-vehicle questions from the catalog. New statistics do not require new
+MCP endpoints.
 
 ## Intentionally absent
 
-All `Internal`, `Excluded`, compatibility-only, business-only, and out-of-scope
-rows remain absent. In particular, there is no generic `call_tesla_api`, signed
-command, driver/share administration, data-erasure, admin PIN reset, direct
-telemetry configuration, partner administration, or arbitrary URL/body tool.
+There is no `call_tesla_api`, arbitrary method/path/body tool, signed-command
+tool, raw SQL dataset selector, driver/share administration, data erasure,
+admin PIN reset, partner administration, or direct Fleet Telemetry mutation.
+Coverage rows marked `Internal`, `Excluded`, `Compatibility`, `Business-only`,
+or out of scope remain off the public surface.
 
-The machine-checkable coverage test parses `docs/fleet-api-coverage.md` and
-requires every `Exposure=MCP` row to have exactly one registry mapping while
-also asserting the excluded command set is absent.
+## First live operator checkpoint
 
-## Legacy direct-token MCP operator checkpoint
+Automated tests never contact a real vehicle. For the first deployed smoke test:
 
-This records the direct diagnostic used for Phase 6 and applies only while
-`enable_platform_oidc=false`. Once platform OIDC is enabled, do not use a Google
-ID token here. Connect ChatGPT through the Auth0 OAuth flow documented in
-`docs/deployment.md`; Auth0 supplies the MCP-resource access token and the client
-manages it. Do not paste any token or secret into chat.
-
-1. Configure the MCP client with endpoint
-   `https://woodhouse.derekjass.com/mcp`, Streamable HTTP transport, and, only
-   for this legacy diagnostic mode, a fresh Google OIDC ID token for the
-   configured audience as its bearer credential. Enter the token without echo:
-
-   ```powershell
-   $secureToken = Read-Host "Paste a fresh Google ID token locally" -AsSecureString
-   $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
-   try {
-     $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
-   } finally {
-     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
-   }
-   $headers = @{
-     Authorization = "Bearer $token"
-     "Content-Type" = "application/json"
-     Accept = "application/json, text/event-stream"
-   }
-   ```
-
-2. Verify MCP initialization and `tools/list`. The result must identify
-   `tesla-personal-platform`, list the typed tools, and contain no generic Tesla
+1. Connect the MCP client to `https://woodhouse.derekjass.com/mcp` and complete
+   the configured authorization-code + PKCE login.
+2. Confirm `tools/list` returns exactly the 13 tools above and no generic Tesla
    passthrough.
-
-3. Make one real read-only call first. For the currently registered vehicle:
-
-   ```powershell
-   $readBody = @{
-     jsonrpc = "2.0"
-     id = 1
-     method = "tools/call"
-     params = @{
-       name = "tesla_vehicle"
-       arguments = @{ vehicle_id = "<owned-internal-vehicle-id>" }
-     }
-   } | ConvertTo-Json -Depth 6
-   $readResult = Invoke-RestMethod -Method Post -Uri "https://woodhouse.derekjass.com/mcp" -Headers $headers -Body $readBody
-   $readResult.result.structuredContent | Format-List
-   ```
-
-   Stop if this fails, returns another user's vehicle, or reports stale
-   historical data instead of a Fleet API response.
-
-4. If the account has multiple vehicles, deliberately omit `vehicle_id` from
-   `tesla_vehicle`. Verify `isError=true` and `error=vehicle_ambiguous`. Do not
-   continue if the gateway guesses a vehicle.
-
-5. Only after the read succeeds, ask the operator to choose and explicitly
-   approve one low-risk reversible command in the current turn. Suitable smoke
-   choices include climate start/stop, charge start/stop when plugged in, charge
-   limit, door lock, or a media control. Do not suggest or run unlock, remote
-   start/keyless driving, trunk/frunk, HomeLink, window,
-   PIN/valet/parental/speed-limit, or another security-sensitive command for
-   smoke testing. If the vehicle is asleep, verify the result includes a
-   `wake_correlation_id` in addition to the command `correlation_id`.
-
-6. Call only the operator-selected typed tool. Verify Tesla's returned
-   `successful` value and retain its returned `correlation_id`. Do not retry an
-   indeterminate command.
-
-7. In Google Cloud Console, open Firestore Studio, collection
-   `tesla_command_audits`, and locate the record whose `correlation_id` matches.
-   Verify its server-derived user/vehicle IDs, tool, source, final result, and
-   redacted parameters. No PIN, token, private key, raw location, or VIN may be
-   present.
-
-The checkpoint passes only when the read is ownership-correct, any applicable
-ambiguity test rejects guessing, the explicitly chosen low-risk command succeeds
-or returns a clear Tesla rejection, and the matching redacted audit exists.
+3. Run one read-only status request against an owned vehicle. With multiple
+   vehicles, first verify omission returns an ambiguity.
+4. Only after the read succeeds, obtain explicit current-turn approval for one
+   operator-selected low-risk reversible command. Do not choose unlock,
+   openings, HomeLink, keyless driving, or security/PIN controls for the smoke
+   test.
+5. Verify Tesla's safe result and the corresponding redacted audit record.

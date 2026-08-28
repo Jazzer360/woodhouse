@@ -28,11 +28,17 @@ vehicles.
 
 ## Stack choice
 
-The platform uses Python 3.12 in a `uv` workspace, with Ruff, mypy, pytest, and
-pip-audit. The gateway retains the standard-library HTTP server and adds a small
-stateless MCP JSON-RPC boundary rather than another framework. Tesla command
-signing uses Tesla's official proxy image as a private sidecar; no second
-application language is maintained in this repository.
+The platform uses Python 3.12 in a `uv` workspace, with Ruff, mypy, pytest,
+SQLFluff, and pip-audit. The gateway is a Starlette/Uvicorn ASGI application and
+mounts the official MCP Python SDK v2 Streamable HTTP server at `/mcp`.
+Pydantic owns public request schemas, Authlib owns the browser OAuth protocol,
+HTTPX2 supplies pooled outbound HTTP, and Jinja renders the small onboarding
+surface. Tesla command signing uses Tesla's official proxy image as a private
+sidecar; no second application language is maintained in this repository.
+
+BigQuery logical views live as dependency-ordered `.sql.j2` resources beside a
+strict manifest. Jinja renders only allowlisted project/dataset references,
+SQLGlot parses and validates every rendered view, and SQLFluff runs in PR CI.
 
 `telemetry-edge` uses Tesla's official Fleet Telemetry `v0.9.4` image pinned by
 multi-platform digest. Its native Google Pub/Sub dispatcher is the minimal
@@ -62,6 +68,7 @@ Follow [the implementation roadmap](docs/implementation-roadmap.md) in order: sc
 uv sync --frozen --all-packages --group dev
 uv run ruff check .
 uv run ruff format --check .
+uv run sqlfluff lint packages/analytics/src/tesla_personal_platform/analytics/view_definitions/sql
 uv run mypy services packages tests
 uv run pytest
 uv export --frozen --all-packages --no-emit-workspace --output-file .uv-cache/audit-requirements.txt --quiet
