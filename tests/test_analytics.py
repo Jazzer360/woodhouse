@@ -264,12 +264,16 @@ def test_derived_views_are_ordered_complete_and_raw_preserving() -> None:
     assert all(isinstance(parse_one(view.sql, read="bigquery"), exp.Query) for view in views)
 
 
-def test_drive_boundaries_use_stationary_bounded_state_not_sparse_interior_samples() -> None:
+def test_drive_soc_and_energy_use_latest_valid_state_at_or_before_gear_boundary() -> None:
     views = {view.name: view for view in analytics_views("project", "dataset")}
     boundaries = views["drive_metric_boundaries"].sql
     drives = views["drives"].sql
 
     assert "exact_synchronized_boundary" in boundaries
+    assert "WHEN boundary.field_name IN ('EnergyRemaining', 'Soc')" in boundaries
+    assert "observation.source_timestamp <= boundary.boundary_at" in boundaries
+    assert "THEN 'as_of_state'" in boundaries
+    assert "-UNIX_MILLIS(observation.source_timestamp)" in boundaries
     assert "stationary_pre_boundary" in boundaries
     assert "stationary_post_boundary" in boundaries
     assert "INTERVAL 5 MINUTE" in boundaries
@@ -277,16 +281,37 @@ def test_drive_boundaries_use_stationary_bounded_state_not_sparse_interior_sampl
     assert "next_drive_started_at" in boundaries
     assert "drive_metric_boundaries" in drives
 
-    start_odometer = 607.741444
-    end_odometer = 610.870669
-    start_energy = 67.38
-    end_energy = 66.88
-    distance = end_odometer - start_odometer
-    energy = start_energy - end_energy
+    # The later 62.50 kWh sample is in-drive and cannot define the start state.
+    start_boundary = datetime.fromisoformat("2026-08-26T20:17:02+00:00")
+    energy_observations = [
+        (datetime.fromisoformat("2026-08-26T20:16:45+00:00"), 62.62, True),
+        (datetime.fromisoformat("2026-08-26T20:17:31+00:00"), 62.50, True),
+    ]
+    valid_as_of = [
+        (observed_at, value)
+        for observed_at, value, valid in energy_observations
+        if valid and observed_at <= start_boundary
+    ]
+    assert max(valid_as_of)[1] == pytest.approx(62.62)
+    assert 62.62 - 62.50 == pytest.approx(0.12)
 
-    assert distance == pytest.approx(3.129225, abs=0.000001)
-    assert energy == pytest.approx(0.50, abs=0.001)
-    assert energy * 1000 / distance == pytest.approx(159.78, abs=0.02)
+    # Cached state remains usable after a stationary gap; age alone is not a rejection.
+    assert 67.00 - 66.26 == pytest.approx(0.74)
+    assert round(78.599) == 79
+    assert round(77.880) == 78
+
+
+def test_drive_odometer_and_location_keep_existing_bounded_stationary_rules() -> None:
+    boundaries = next(
+        view.sql
+        for view in analytics_views("project", "dataset")
+        if view.name == "drive_metric_boundaries"
+    )
+
+    assert "boundary.field_name NOT IN ('EnergyRemaining', 'Soc')" in boundaries
+    assert "candidate_window_start" in boundaries
+    assert "candidate_window_end" in boundaries
+    assert "inside_drive_fallback" in boundaries
 
 
 def test_detailed_charge_state_remains_authoritative_over_coarse_init() -> None:
@@ -298,7 +323,7 @@ def test_detailed_charge_state_remains_authoritative_over_coarse_init() -> None:
     assert "coarse_at > TIMESTAMP_ADD(detailed_at, INTERVAL 15 MINUTE)" in charge_sql
     assert "'Init'" in charge_sql
     assert "'DetailedChargeStateStopped'" in charge_sql
-    assert "power_integrated" in charge_sql
+    assert "measured_counter_plus_bounded_power_tail" in charge_sql
     assert "distance_since_previous_charge_miles" in charge_sql
 
     started_at = datetime.fromisoformat("2026-08-25T07:44:06+00:00")
@@ -307,6 +332,75 @@ def test_detailed_charge_state_remains_authoritative_over_coarse_init() -> None:
     assert (coarse_init_at - started_at).total_seconds() == 1
     assert (ended_at - started_at).total_seconds() == pytest.approx(11_754.616185)
     assert 617.434835 - 604.640180 == pytest.approx(12.794655)
+
+
+def test_charge_end_soc_uses_precise_latest_in_session_state_with_provenance() -> None:
+    charge_sql = next(
+        view.sql for view in analytics_views("project", "dataset") if view.name == "charge_sessions"
+    )
+
+    assert "THEN 'in_session_state'" in charge_sql
+    assert "start_soc_observed_at" in charge_sql
+    assert "end_soc_observed_at" in charge_sql
+    assert "end_soc_observation_offset_milliseconds" in charge_sql
+    assert "end_soc_boundary_method" in charge_sql
+
+    end_soc = 78.599266697
+    assert end_soc == pytest.approx(78.599266697)
+    assert round(end_soc) == 79
+
+
+def test_charge_stationary_boundary_carry_requires_matching_anchors_and_no_motion() -> None:
+    charge_sql = next(
+        view.sql for view in analytics_views("project", "dataset") if view.name == "charge_sessions"
+    )
+
+    assert "INTERVAL 30 MINUTE" in charge_sql
+    assert "ABS(anchor.after_numeric_value - anchor.before_numeric_value) <= 0.01" in charge_sql
+    assert "ST_DISTANCE(" in charge_sql
+    assert ") <= 100" in charge_sql
+    assert "movement.field_name = 'Gear'" in charge_sql
+    assert "movement.field_name = 'VehicleSpeed' AND movement.numeric_value > 1" in charge_sql
+    assert "THEN 'stationary_state_carry'" in charge_sql
+    assert "end_odometer_boundary_method" in charge_sql
+    assert "location_boundary_method" in charge_sql
+
+    assert 604.640180 - 604.636450 == pytest.approx(0.00373)
+    assert 604.640180 - 604.636450 < 0.01
+
+
+def test_charge_tail_integration_is_bounded_piecewise_and_rejects_counter_anomalies() -> None:
+    charge_sql = next(
+        view.sql for view in analytics_views("project", "dataset") if view.name == "charge_sessions"
+    )
+
+    assert "tail_power_points" in charge_sql
+    assert "tail_power_segments" in charge_sql
+    assert "tail_invalidations" in charge_sql
+    assert "invalid.invalid_tail_observations = 0" in charge_sql
+    assert "LEAD(point_at) OVER" in charge_sql
+    assert "COALESCE(next_observed_point_at, ended_at)" in charge_sql
+    assert "observation.source_timestamp BETWEEN spec.started_at AND spec.ended_at" in charge_sql
+    assert "BETWEEN 1 AND 300" in charge_sql
+    assert "tail.coverage_started_at = spec.counter_observed_at" in charge_sql
+    assert "numeric_value < previous_numeric_value - 0.001" in charge_sql
+    assert "THEN 'counter_anomaly'" in charge_sql
+    assert "measured_counter_tail_unavailable" in charge_sql
+    assert "ac_energy_counter_kwh" in charge_sql
+    assert "ac_energy_tail_kwh" in charge_sql
+
+    first_counter_at = datetime.fromisoformat("2026-08-24T09:50:33.813491+00:00")
+    first_ended_at = datetime.fromisoformat("2026-08-24T09:54:27.813839+00:00")
+    first_tail = 1.3 * (first_ended_at - first_counter_at).total_seconds() / 3600
+    assert 9.3362779169 + first_tail == pytest.approx(9.4209, abs=0.0002)
+    assert 9.41 <= 9.3362779169 + first_tail <= 9.43
+
+    second_counter_at = datetime.fromisoformat("2026-08-25T10:58:44.116152+00:00")
+    second_ended_at = datetime.fromisoformat("2026-08-25T11:00:00.616185+00:00")
+    second_tail = 1.3 * (second_ended_at - second_counter_at).total_seconds() / 3600
+    reconstructed = 4.216500063 + second_tail
+    assert reconstructed == pytest.approx(4.2441, abs=0.0002)
+    assert round(reconstructed, 2) == pytest.approx(4.24)
 
 
 def test_fsd_bucket_allocation_matches_supplied_trip_regression_and_bounds_transition() -> None:
