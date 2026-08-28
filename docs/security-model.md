@@ -113,6 +113,29 @@ on every MCP tool, and returns both HTTP `WWW-Authenticate` challenges and MCP
 `_meta["mcp/www_authenticate"]` errors. ChatGPT performs authorization code +
 PKCE against Auth0 and sends only the resulting MCP access token to `/mcp`.
 
+MCP connection persistence uses short-lived access tokens plus a rotating
+refresh token; it does not make bearer access tokens long-lived. Auth0 must
+allow offline access for the MCP API, and the imported ChatGPT CIMD client must
+retain both the `authorization_code` and `refresh_token` grants. The client
+requests `offline_access` from the authorization server in addition to the
+resource's `mcp:access` permission. `offline_access` is intentionally absent
+from the MCP protected-resource metadata, tool security schemes, and gateway
+required scopes because it controls refresh-token issuance and is not a
+permission to access Woodhouse.
+
+The default personal deployment policy is rotating, expiring refresh tokens
+with automatic reuse detection, a 2,591,998-second idle lifetime (just under 30
+days), and a one-year absolute lifetime. This idle value is the highest integer
+accepted by the current Auth0 configuration, which requires it to be less than
+2,591,999 seconds. Routine MCP use renews the idle window without extending the
+absolute lifetime. An active user should therefore reauthenticate only after
+the absolute lifetime, just under 30 days without a successful refresh,
+explicit revocation, reuse detection, or another Auth0 risk/policy event.
+Disabling the Firestore allowlist binding still blocks the next request
+immediately, regardless of token lifetime. Existing ChatGPT links created
+before this policy must be unlinked and linked once more so their original
+grant can receive a refresh token.
+
 Browser onboarding uses a separate Auth0 regular-web-app client with
 authorization code + PKCE and nonce/state validation. Its client secret is
 injected from Secret Manager. A short-lived `Secure; HttpOnly; SameSite=Lax`

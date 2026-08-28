@@ -224,7 +224,9 @@ https://woodhouse.derekjass.com/mcp
 Use RS256 access tokens and define the `mcp:access` permission. In **Tenant
 Settings > Default Audience**, select this API so Auth0 emits a locally
 verifiable RS256 JWT for the MCP resource. Do not create a custom authorization
-server in this repository.
+server in this repository. Keep the access-token lifetime short (the Auth0
+default is acceptable); connection persistence comes from refresh tokens, not
+from a long-lived bearer access token.
 
 Use Auth0's manual CIMD registration for ChatGPT:
 
@@ -240,10 +242,52 @@ Use Auth0's manual CIMD registration for ChatGPT:
 5. In the API's **Application Access** tab, edit the imported ChatGPT client and
    grant User-Delegated Access only to `mcp:access`.
 
+Treat the CIMD URL as the OAuth client identity, not merely as an import source.
+ChatGPT's current stable identity is `https://chatgpt.com/oauth/client.json`
+when the authorization server supports issuer identification; older links may
+instead have a callback-specific URL. If the URL currently shown by ChatGPT is
+not an Auth0 client, import it before reconnecting. A legacy callback-specific
+client and the stable client are distinct registrations, and refresh-token
+settings on one do not change grants issued to the other.
+
+Configure refresh-token persistence for that connection:
+
+1. In the MCP API's **Settings**, enable **Allow Offline Access**.
+2. In the imported ChatGPT third-party application's **Advanced Settings >
+   Grant Types**, confirm both **Authorization Code** and **Refresh Token** are
+   enabled. A CIMD import should create both; do not assume configuration drift
+   has preserved them.
+3. In that application's refresh-token settings, enable rotation and automatic
+   reuse detection. Use expiring tokens with:
+
+   ```text
+   Idle refresh-token lifetime:     2,591,998 seconds (just under 30 days)
+   Maximum refresh-token lifetime: 31,557,600 seconds (one year)
+   Rotation overlap/leeway:         3 seconds
+   ```
+
+   The current Auth0 configuration requires the idle lifetime to be less than
+   `2,591,999` seconds, so `2,591,998` is the highest accepted integer. Auth0
+   third-party applications require expiring refresh tokens, and one year is
+   Auth0's supported maximum. The idle window moves after each successful
+   refresh; the maximum lifetime does not. Normal use at least once per idle
+   window can therefore keep the connection usable until the one-year maximum.
+4. Do not add `offline_access` to Woodhouse's protected-resource metadata or
+   per-tool security schemes. It is an authorization-server request for a
+   refresh token, not a Woodhouse API permission. Auth0 publishes it through
+   authorization-server discovery, and the ChatGPT OAuth client advertises the
+   `refresh_token` grant.
+5. After saving these settings, remove the existing Woodhouse connection from
+   ChatGPT and connect it once more. Previously issued authorization grants do
+   not retroactively acquire a refresh token or a longer refresh-token family
+   lifetime.
+
 Auth0 discovery must publish PKCE `S256` and CIMD support. Configure Google as
 the intended social connection and promote it to a domain-level connection so
-the imported third-party application can use it. Request `openid email profile
-mcp:access`.
+the imported third-party application can use it. ChatGPT should request
+`openid email profile offline_access mcp:access`; browser onboarding requests
+only `openid email profile mcp:access` because its opaque Woodhouse session is a
+separate, deliberately bounded credential.
 
 Create a separate Auth0 **Regular Web Application** for browser onboarding:
 
@@ -545,7 +589,10 @@ After applying Terraform and deploying the reviewed gateway image:
    above. The CIMD supplies ChatGPT's exact redirect URI; do not reuse the
    browser-onboarding application's client secret. Never enter a Tesla token,
    Auth0 client secret, or EC private key into ChatGPT.
-6. Refresh the plugin metadata, verify all typed tools declare `mcp:access`, and
+6. Enable the documented Auth0 offline-access and rotating refresh-token policy,
+   then unlink and relink the ChatGPT connection once so the new grant contains
+   a refresh token. Keep `offline_access` out of Woodhouse tool permissions.
+7. Refresh the plugin metadata, verify all typed tools declare `mcp:access`, and
    run `tesla_list_vehicles` before any write. Continue to require explicit
    current-turn intent for security-sensitive operations.
 

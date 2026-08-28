@@ -116,6 +116,8 @@ remain operator checkpoint actions.
 
 - `/mcp` publishes the current OAuth protected-resource and per-tool metadata;
 - access tokens are validated for issuer, MCP audience, expiry, and scope;
+- ChatGPT receives rotating, expiring refresh-token access so routine access-token
+  expiry does not force interactive relinking;
 - `add-user` remains the only enrollment path;
 - `/onboarding` binds only verified allowlisted identities and stores opaque sessions;
 - Tesla OAuth and per-vehicle Virtual Key pairing are guided without exposing credentials;
