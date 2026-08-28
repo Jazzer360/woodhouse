@@ -287,16 +287,18 @@ def test_profile_is_a_complete_declarative_tessie_comparison() -> None:
     assert profile.capability_omissions == {}
     assert comparison["baseline_field_count"] == 93
     assert comparison["woodhouse_field_count"] == 131
-    assert len(comparison["overrides"]) == 16  # type: ignore[arg-type]
+    assert len(comparison["overrides"]) == 19  # type: ignore[arg-type]
     assert len(comparison["additions"]) == 40  # type: ignore[arg-type]
     assert len(comparison["removals"]) == 2  # type: ignore[arg-type]
     assert len(comparison["catalog_omissions"]) == 106  # type: ignore[arg-type]
+    assert "MediaNowPlayingDuration" in comparison["overrides"]  # type: ignore[operator]
+    assert "MediaNowPlayingElapsed" in comparison["overrides"]  # type: ignore[operator]
 
 
 def test_profile_uses_deltas_only_for_defensible_measurements() -> None:
     profile = broad_profile("1.3.0")
 
-    assert profile.version == "broad-v3"
+    assert profile.version == "broad-v4"
     assert profile.fields["Gear"].include_fields == (
         "Odometer",
         "EnergyRemaining",
@@ -329,7 +331,22 @@ def test_profile_uses_deltas_only_for_defensible_measurements() -> None:
     assert profile.fields["MilesSinceReset"].include_fields == ("SelfDrivingMilesSinceReset",)
     assert profile.fields["HvacFanSpeed"].minimum_delta is None
     assert profile.fields["ChargeCurrentRequest"].minimum_delta is None
-    assert profile.fields["MediaAudioVolume"].interval_seconds == 60
+    synchronized_now_playing_fields = (
+        "MediaNowPlayingAlbum",
+        "MediaNowPlayingArtist",
+        "MediaNowPlayingDuration",
+        "MediaNowPlayingElapsed",
+        "MediaNowPlayingStation",
+        "MediaNowPlayingTitle",
+    )
+    assert profile.fields["MediaAudioVolume"].interval_seconds == 1
+    assert profile.fields["MediaAudioVolume"].include_fields == synchronized_now_playing_fields
+    assert all(
+        profile.fields[name].interval_seconds == 1
+        for name in synchronized_now_playing_fields
+        if name != "MediaNowPlayingElapsed"
+    )
+    assert profile.fields["MediaNowPlayingElapsed"].interval_seconds == 15
     assert "BrakePedalPos" not in profile.fields
     assert profile.fields["PackCurrent"].interval_seconds == 120
     assert profile.fields["PackCurrent"].minimum_delta == 0.1
@@ -360,6 +377,7 @@ def test_capability_projection_handles_self_driving_and_synchronized_includes() 
         "DetailedChargeState.include_fields",
         "Gear.include_fields",
         "LongitudinalAcceleration.include_fields",
+        "MediaAudioVolume.include_fields",
         "MilesSinceReset",
         "SelfDrivingMilesSinceReset",
         "VehicleSpeed.include_fields",
@@ -372,6 +390,7 @@ def test_capability_projection_handles_self_driving_and_synchronized_includes() 
         "DetailedChargeState.include_fields",
         "Gear.include_fields",
         "LongitudinalAcceleration.include_fields",
+        "MediaAudioVolume.include_fields",
         "MilesSinceReset.include_fields",
         "SelfDrivingMilesSinceReset.include_fields",
         "VehicleSpeed.include_fields",
@@ -387,6 +406,14 @@ def test_capability_projection_handles_self_driving_and_synchronized_includes() 
     )
     assert "ACChargingEnergyIn" in version_1_3.fields["DetailedChargeState"].include_fields
     assert version_1_3.fields["LongitudinalAcceleration"].include_fields == ("VehicleSpeed",)
+    assert version_1_3.fields["MediaAudioVolume"].include_fields == (
+        "MediaNowPlayingAlbum",
+        "MediaNowPlayingArtist",
+        "MediaNowPlayingDuration",
+        "MediaNowPlayingElapsed",
+        "MediaNowPlayingStation",
+        "MediaNowPlayingTitle",
+    )
     assert version_1_3.fields["SelfDrivingMilesSinceReset"].include_fields == ("MilesSinceReset",)
     assert version_1_3.fields["MilesSinceReset"].include_fields == ("SelfDrivingMilesSinceReset",)
     assert version_1_3.capability_omissions == {}
@@ -583,7 +610,7 @@ def test_verify_repairs_provenance_without_reapplying_vehicle_config() -> None:
     assert result["status"] == "verified"
     assert fleet.created == []
     persisted = store.states["veh_one"]
-    assert persisted.profile_version == "broad-v3"
+    assert persisted.profile_version == "broad-v4"
     assert persisted.config_hash == result["config_hash"]
     assert persisted.status == "synced"
     assert persisted.transport_maintenance_opt_in is True

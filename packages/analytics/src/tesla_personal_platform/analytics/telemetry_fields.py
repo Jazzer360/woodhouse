@@ -60,7 +60,7 @@ class CategorySampleSpec:
 
 @lru_cache(maxsize=1)
 def telemetry_catalog_entries() -> tuple[TelemetryCatalogEntry, ...]:
-    """Return all pinned fields with broad-v3 configuration metadata."""
+    """Return all pinned fields with broad-v4 configuration metadata."""
     profile = broad_profile(ANALYTICS_CLIENT_VERSION)
     definitions = load_field_catalog()
     entries: list[TelemetryCatalogEntry] = []

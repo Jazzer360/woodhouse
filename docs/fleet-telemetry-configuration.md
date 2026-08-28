@@ -6,24 +6,25 @@ rules in [`data-and-analytics.md`](data-and-analytics.md) remain unchanged:
 frequency is controlled only here, at the Tesla source, and every valid record
 received by Woodhouse is retained.
 
-The schema and behavior were audited on 2026-08-25 against Tesla's current
+The schema and behavior were audited on 2026-08-28 against Tesla's current
 Fleet Telemetry overview, Available Data catalog, `vehicle_data.proto`, Vehicle
 Endpoints documentation, and the pinned receiver version `v0.9.4`.
 
 ## Canonical profile
 
-The only default profile is `broad-v3`. Its policy is **Tessie baseline plus
+The only default profile is `broad-v4`. Its policy is **Tessie baseline plus
 explicit Woodhouse decisions**, not
 "subscribe to nearly everything." It is capability-projected per vehicle; it
 is not a plan, quota, or storage tier.
 
 - Source catalog: 239 documented fields.
 - Operator-supplied Tessie baseline: 93 fields.
-- Woodhouse deviations: 16 overrides, 40 additions, and 2 removals.
+- Woodhouse deviations: 19 overrides, 40 additions, and 2 removals.
 - Configured for a Fleet Telemetry 1.2.0+ passenger vehicle: 131 fields.
 - Fleet Telemetry 1.0/1.1 projection: 129 fields; the two HW4 self-driving
   counters are omitted because Tesla introduced them in client 1.2.0.
-- Fleet Telemetry 1.3.0+ additionally uses `include_fields` for four purposes:
+- Fleet Telemetry 1.3.0+ additionally uses `include_fields` for five purposes:
+  volume changes carry all six now-playing fields for exact song context;
   qualifying speed/acceleration changes carry their analytical counterpart;
   the two self-driving counters reciprocally carry only each other; Gear
   transitions carry odometer, remaining energy, SOC, and location; and
@@ -65,7 +66,10 @@ These are every cadence/delta difference for a field already in Tessie:
 | `Location` | 30 s / 3 m | 5 s / 5 m | Improve trip-path and low-speed maneuver reconstruction while retaining a practical GPS-drift filter. |
 | `VehicleSpeed` | 30 s / no delta | 1 s / 1 mph | Preserve one-mph cruising changes plus acceleration/deceleration traces and approximate launch timing. On client 1.3+, include longitudinal acceleration in the same payload. |
 | `GpsHeading` | 60 s / 1° | 5 s / 5° | Align heading with trip-path cadence and ignore small directional jitter. |
-| Six media metadata/state fields | 60 s | 10 s | Capture short tracks, skips, and state/source changes; unchanged values do not emit. |
+| `MediaAudioVolume` | 60 s | 1 s, include six now-playing fields | Treat volume changes as a high-resolution reaction signal and attach exact current-track context on client 1.3+. |
+| Five now-playing metadata/duration fields | 60 s | 1 s | Capture track, station, and duration changes at one-second resolution; unchanged values do not emit. |
+| `MediaNowPlayingElapsed` | 60 s | 15 s | Improve song-relative playback-position resolution without creating a continuous one-signal-per-second stream. |
+| `MediaPlaybackSource`, `MediaPlaybackStatus` | 60 s | 10 s | Capture source and playback-state transitions promptly; unchanged values do not emit. |
 | `TpmsSoftWarnings`, `TpmsHardWarnings` | 1,800 s | 60 s | Warning transitions are rare, so improved latency adds little normal volume. |
 | `HvacLeftTemperatureRequest` | 1 s | 5 s | Setpoint history does not need one-second polling or a numeric delta. |
 | `Odometer` | 30 s / 0.01 mi | 60 s / 0.01 mi | Retain Tessie's precision at a cheaper cadence. |
@@ -95,9 +99,11 @@ categories:
 - 6 rare vehicle-state fields for guest/service mode, hazards, key count, and
   software-update duration.
 
-Woodhouse retains Tessie's `MediaAudioVolume` at 60 seconds because correlating
-volume changes with the current track can provide a weak but useful engagement
-signal. It removes `MediaAudioVolumeIncrement` and `MediaAudioVolumeMax` because
+Woodhouse overrides Tessie's `MediaAudioVolume` to one second because
+correlating volume changes with the current track provides a useful reaction
+signal. On client 1.3+, each qualifying volume change carries all six
+`MediaNowPlaying*` fields in the same payload. It removes
+`MediaAudioVolumeIncrement` and `MediaAudioVolumeMax` because
 those static UI range values add no comparable historical value.
 
 The 106 non-baseline omissions are individually commented in the Woodhouse
@@ -122,7 +128,7 @@ location deltas add a second noise threshold.
 | Speed and longitudinal acceleration | 1 s | 1 mph and 0.5 m/s² respectively; on client 1.3+ each field includes the other when it independently qualifies. |
 | Charging and battery | Mostly 30-120 s | Physical measurements use explicit defensible deltas; discrete state/settings do not receive artificial deltas. |
 | Climate | Tessie baseline plus 5 s added states | Temperatures inherit Tessie's deltas; modes, setpoints, fan levels, and switches are treated as changed values. |
-| Media | 10-60 s | Metadata/state is 10 s; elapsed/duration retain Tessie's slower, delta-gated behavior. |
+| Media | 1-15 s | Volume and five now-playing metadata/duration fields are 1 s; playback source/status are 10 s; continuously advancing elapsed position is 15 s. Every field remains change-gated. |
 | TPMS | Pressure 900 s; warnings 60 s | Pressure inherits Tessie's 0.1 threshold; warning state prioritizes transition latency. |
 | Low-rate diagnostics/security inventory | 60-300 s | Only selected high-value fields are included. |
 
@@ -138,6 +144,10 @@ High-volume considerations shown at the checkpoint:
 - speed and longitudinal acceleration can each emit at most once per second
   after crossing their respective delta; synchronized acceleration is another
   billable signal whenever qualifying speed publishes on client 1.3+;
+- volume and five change-oriented now-playing fields can each emit at most once
+  per second when changed; elapsed position independently emits at most once
+  per 15 seconds, while on client 1.3+ each qualifying volume change also
+  carries six billable now-playing context signals;
 - detailed powertrain, lateral acceleration, and pedal-position telemetry are omitted;
 - charging measurements normally emit at most once per 60 seconds and usually
   require a measurement delta;
@@ -166,7 +176,7 @@ receiver messages, so cost checks must count entries in each `V.data` array
 rather than BigQuery rows. The review found a 10-second median gap for both
 `Location` and `GpsHeading`, a 1-second median for `VehicleSpeed`, and a
 4-second median for `LongitudinalAcceleration` at its former 1.0 m/s² delta.
-That measured cadence supports the `broad-v3` changes to 5 seconds / 5 meters
+That measured cadence supports the `broad-v4` changes to 5 seconds / 5 meters
 for location, 5 seconds / 5 degrees for heading, and a 0.5 m/s² acceleration
 delta. It does not yet justify adding pedal-position, lateral-acceleration, or
 high-rate drivetrain engineering signals.
@@ -343,7 +353,7 @@ migration even though normal browsers would accept it.
 
 ### Transport migration
 
-A hostname, port, or CA-profile change is separate from `broad-v3`. The
+A hostname, port, or CA-profile change is separate from `broad-v4`. The
 control-plane reconciler retains the exact persisted field hash, requires an
 explicit per-vehicle transport-maintenance opt-in, updates a selected canary
 first, waits for `synced=true`, inspects errors, and then processes remaining

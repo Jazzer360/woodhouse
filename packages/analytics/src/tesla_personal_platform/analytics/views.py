@@ -1373,7 +1373,7 @@ SELECT
   latest.telemetry_config_version AS desired_profile_version,
   latest.telemetry_config_hash AS desired_profile_hash,
   '1.3.0' AS minimum_client_for_include_fields,
-  latest.telemetry_config_version = 'broad-v3'
+  latest.telemetry_config_version = 'broad-v4'
     AND (
       SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) > 1
       OR (
@@ -1398,7 +1398,7 @@ SELECT
       OR (SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) = 1
         AND SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(1)] AS INT64) < 3)
       THEN 'client_capability_limited'
-    WHEN latest.telemetry_config_version != 'broad-v3' THEN 'profile_upgrade_required'
+    WHEN latest.telemetry_config_version != 'broad-v4' THEN 'profile_upgrade_required'
     WHEN COALESCE(anchors.gear_anchor_messages, 0)
       + COALESCE(anchors.charge_anchor_messages, 0)
       + COALESCE(anchors.fsd_counter_messages, 0) = 0 THEN 'insufficient_recent_evidence'
