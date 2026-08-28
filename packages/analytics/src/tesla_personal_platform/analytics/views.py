@@ -354,6 +354,8 @@ WITH gear_events AS (
       WHEN observation.source_timestamp IS NULL THEN 'unavailable'
       WHEN observation.pubsub_message_id = boundary.boundary_message_id
         THEN 'exact_synchronized_boundary'
+      WHEN boundary.field_name IN ('EnergyRemaining', 'Soc')
+        THEN 'as_of_state'
       WHEN boundary.boundary_name = 'start'
         AND observation.source_timestamp <= boundary.boundary_at
         THEN 'stationary_pre_boundary'
@@ -367,13 +369,18 @@ WITH gear_events AS (
       ORDER BY
         CASE
           WHEN observation.pubsub_message_id = boundary.boundary_message_id THEN 0
+          WHEN boundary.field_name IN ('EnergyRemaining', 'Soc') THEN 1
           WHEN boundary.boundary_name = 'start'
-            AND observation.source_timestamp <= boundary.boundary_at THEN 1
+            AND observation.source_timestamp <= boundary.boundary_at THEN 2
           WHEN boundary.boundary_name = 'end'
-            AND observation.source_timestamp >= boundary.boundary_at THEN 1
-          ELSE 2
+            AND observation.source_timestamp >= boundary.boundary_at THEN 2
+          ELSE 3
         END,
-        ABS(TIMESTAMP_DIFF(observation.source_timestamp, boundary.boundary_at, MILLISECOND)),
+        IF(
+          boundary.field_name IN ('EnergyRemaining', 'Soc'),
+          -UNIX_MILLIS(observation.source_timestamp),
+          ABS(TIMESTAMP_DIFF(observation.source_timestamp, boundary.boundary_at, MILLISECOND))
+        ),
         observation.source_timestamp
     ) AS candidate_rank
   FROM boundary_specs AS boundary
@@ -381,8 +388,14 @@ WITH gear_events AS (
     ON observation.vehicle_id = boundary.vehicle_id
     AND NOT observation.is_invalid
     AND observation.field_name = boundary.field_name
-    AND observation.source_timestamp BETWEEN boundary.candidate_window_start
-      AND boundary.candidate_window_end
+    AND (
+      (boundary.field_name IN ('EnergyRemaining', 'Soc')
+        AND observation.source_timestamp <= boundary.boundary_at)
+      OR
+      (boundary.field_name NOT IN ('EnergyRemaining', 'Soc')
+        AND observation.source_timestamp BETWEEN boundary.candidate_window_start
+          AND boundary.candidate_window_end)
+    )
 )
 SELECT
   drive_id,
@@ -648,21 +661,22 @@ WITH raw_charge_events AS (
     IF(boundary_name = 'start', started_at, ended_at) AS boundary_at,
     IF(boundary_name = 'start', start_state_message_id, end_state_message_id)
       AS boundary_message_id,
-    IF(
-      boundary_name = 'start',
-      IF(previous_charge_ended_at IS NULL,
-        TIMESTAMP_SUB(started_at, INTERVAL 10 MINUTE),
-        GREATEST(TIMESTAMP_SUB(started_at, INTERVAL 10 MINUTE), previous_charge_ended_at)),
-      GREATEST(TIMESTAMP_SUB(ended_at, INTERVAL 5 MINUTE), started_at)
-    ) AS candidate_window_start,
-    IF(
-      boundary_name = 'start',
-      LEAST(TIMESTAMP_ADD(started_at, INTERVAL 2 MINUTE),
-        COALESCE(ended_at, TIMESTAMP_ADD(started_at, INTERVAL 2 MINUTE))),
-      IF(next_charge_started_at IS NULL,
-        TIMESTAMP_ADD(ended_at, INTERVAL 2 MINUTE),
-        LEAST(TIMESTAMP_ADD(ended_at, INTERVAL 2 MINUTE), next_charge_started_at))
-    ) AS candidate_window_end
+    CASE
+      WHEN field_name IN ('Odometer', 'Location')
+        THEN TIMESTAMP_SUB(IF(boundary_name = 'start', started_at, ended_at), INTERVAL 2 MINUTE)
+      WHEN boundary_name = 'start' THEN TIMESTAMP_SUB(started_at, INTERVAL 10 MINUTE)
+      ELSE started_at
+    END AS candidate_window_start,
+    CASE
+      WHEN field_name IN ('Odometer', 'Location')
+        THEN TIMESTAMP_ADD(IF(boundary_name = 'start', started_at, ended_at), INTERVAL 2 MINUTE)
+      WHEN boundary_name = 'start'
+        THEN LEAST(
+          TIMESTAMP_ADD(started_at, INTERVAL 2 MINUTE),
+          COALESCE(ended_at, TIMESTAMP_ADD(started_at, INTERVAL 2 MINUTE))
+        )
+      ELSE ended_at
+    END AS candidate_window_end
   FROM identified AS session
   CROSS JOIN UNNEST([
     STRUCT('start' AS boundary_name, 'Soc' AS field_name),
@@ -691,26 +705,35 @@ WITH raw_charge_events AS (
       WHEN observation.source_timestamp IS NULL THEN 'unavailable'
       WHEN observation.pubsub_message_id = boundary.boundary_message_id
         THEN 'exact_synchronized_boundary'
-      WHEN boundary.boundary_name = 'start'
-        AND observation.source_timestamp <= boundary.boundary_at
-        THEN 'pre_boundary_observation'
+      WHEN ABS(TIMESTAMP_DIFF(
+        observation.source_timestamp, boundary.boundary_at, SECOND)) <= 120
+        THEN 'near_boundary_observation'
       WHEN boundary.boundary_name = 'end'
-        AND observation.source_timestamp >= boundary.boundary_at
-        THEN 'post_boundary_observation'
-      ELSE 'inside_session_fallback'
+        AND observation.source_timestamp BETWEEN boundary.started_at AND boundary.ended_at
+        THEN 'in_session_state'
+      WHEN boundary.boundary_name = 'start'
+        AND observation.source_timestamp <= boundary.started_at
+        THEN 'pre_boundary_observation'
+      ELSE 'inside_session_state'
     END AS inference_method,
     ROW_NUMBER() OVER (
       PARTITION BY boundary.charge_session_id, boundary.boundary_name, boundary.field_name
       ORDER BY
         CASE
           WHEN observation.pubsub_message_id = boundary.boundary_message_id THEN 0
-          WHEN boundary.boundary_name = 'start'
-            AND observation.source_timestamp <= boundary.boundary_at THEN 1
-          WHEN boundary.boundary_name = 'end'
-            AND observation.source_timestamp >= boundary.boundary_at THEN 1
-          ELSE 2
+          WHEN ABS(TIMESTAMP_DIFF(
+            observation.source_timestamp, boundary.boundary_at, SECOND)) <= 120 THEN 1
+          WHEN boundary.boundary_name = 'end' THEN 2
+          WHEN observation.source_timestamp <= boundary.started_at THEN 2
+          ELSE 3
         END,
-        ABS(TIMESTAMP_DIFF(observation.source_timestamp, boundary.boundary_at, MILLISECOND)),
+        CASE
+          WHEN boundary.boundary_name = 'end'
+            THEN -UNIX_MILLIS(observation.source_timestamp)
+          WHEN observation.source_timestamp <= boundary.started_at
+            THEN -UNIX_MILLIS(observation.source_timestamp)
+          ELSE UNIX_MILLIS(observation.source_timestamp)
+        END,
         observation.source_timestamp
     ) AS candidate_rank
   FROM boundary_specs AS boundary
@@ -720,10 +743,142 @@ WITH raw_charge_events AS (
     AND observation.field_name = boundary.field_name
     AND observation.source_timestamp BETWEEN boundary.candidate_window_start
       AND boundary.candidate_window_end
-), selected_boundaries AS (
+), direct_boundaries AS (
   SELECT * EXCEPT(candidate_rank)
   FROM boundary_candidates
   WHERE candidate_rank = 1
+), stationary_anchor_specs AS (
+  SELECT
+    session.*,
+    field_name,
+    anchor_name,
+    IF(anchor_name = 'before', TIMESTAMP_SUB(started_at, INTERVAL 30 MINUTE), ended_at)
+      AS anchor_window_start,
+    IF(anchor_name = 'before', started_at, TIMESTAMP_ADD(ended_at, INTERVAL 30 MINUTE))
+      AS anchor_window_end
+  FROM identified AS session
+  CROSS JOIN UNNEST(['Odometer', 'Location']) AS field_name
+  CROSS JOIN UNNEST(['before', 'after']) AS anchor_name
+  WHERE ended_at IS NOT NULL
+), stationary_anchor_candidates AS (
+  SELECT
+    spec.*,
+    observation.source_timestamp AS observed_at,
+    observation.numeric_value,
+    observation.latitude,
+    observation.longitude,
+    observation.pubsub_message_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY spec.charge_session_id, spec.field_name, spec.anchor_name
+      ORDER BY
+        IF(spec.anchor_name = 'before',
+          -UNIX_MILLIS(observation.source_timestamp),
+          UNIX_MILLIS(observation.source_timestamp))
+    ) AS candidate_rank
+  FROM stationary_anchor_specs AS spec
+  LEFT JOIN {table("telemetry_observations")} AS observation
+    ON observation.vehicle_id = spec.vehicle_id
+    AND observation.field_name = spec.field_name
+    AND NOT observation.is_invalid
+    AND observation.source_timestamp BETWEEN spec.anchor_window_start AND spec.anchor_window_end
+), stationary_anchors AS (
+  SELECT
+    charge_session_id,
+    vehicle_id,
+    started_at,
+    ended_at,
+    field_name,
+    MAX(IF(anchor_name = 'before', observed_at, NULL)) AS before_observed_at,
+    MAX(IF(anchor_name = 'before', numeric_value, NULL)) AS before_numeric_value,
+    MAX(IF(anchor_name = 'before', latitude, NULL)) AS before_latitude,
+    MAX(IF(anchor_name = 'before', longitude, NULL)) AS before_longitude,
+    MAX(IF(anchor_name = 'before', pubsub_message_id, NULL)) AS before_message_id,
+    MAX(IF(anchor_name = 'after', observed_at, NULL)) AS after_observed_at,
+    MAX(IF(anchor_name = 'after', numeric_value, NULL)) AS after_numeric_value,
+    MAX(IF(anchor_name = 'after', latitude, NULL)) AS after_latitude,
+    MAX(IF(anchor_name = 'after', longitude, NULL)) AS after_longitude,
+    MAX(IF(anchor_name = 'after', pubsub_message_id, NULL)) AS after_message_id
+  FROM stationary_anchor_candidates
+  WHERE candidate_rank = 1
+  GROUP BY charge_session_id, vehicle_id, started_at, ended_at, field_name
+), stationary_evidence AS (
+  SELECT
+    anchor.*,
+    CASE
+      WHEN anchor.field_name = 'Odometer' THEN
+        anchor.before_numeric_value IS NOT NULL
+        AND anchor.after_numeric_value IS NOT NULL
+        AND ABS(anchor.after_numeric_value - anchor.before_numeric_value) <= 0.01
+      WHEN anchor.field_name = 'Location' THEN
+        anchor.before_latitude IS NOT NULL
+        AND anchor.before_longitude IS NOT NULL
+        AND anchor.after_latitude IS NOT NULL
+        AND anchor.after_longitude IS NOT NULL
+        AND ST_DISTANCE(
+          ST_GEOGPOINT(anchor.before_longitude, anchor.before_latitude),
+          ST_GEOGPOINT(anchor.after_longitude, anchor.after_latitude)
+        ) <= 100
+      ELSE FALSE
+    END
+    AND NOT EXISTS (
+      SELECT 1
+      FROM {table("telemetry_observations")} AS movement
+      WHERE movement.vehicle_id = anchor.vehicle_id
+        AND NOT movement.is_invalid
+        AND movement.source_timestamp BETWEEN anchor.before_observed_at
+          AND anchor.after_observed_at
+        AND (
+          (movement.field_name = 'Gear'
+            AND movement.string_value IN ('ShiftStateD', 'ShiftStateR', 'D', 'R'))
+          OR (movement.field_name = 'VehicleSpeed' AND movement.numeric_value > 1)
+        )
+    ) AS supports_stationary_carry
+  FROM stationary_anchors AS anchor
+), selected_boundaries AS (
+  SELECT
+    direct.* EXCEPT(
+      selected_observation_at, selected_numeric_value, selected_latitude,
+      selected_longitude, observation_message_id, inference_method
+    ),
+    CASE
+      WHEN direct.selected_observation_at IS NOT NULL THEN direct.selected_observation_at
+      WHEN stationary.supports_stationary_carry AND direct.boundary_name = 'start'
+        THEN stationary.before_observed_at
+      WHEN stationary.supports_stationary_carry THEN stationary.after_observed_at
+    END AS selected_observation_at,
+    CASE
+      WHEN direct.selected_observation_at IS NOT NULL THEN direct.selected_numeric_value
+      WHEN stationary.supports_stationary_carry AND direct.boundary_name = 'start'
+        THEN stationary.before_numeric_value
+      WHEN stationary.supports_stationary_carry THEN stationary.after_numeric_value
+    END AS selected_numeric_value,
+    CASE
+      WHEN direct.selected_observation_at IS NOT NULL THEN direct.selected_latitude
+      WHEN stationary.supports_stationary_carry AND direct.boundary_name = 'start'
+        THEN stationary.before_latitude
+      WHEN stationary.supports_stationary_carry THEN stationary.after_latitude
+    END AS selected_latitude,
+    CASE
+      WHEN direct.selected_observation_at IS NOT NULL THEN direct.selected_longitude
+      WHEN stationary.supports_stationary_carry AND direct.boundary_name = 'start'
+        THEN stationary.before_longitude
+      WHEN stationary.supports_stationary_carry THEN stationary.after_longitude
+    END AS selected_longitude,
+    CASE
+      WHEN direct.selected_observation_at IS NOT NULL THEN direct.observation_message_id
+      WHEN stationary.supports_stationary_carry AND direct.boundary_name = 'start'
+        THEN stationary.before_message_id
+      WHEN stationary.supports_stationary_carry THEN stationary.after_message_id
+    END AS observation_message_id,
+    CASE
+      WHEN direct.selected_observation_at IS NOT NULL THEN direct.inference_method
+      WHEN stationary.supports_stationary_carry THEN 'stationary_state_carry'
+      ELSE 'unavailable'
+    END AS inference_method
+  FROM direct_boundaries AS direct
+  LEFT JOIN stationary_evidence AS stationary
+    ON stationary.charge_session_id = direct.charge_session_id
+    AND stationary.field_name = direct.field_name
 ), joined AS (
   SELECT
     session.*,
@@ -761,6 +916,10 @@ WITH raw_charge_events AS (
       selected_numeric_value, NULL)) AS start_soc_percent,
     MAX(IF(boundary_name = 'end' AND field_name = 'Soc',
       selected_numeric_value, NULL)) AS end_soc_percent,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Soc',
+      selected_observation_at, NULL)) AS start_soc_observed_at,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Soc',
+      selected_observation_at, NULL)) AS end_soc_observed_at,
     MAX(IF(boundary_name = 'start' AND field_name = 'EnergyRemaining',
       selected_numeric_value, NULL)) AS start_energy_remaining_kwh,
     MAX(IF(boundary_name = 'end' AND field_name = 'EnergyRemaining',
@@ -790,57 +949,216 @@ WITH raw_charge_events AS (
       AND inference_method = 'exact_synchronized_boundary', selected_numeric_value, 0))
       AS start_dc_energy_kwh,
     MAX(IF(boundary_name = 'end' AND field_name = 'DCChargingEnergyIn',
-      selected_numeric_value, NULL)) AS end_dc_energy_kwh,
+      selected_numeric_value, NULL)) AS observed_end_dc_energy_kwh,
+    MAX(IF(boundary_name = 'end' AND field_name = 'DCChargingEnergyIn',
+      selected_observation_at, NULL)) AS end_dc_observed_at,
     MAX(IF(boundary_name = 'end' AND field_name = 'DCChargingEnergyIn',
       inference_method, NULL)) AS dc_energy_method,
     MAX(IF(boundary_name = 'start' AND field_name = 'Odometer',
       inference_method, NULL)) AS odometer_boundary_method,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Odometer',
+      inference_method, NULL)) AS end_odometer_boundary_method,
     MAX(IF(boundary_name = 'start' AND field_name = 'Soc',
-      inference_method, NULL)) AS soc_boundary_method
+      inference_method, NULL)) AS soc_boundary_method,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Soc',
+      inference_method, NULL)) AS end_soc_boundary_method,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Location',
+      inference_method, NULL)) AS location_boundary_method,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Location',
+      inference_method, NULL)) AS end_location_boundary_method
   FROM selected_boundaries
   GROUP BY charge_session_id
-), terminal_power AS (
+), counter_observations AS (
   SELECT
     session.charge_session_id,
-    ARRAY_AGG(STRUCT(observation.source_timestamp, observation.numeric_value)
-      ORDER BY observation.source_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS sample
+    observation.field_name,
+    observation.source_timestamp,
+    observation.numeric_value,
+    LAG(observation.numeric_value) OVER (
+      PARTITION BY session.charge_session_id, observation.field_name
+      ORDER BY observation.source_timestamp, observation.pubsub_message_id
+    ) AS previous_numeric_value
   FROM identified AS session
   JOIN {table("telemetry_observations")} AS observation
     ON observation.vehicle_id = session.vehicle_id
-    AND observation.field_name = 'ACChargingPower'
+    AND observation.field_name IN ('ACChargingEnergyIn', 'DCChargingEnergyIn')
     AND NOT observation.is_invalid
-    AND observation.source_timestamp BETWEEN TIMESTAMP_SUB(session.ended_at, INTERVAL 5 MINUTE)
-      AND session.ended_at
+    AND observation.source_timestamp BETWEEN session.started_at AND session.ended_at
   WHERE session.ended_at IS NOT NULL
-  GROUP BY session.charge_session_id
+), counter_quality AS (
+  SELECT
+    charge_session_id,
+    COUNTIF(field_name = 'ACChargingEnergyIn'
+      AND numeric_value < previous_numeric_value - 0.001) AS ac_counter_anomalies,
+    COUNTIF(field_name = 'DCChargingEnergyIn'
+      AND numeric_value < previous_numeric_value - 0.001) AS dc_counter_anomalies
+  FROM counter_observations
+  GROUP BY charge_session_id
+), tail_specs AS (
+  SELECT
+    aggregate.*,
+    boundary.* EXCEPT(charge_session_id),
+    quality.ac_counter_anomalies,
+    quality.dc_counter_anomalies,
+    energy_kind,
+    IF(energy_kind = 'ac', boundary.end_ac_observed_at, boundary.end_dc_observed_at)
+      AS counter_observed_at,
+    IF(energy_kind = 'ac', 'ACChargingEnergyIn', 'DCChargingEnergyIn') AS counter_field,
+    IF(energy_kind = 'ac', 'ACChargingPower', 'DCChargingPower') AS power_field,
+    IF(
+      energy_kind = 'ac',
+      aggregate.maximum_ac_power_kw > 0
+        AND aggregate.maximum_ac_power_kw >= COALESCE(aggregate.maximum_dc_power_kw, 0),
+      aggregate.maximum_dc_power_kw > 0
+        AND aggregate.maximum_dc_power_kw > COALESCE(aggregate.maximum_ac_power_kw, 0)
+    ) AS power_is_applicable,
+    IF(
+      energy_kind = 'ac',
+      aggregate.maximum_ac_power_kw > 0
+        OR (boundary.observed_end_ac_energy_kwh IS NOT NULL
+          AND COALESCE(aggregate.maximum_dc_power_kw, 0) = 0),
+      TRUE
+    ) AS counter_is_applicable
+  FROM aggregated AS aggregate
+  JOIN boundary_values AS boundary USING (charge_session_id)
+  LEFT JOIN counter_quality AS quality USING (charge_session_id)
+  CROSS JOIN UNNEST(['ac', 'dc']) AS energy_kind
+), tail_power_candidates AS (
+  SELECT
+    spec.charge_session_id,
+    spec.energy_kind,
+    spec.counter_observed_at,
+    spec.ended_at,
+    observation.source_timestamp,
+    observation.numeric_value,
+    ROW_NUMBER() OVER (
+      PARTITION BY spec.charge_session_id, spec.energy_kind,
+        observation.source_timestamp <= spec.counter_observed_at
+      ORDER BY observation.source_timestamp DESC, observation.pubsub_message_id DESC
+    ) AS prior_rank
+  FROM tail_specs AS spec
+  JOIN {table("telemetry_observations")} AS observation
+    ON observation.vehicle_id = spec.vehicle_id
+    AND observation.field_name = spec.power_field
+    AND NOT observation.is_invalid
+    AND observation.numeric_value >= 0
+    AND observation.source_timestamp BETWEEN spec.started_at AND spec.ended_at
+  WHERE spec.counter_observed_at IS NOT NULL
+    AND spec.ended_at IS NOT NULL
+    AND spec.power_is_applicable
+), tail_invalidations AS (
+  SELECT
+    spec.charge_session_id,
+    spec.energy_kind,
+    COUNT(observation.source_timestamp) AS invalid_tail_observations
+  FROM tail_specs AS spec
+  LEFT JOIN {table("telemetry_observations")} AS observation
+    ON observation.vehicle_id = spec.vehicle_id
+    AND observation.field_name IN (spec.counter_field, spec.power_field)
+    AND observation.is_invalid
+    AND observation.source_timestamp BETWEEN spec.counter_observed_at AND spec.ended_at
+  GROUP BY spec.charge_session_id, spec.energy_kind
+), tail_power_points AS (
+  SELECT
+    charge_session_id,
+    energy_kind,
+    counter_observed_at,
+    ended_at,
+    GREATEST(source_timestamp, counter_observed_at) AS point_at,
+    numeric_value
+  FROM tail_power_candidates
+  WHERE source_timestamp > counter_observed_at OR prior_rank = 1
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY charge_session_id, energy_kind,
+      GREATEST(source_timestamp, counter_observed_at)
+    ORDER BY source_timestamp DESC
+  ) = 1
+), tail_power_segments AS (
+  SELECT
+    *,
+    LEAD(point_at) OVER (
+      PARTITION BY charge_session_id, energy_kind ORDER BY point_at
+    ) AS next_observed_point_at
+  FROM tail_power_points
+), integrated_tails AS (
+  SELECT
+    charge_session_id,
+    energy_kind,
+    MIN(point_at) AS coverage_started_at,
+    SUM(numeric_value
+      * TIMESTAMP_DIFF(COALESCE(next_observed_point_at, ended_at), point_at, MILLISECOND)
+      / 3600000.0) AS tail_kwh
+  FROM tail_power_segments
+  GROUP BY charge_session_id, energy_kind
+), energy_reconstructed AS (
+  SELECT
+    spec.charge_session_id,
+    MAX(IF(spec.energy_kind = 'ac' AND spec.counter_is_applicable,
+      GREATEST(spec.observed_end_ac_energy_kwh - spec.start_ac_energy_kwh, 0), NULL))
+      AS ac_energy_counter_kwh,
+    MAX(IF(spec.energy_kind = 'dc',
+      GREATEST(spec.observed_end_dc_energy_kwh - spec.start_dc_energy_kwh, 0), NULL))
+      AS dc_energy_counter_kwh,
+    MAX(IF(spec.energy_kind = 'ac' AND spec.ac_counter_anomalies = 0
+      AND TIMESTAMP_DIFF(spec.ended_at, spec.counter_observed_at, SECOND) = 0,
+      0.0,
+      IF(spec.energy_kind = 'ac' AND spec.ac_counter_anomalies = 0
+        AND invalid.invalid_tail_observations = 0
+        AND TIMESTAMP_DIFF(spec.ended_at, spec.counter_observed_at, SECOND) BETWEEN 1 AND 300
+        AND tail.coverage_started_at = spec.counter_observed_at,
+        tail.tail_kwh, NULL))) AS ac_energy_tail_kwh,
+    MAX(IF(spec.energy_kind = 'dc' AND spec.dc_counter_anomalies = 0
+      AND TIMESTAMP_DIFF(spec.ended_at, spec.counter_observed_at, SECOND) = 0,
+      0.0,
+      IF(spec.energy_kind = 'dc' AND spec.dc_counter_anomalies = 0
+        AND invalid.invalid_tail_observations = 0
+        AND TIMESTAMP_DIFF(spec.ended_at, spec.counter_observed_at, SECOND) BETWEEN 1 AND 300
+        AND tail.coverage_started_at = spec.counter_observed_at,
+        tail.tail_kwh, NULL))) AS dc_energy_tail_kwh
+  FROM tail_specs AS spec
+  LEFT JOIN integrated_tails AS tail
+    ON tail.charge_session_id = spec.charge_session_id
+    AND tail.energy_kind = spec.energy_kind
+  LEFT JOIN tail_invalidations AS invalid
+    ON invalid.charge_session_id = spec.charge_session_id
+    AND invalid.energy_kind = spec.energy_kind
+  GROUP BY spec.charge_session_id
 ), corrected AS (
   SELECT
     aggregate.*,
-    boundary.* EXCEPT(charge_session_id, ac_energy_method),
+    boundary.* EXCEPT(charge_session_id, ac_energy_method, dc_energy_method),
+    energy.ac_energy_counter_kwh,
+    energy.ac_energy_tail_kwh,
+    energy.dc_energy_counter_kwh,
+    energy.dc_energy_tail_kwh,
     CASE
-      WHEN boundary.observed_end_ac_energy_kwh IS NULL THEN NULL
-      WHEN boundary.end_ac_observed_at < aggregate.ended_at
-        AND TIMESTAMP_DIFF(aggregate.ended_at, boundary.end_ac_observed_at, SECOND)
-          BETWEEN 1 AND 120
-        AND power.sample.source_timestamp <= aggregate.ended_at
-        AND power.sample.numeric_value > 0
-      THEN boundary.observed_end_ac_energy_kwh
-        + power.sample.numeric_value
-          * TIMESTAMP_DIFF(aggregate.ended_at, boundary.end_ac_observed_at, MILLISECOND)
-          / 3600000.0
-      ELSE boundary.observed_end_ac_energy_kwh
-    END AS end_ac_energy_kwh,
+      WHEN quality.ac_counter_anomalies > 0 THEN NULL
+      WHEN energy.ac_energy_counter_kwh IS NULL THEN NULL
+      ELSE energy.ac_energy_counter_kwh + COALESCE(energy.ac_energy_tail_kwh, 0)
+    END AS ac_energy_added_kwh,
     CASE
-      WHEN boundary.observed_end_ac_energy_kwh IS NOT NULL
-        AND boundary.end_ac_observed_at < aggregate.ended_at
-        AND TIMESTAMP_DIFF(aggregate.ended_at, boundary.end_ac_observed_at, SECOND)
-          BETWEEN 1 AND 120
-        AND power.sample.numeric_value > 0 THEN 'power_integrated'
-      ELSE boundary.ac_energy_method
-    END AS ac_energy_method
+      WHEN quality.dc_counter_anomalies > 0 THEN NULL
+      WHEN energy.dc_energy_counter_kwh IS NULL THEN NULL
+      ELSE energy.dc_energy_counter_kwh + COALESCE(energy.dc_energy_tail_kwh, 0)
+    END AS dc_energy_added_kwh,
+    CASE
+      WHEN quality.ac_counter_anomalies > 0 THEN 'counter_anomaly'
+      WHEN energy.ac_energy_counter_kwh IS NULL THEN 'unavailable'
+      WHEN energy.ac_energy_tail_kwh > 0 THEN 'measured_counter_plus_bounded_power_tail'
+      WHEN boundary.end_ac_observed_at = aggregate.ended_at THEN 'measured_counter'
+      ELSE 'measured_counter_tail_unavailable'
+    END AS ac_energy_method,
+    CASE
+      WHEN quality.dc_counter_anomalies > 0 THEN 'counter_anomaly'
+      WHEN energy.dc_energy_counter_kwh IS NULL THEN 'unavailable'
+      WHEN energy.dc_energy_tail_kwh > 0 THEN 'measured_counter_plus_bounded_power_tail'
+      WHEN boundary.end_dc_observed_at = aggregate.ended_at THEN 'measured_counter'
+      ELSE 'measured_counter_tail_unavailable'
+    END AS dc_energy_method
   FROM aggregated AS aggregate
   JOIN boundary_values AS boundary USING (charge_session_id)
-  LEFT JOIN terminal_power AS power USING (charge_session_id)
+  LEFT JOIN counter_quality AS quality USING (charge_session_id)
+  LEFT JOIN energy_reconstructed AS energy USING (charge_session_id)
 ), with_previous_charge AS (
   SELECT
     *,
@@ -859,12 +1177,22 @@ SELECT
   start_soc_percent,
   end_soc_percent,
   GREATEST(end_soc_percent - start_soc_percent, 0) AS soc_added_percent,
-  GREATEST(end_ac_energy_kwh - start_ac_energy_kwh, 0) AS ac_energy_added_kwh,
-  GREATEST(end_dc_energy_kwh - start_dc_energy_kwh, 0) AS dc_energy_added_kwh,
-  GREATEST(end_dc_energy_kwh - start_dc_energy_kwh, 0) AS battery_energy_added_kwh,
+  start_soc_observed_at,
+  end_soc_observed_at,
+  TIMESTAMP_DIFF(start_soc_observed_at, started_at, MILLISECOND)
+    AS start_soc_observation_offset_milliseconds,
+  TIMESTAMP_DIFF(end_soc_observed_at, ended_at, MILLISECOND)
+    AS end_soc_observation_offset_milliseconds,
+  ac_energy_counter_kwh,
+  ac_energy_tail_kwh,
+  ac_energy_added_kwh,
+  dc_energy_counter_kwh,
+  dc_energy_tail_kwh,
+  dc_energy_added_kwh,
+  dc_energy_added_kwh AS battery_energy_added_kwh,
   SAFE_MULTIPLY(100, SAFE_DIVIDE(
-    GREATEST(end_dc_energy_kwh - start_dc_energy_kwh, 0),
-    NULLIF(GREATEST(end_ac_energy_kwh - start_ac_energy_kwh, 0), 0)
+    dc_energy_added_kwh,
+    NULLIF(ac_energy_added_kwh, 0)
   )) AS charging_efficiency_percent,
   start_energy_remaining_kwh,
   end_energy_remaining_kwh,
@@ -882,7 +1210,11 @@ SELECT
   observation_count,
   state_source,
   soc_boundary_method,
+  end_soc_boundary_method,
   odometer_boundary_method,
+  end_odometer_boundary_method,
+  location_boundary_method,
+  end_location_boundary_method,
   ac_energy_method,
   dc_energy_method,
   telemetry_config_hash

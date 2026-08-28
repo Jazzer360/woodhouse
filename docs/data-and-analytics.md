@@ -192,9 +192,9 @@ and every future/unknown representation remain intact in `value_json`.
 | `location_samples` | Sparse wide navigation/location rows; each configured `Location` value has separate latitude/longitude columns. |
 | `media_samples` | Sparse wide media rows for direct graphing or inspection of emitted playback metadata/state. |
 | `vehicle_state_changes` | Orders valid values by vehicle/field/source time and exposes the previous typed value. |
-| `drive_metric_boundaries` | Selects Odometer, EnergyRemaining, SOC, and Location at each Gear boundary with exact/stationary/fallback method, source timestamp, signed age, and message provenance. |
+| `drive_metric_boundaries` | Selects Odometer, EnergyRemaining, SOC, and Location at each Gear boundary with metric-specific exact/as-of/stationary/fallback semantics, source timestamp, signed age, and message provenance. |
 | `drives` | Reconstructs forward/reverse Gear intervals and summarizes boundary-correct odometer distance, energy, SOC, efficiency, speed, endpoints, sample gaps, config provenance, and boundary quality. |
-| `charge_sessions` | Uses DetailedChargeState authoritatively with coarse fallback, boundary-correct SOC/odometer/energy, bounded AC terminal-power integration, battery/wall efficiency, distance since prior charge, and inference methods. |
+| `charge_sessions` | Uses DetailedChargeState authoritatively with coarse fallback, same-session SOC, stationary-validated odometer/location, measured counter plus bounded piecewise power-tail energy, battery/wall efficiency, distance since prior charge, observation ages, and inference methods. |
 | `drive_path_points` | Produces route points whose cumulative GPS distance is scaled to boundary-correct odometer distance, with carried speed and SOC. |
 | `drive_fsd_segments` | Allocates cumulative FSD-counter deltas into manual/FSD/uncertain route segments with confidence, method, and transition-distance bounds. |
 | `drive_fsd_summary` | Aggregates total, FSD, manual, and uncertain mileage and FSD percentage per drive. |
@@ -244,13 +244,16 @@ or excessively complex view graph.
 
 ### Session boundary rules
 
-Drive identity remains Gear-defined. For each start metric, the selector first
-uses a field carried in the exact Gear message, then the nearest valid
-observation in the stationary interval before departure, and only then a
-bounded first-in-drive fallback. End metrics use the exact Gear message, then
-the stationary interval after parking, then a bounded last-in-drive fallback.
-Five-minute outer windows, adjacent drive boundaries, and 90-second interior
-fallbacks prevent borrowing state from another drive.
+Drive identity remains Gear-defined. `Soc` and `EnergyRemaining` use
+backward-looking state-as-of semantics at both boundaries: the selected value
+is the most recent valid observation whose source timestamp is at or before the
+Gear transition. An exact synchronized Gear payload wins naturally. These two
+cached state fields are not rejected solely because of age, and their signed
+observation offsets therefore cannot be positive. Odometer and Location retain
+their separate physical-boundary behavior: exact Gear payload, stationary
+observation outside the drive, then a bounded interior fallback. Five-minute
+outer windows, adjacent drive boundaries, and 90-second interior fallbacks
+continue to constrain only those physical metrics.
 
 For charging, `DetailedChargeStateCharging` starts active charging and
 `DetailedChargeStateDisconnected`, `NoPower`, `Complete`, or `Stopped` ends it;
@@ -260,9 +263,38 @@ detailed session. Coarse `ChargeState` is used before detailed data exists or
 when an old terminal detailed state is followed by a new coarse charging state
 after the bounded fallback interval. Unknown values do not create transitions.
 
+Same-session SOC and `EnergyRemaining` remain eligible through the stop
+transition even when the terminal message omits them. The view retains each
+selected SOC observation's source time, signed boundary offset, and inference
+method; it never rounds SOC to Tessie's display precision.
+
+Charge odometer and location use a separate stationary invariant. If an exact
+or two-minute-near value is absent, the view pairs the nearest valid observation
+within 30 minutes before charge start with the nearest one within 30 minutes
+after charge end. It carries the state only when odometers agree within 0.01
+mile or locations are within 100 meters and there is no intervening driving
+Gear or speed above 1 mph. A large unbounded gap, disagreement, or movement
+leaves the value unavailable. `distance_since_previous_charge_miles` uses these
+reconstructed start/end odometers.
+
+Tesla defines `ACChargingEnergyIn` as charger-measured AC input energy that must
+be ignored during DC charging, while `DCChargingEnergyIn` is battery-measured
+energy usable for both AC and DC sessions. Each public counter column is the
+measured session delta. When the last applicable counter precedes the stop by
+at most five minutes, counter order is monotonic, and applicable power covers
+the whole missing interval, the view seeds the tail with the most recent valid
+power state in the same continuous session and integrates later power changes
+piecewise to the authoritative stop. The tail is exposed separately and added
+once to the measured counter. Counter resets, missing initial power coverage,
+an invalid counter/power signal in the tail, wrong charging mode, and longer
+gaps never receive an inferred tail; provenance
+distinguishes measured-only, bounded-tail, unavailable-tail, and anomalous
+results.
+
 Tesla's current Fleet Telemetry
 [system-behavior documentation](https://developer.tesla.com/docs/fleet-api/fleet-telemetry)
-was rechecked on 2026-08-25: changed fields enter a 500-millisecond collector
+and [available-data definitions](https://developer.tesla.com/docs/fleet-api/fleet-telemetry/available-data)
+were rechecked on 2026-08-28: changed fields enter a 500-millisecond collector
 bucket after their own interval/delta rules permit emission. The five
 `*_samples` views therefore
 group only fields in the same actual source message; they do not time-bucket,
