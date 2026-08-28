@@ -286,7 +286,10 @@ def analytics_tool_section(document: dict[str, Any]) -> list[str]:
             "dry-run first, capped at 1 GiB billed, 30 seconds, 1,000 returned rows, "
             "and 1 MiB of serialized result data. BigQuery can aggregate or correlate "
             "more source rows; the row and result-size limits bound only the response "
-            "returned through MCP."
+            "returned through MCP. Errors retain error/message/correlation_id and add the "
+            "validation, dry-run, or execution phase. BigQuery reason and line/column "
+            "diagnostics are included when available after private infrastructure identifiers "
+            "are sanitized; failed jobs may also include safe job/byte metadata."
         )
     lines.extend(["", result, ""])
     return lines

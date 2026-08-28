@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from google.api_core.exceptions import BadRequest
 from google.cloud import bigquery
 from sqlglot import exp, parse_one
 from tesla_personal_platform.analytics import (
@@ -27,8 +28,19 @@ from tesla_personal_platform.auth import UserContext
 CONTEXT = UserContext("usr_private", "tesla_u_private", "issuer", "subject")
 
 
+def bigquery_bad_request(message: str, errors: list[dict[str, Any]]) -> BadRequest:
+    return BadRequest(message, errors=errors)  # type: ignore[no-untyped-call]
+
+
 class FakeJob:
-    def __init__(self, *, dry_run: bool, rows: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        dry_run: bool,
+        rows: list[dict[str, Any]] | None = None,
+        result_error: Exception | None = None,
+        error_result: dict[str, Any] | None = None,
+    ) -> None:
         self.total_bytes_processed = 12_345
         self.total_bytes_billed = 10_000
         self.job_id = "safe-job-id"
@@ -38,17 +50,38 @@ class FakeJob:
         )
         self._dry_run = dry_run
         self._rows = rows or []
+        self._result_error = result_error
+        self.error_result = error_result
+        self.errors = [error_result] if error_result is not None else []
         self.result_arguments: dict[str, object] = {}
 
     def result(self, **values: object) -> list[dict[str, Any]]:
         assert not self._dry_run
         self.result_arguments = values
+        if self._result_error is not None:
+            raise self._result_error
         return self._rows
 
 
 class FakeBigQueryClient:
-    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
-        self.jobs = [FakeJob(dry_run=True), FakeJob(dry_run=False, rows=rows)]
+    def __init__(
+        self,
+        rows: list[dict[str, Any]] | None = None,
+        *,
+        dry_run_error: Exception | None = None,
+        execution_error: Exception | None = None,
+        execution_error_result: dict[str, Any] | None = None,
+    ) -> None:
+        self.jobs = [
+            FakeJob(dry_run=True),
+            FakeJob(
+                dry_run=False,
+                rows=rows,
+                result_error=execution_error,
+                error_result=execution_error_result,
+            ),
+        ]
+        self.dry_run_error = dry_run_error
         self.calls: list[tuple[str, bigquery.QueryJobConfig, str, float]] = []
 
     def list_tables(
@@ -70,6 +103,8 @@ class FakeBigQueryClient:
         timeout: float,
     ) -> FakeJob:
         self.calls.append((sql, job_config, location, timeout))
+        if len(self.calls) == 1 and self.dry_run_error is not None:
+            raise self.dry_run_error
         return self.jobs[len(self.calls) - 1]
 
 
@@ -201,6 +236,216 @@ def test_service_returns_more_than_legacy_200_row_limit() -> None:
 
     assert result["row_count"] == 250
     assert result["truncated"] is False
+
+
+def test_service_returns_syntax_error_diagnostics_from_dry_run() -> None:
+    client = FakeBigQueryClient(
+        dry_run_error=bigquery_bad_request(
+            "invalid query",
+            [
+                {
+                    "reason": "invalidQuery",
+                    "message": "Syntax error: Expected expression but got keyword FROM at [1:8]",
+                    "location": "query",
+                }
+            ],
+        )
+    )
+    service = BigQueryAnalyticsService(
+        client,  # type: ignore[arg-type]
+        "woodhouse-project",
+        "us-central1",
+    )
+
+    with pytest.raises(AnalyticsQueryError) as caught:
+        service.run_query(CONTEXT, "SELECT FROM drives", correlation_id="corr-syntax")
+
+    error = caught.value
+    assert error.category == "query_failed"
+    assert error.reason == "invalidQuery"
+    assert error.phase == "dry_run"
+    assert str(error) == "Syntax error: Expected expression but got keyword FROM at [1:8]"
+    assert error.location == {"line": 1, "column": 8}
+    assert error.response_details() == {
+        "reason": "invalidQuery",
+        "phase": "dry_run",
+        "location": {"line": 1, "column": 8},
+    }
+
+
+def test_service_returns_invalid_column_diagnostic() -> None:
+    client = FakeBigQueryClient(
+        dry_run_error=bigquery_bad_request(
+            "invalid query",
+            [
+                {
+                    "reason": "invalidQuery",
+                    "message": "Unrecognized name: definitely_not_a_real_column at [1:8]",
+                    "location": {"line": 1, "column": 8},
+                }
+            ],
+        )
+    )
+    service = BigQueryAnalyticsService(
+        client,  # type: ignore[arg-type]
+        "woodhouse-project",
+        "us-central1",
+    )
+
+    with pytest.raises(AnalyticsQueryError) as caught:
+        service.run_query(
+            CONTEXT,
+            "SELECT definitely_not_a_real_column FROM drives",
+            correlation_id="corr-column",
+        )
+
+    assert caught.value.phase == "dry_run"
+    assert caught.value.reason == "invalidQuery"
+    assert "Unrecognized name: definitely_not_a_real_column" in str(caught.value)
+    assert caught.value.location == {"line": 1, "column": 8}
+
+
+def test_service_sanitizes_private_bigquery_identifiers_without_losing_diagnostic() -> None:
+    client = FakeBigQueryClient(
+        dry_run_error=bigquery_bad_request(
+            "invalid query",
+            [
+                {
+                    "reason": "invalidQuery",
+                    "message": (
+                        "Unrecognized name: foo at [3:7] in "
+                        "woodhouse-project.tesla_u_private.private_view for "
+                        "analytics-runner@woodhouse-project.iam.gserviceaccount.com"
+                    ),
+                },
+                {
+                    "reason": "invalidQuery",
+                    "message": (
+                        "Related diagnostic for "
+                        "woodhouse-project:tesla_u_private.private_view at [4:2]"
+                    ),
+                },
+            ],
+        )
+    )
+    service = BigQueryAnalyticsService(
+        client,  # type: ignore[arg-type]
+        "woodhouse-project",
+        "us-central1",
+    )
+
+    with pytest.raises(AnalyticsQueryError) as caught:
+        service.run_query(CONTEXT, "SELECT foo FROM drives", correlation_id="corr-redacted")
+
+    message = str(caught.value)
+    assert "Unrecognized name: foo at [3:7]" in message
+    assert "private_view" in message
+    assert "woodhouse-project" not in message
+    assert "tesla_u_private" not in message
+    assert "analytics-runner@" not in message
+    assert "<service-account>" in message
+    assert caught.value.location == {"line": 3, "column": 7}
+    diagnostics = caught.value.response_details()["diagnostics"]
+    assert len(diagnostics) == 2
+    assert "woodhouse-project" not in str(diagnostics)
+    assert "tesla_u_private" not in str(diagnostics)
+
+
+def test_service_marks_woodhouse_safety_rejection_as_validation() -> None:
+    client = FakeBigQueryClient()
+    service = BigQueryAnalyticsService(
+        client,  # type: ignore[arg-type]
+        "woodhouse-project",
+        "us-central1",
+    )
+
+    with pytest.raises(AnalyticsQueryError) as caught:
+        service.run_query(
+            CONTEXT,
+            "DELETE FROM drives WHERE TRUE",
+            correlation_id="corr-validation",
+        )
+
+    assert caught.value.category == "read_only_required"
+    assert caught.value.phase == "validation"
+    assert caught.value.reason is None
+    assert client.calls == []
+
+
+def test_service_returns_execution_job_diagnostics_and_safe_metadata() -> None:
+    error_result = {
+        "reason": "resourcesExceeded",
+        "message": "Resources exceeded during query execution at [2:4]",
+    }
+    client = FakeBigQueryClient(
+        execution_error=RuntimeError(r"internal failure at C:\private\worker.py"),
+        execution_error_result=error_result,
+    )
+    service = BigQueryAnalyticsService(
+        client,  # type: ignore[arg-type]
+        "woodhouse-project",
+        "us-central1",
+    )
+
+    with pytest.raises(AnalyticsQueryError) as caught:
+        service.run_query(
+            CONTEXT,
+            "SELECT COUNT(*) AS drive_count FROM drives",
+            correlation_id="corr-execution",
+        )
+
+    error = caught.value
+    assert error.category == "query_failed"
+    assert error.reason == "resourcesExceeded"
+    assert error.phase == "execution"
+    assert error.location == {"line": 2, "column": 4}
+    assert "C:\\private" not in str(error)
+    assert error.response_details() == {
+        "reason": "resourcesExceeded",
+        "phase": "execution",
+        "location": {"line": 2, "column": 4},
+        "job_id": "safe-job-id",
+        "bytes_processed": 12_345,
+        "bytes_billed": 10_000,
+    }
+
+
+def test_service_classifies_query_timeout_without_returning_exception_text() -> None:
+    client = FakeBigQueryClient(
+        dry_run_error=TimeoutError("deadline while reading C:\\private\\credentials.json")
+    )
+    service = BigQueryAnalyticsService(
+        client,  # type: ignore[arg-type]
+        "woodhouse-project",
+        "us-central1",
+    )
+
+    with pytest.raises(AnalyticsQueryError) as caught:
+        service.run_query(CONTEXT, "SELECT * FROM drives", correlation_id="corr-timeout")
+
+    assert caught.value.reason == "timeout"
+    assert caught.value.phase == "dry_run"
+    assert "credentials.json" not in str(caught.value)
+
+
+def test_service_keeps_unknown_exception_details_generic() -> None:
+    client = FakeBigQueryClient(
+        dry_run_error=RuntimeError(
+            "internal worker failure at C:\\private\\worker.py for woodhouse-project"
+        )
+    )
+    service = BigQueryAnalyticsService(
+        client,  # type: ignore[arg-type]
+        "woodhouse-project",
+        "us-central1",
+    )
+
+    with pytest.raises(AnalyticsQueryError) as caught:
+        service.run_query(CONTEXT, "SELECT * FROM drives", correlation_id="corr-unknown")
+
+    assert str(caught.value) == "BigQuery rejected or could not complete the analytical query"
+    assert caught.value.reason is None
+    assert caught.value.phase == "dry_run"
 
 
 def test_schema_is_descriptive_without_physical_namespace() -> None:

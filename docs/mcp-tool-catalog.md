@@ -28,6 +28,12 @@ default dataset. It is not a Tesla endpoint and never wakes a vehicle. There
 are intentionally no dedicated trip, charging, efficiency, or playlist tools;
 the model composes those questions from the catalog.
 
+Analytics failures identify whether Woodhouse validation, BigQuery dry-run, or
+BigQuery execution failed. BigQuery reason/message/line/column diagnostics are
+returned when available after project, private-dataset, and service-account
+identifiers are sanitized; raw exceptions and stack traces are never returned.
+The existing error category, message, and correlation ID remain present.
+
 The catalog includes permanent raw history, universal long-form typed
 observations, the complete pinned Tesla/Woodhouse field catalog, five sparse
 exact-emission wide sample views (`charging_samples`, `climate_samples`,

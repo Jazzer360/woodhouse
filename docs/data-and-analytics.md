@@ -501,6 +501,23 @@ object names, returned-row count/bytes, and truncation. Failure logs contain a
 safe category/type and the same non-row metadata. SQL text and result rows are
 not copied to general logs.
 
+Failed calls preserve the existing `error`, `message`, and `correlation_id`
+fields and add `phase` (`validation`, `dry_run`, or `execution`). BigQuery
+failures also return its authoritative `reason` and a `{line, column}` location
+when available; up to three sanitized diagnostics may be included when
+BigQuery supplies multiple errors. A failed execution may retain the same safe
+`job_id`, `bytes_processed`, and `bytes_billed` metadata used by successful
+responses. Woodhouse parser/catalog/safety rejections remain their existing
+error categories with `phase=validation` and are not mislabeled as BigQuery
+compiler failures.
+
+Diagnostic messages come from BigQuery's structured error collection or job
+failure metadata rather than a raw exception or stack trace. The gateway strips
+the server-known project and private dataset qualification and redacts service
+account identities while preserving actionable text such as `Unrecognized
+name: foo at [3:7]`. Unknown exception types retain the generic `query_failed`
+message instead of exposing internal details.
+
 ---
 
 ## 12. Current state does not belong in the history path
