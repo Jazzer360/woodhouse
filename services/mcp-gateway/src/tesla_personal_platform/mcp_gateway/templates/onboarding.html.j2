@@ -1,0 +1,60 @@
+{% extends "base.html.j2" %}
+{% block body %}
+{% if csrf_token is none %}
+<section class="card">
+  <p class="eyebrow">Private access</p>
+  <h1>Woodhouse vehicle setup</h1>
+  <p>Your email must be approved by the operator before you sign in.</p>
+  <a class="button" href="/auth/login">Sign in with Google</a>
+</section>
+{% else %}
+<header class="topbar">
+  <div><span class="mark">W</span><span>Woodhouse</span></div>
+  <form method="post" action="/auth/logout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="link-button" type="submit">Sign out</button>
+  </form>
+</header>
+<main>
+  <section class="hero">
+    <p class="eyebrow">Approved account</p>
+    <h1>Connect and pair your Tesla vehicles</h1>
+    <p>Authorization discovers every vehicle. Virtual Key pairing is completed separately
+      in the Tesla app for each vehicle that requires it.</p>
+    {% if message %}<p class="notice">{{ message }}</p>{% endif %}
+    <form method="post" action="/onboarding/tesla/start">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button" type="submit">Authorize or reconnect Tesla</button>
+    </form>
+  </section>
+  <section class="vehicles" aria-label="Tesla vehicles">
+    {% for vehicle in vehicles %}
+    <article class="vehicle">
+      <div class="vehicle-heading"><h2>{{ vehicle.display_name or "Tesla vehicle" }}</h2>
+        <span class="badge {{ 'ok' if vehicle.virtual_key_status == 'paired' else 'pending' }}">
+          {{ vehicle.virtual_key_status or "unknown" }}</span></div>
+      <dl><div><dt>Vehicle state</dt><dd>{{ vehicle.state or "unknown" }}</dd></div>
+        <div><dt>Internal vehicle ID</dt><dd><code>{{ vehicle.vehicle_id }}</code></dd></div></dl>
+      <div class="actions">
+        {% if vehicle.virtual_key_status != "paired" and vehicle.safe_pairing_url %}
+        <a class="button secondary" rel="noopener noreferrer"
+          href="{{ vehicle.safe_pairing_url }}">Pair Virtual Key in Tesla</a>
+        {% endif %}
+        {% if vehicle.virtual_key_status == "paired" %}
+        <a class="button ghost" href="/onboarding/vehicles/{{ vehicle.encoded_id }}/telemetry">
+          Inspect telemetry configuration</a>
+        {% endif %}
+        <form method="post" action="/onboarding/vehicles/{{ vehicle.encoded_id }}/refresh">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button ghost" type="submit">Refresh pairing status</button>
+        </form>
+      </div>
+    </article>
+    {% else %}
+    <div class="empty">No Tesla vehicles are connected yet. Authorize Tesla to discover every
+      vehicle on your account.</div>
+    {% endfor %}
+  </section>
+</main>
+{% endif %}
+{% endblock %}

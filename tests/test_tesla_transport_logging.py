@@ -3,17 +3,15 @@
 import json
 import logging
 from collections import deque
-from email.message import Message
-from io import BytesIO
-from urllib.error import HTTPError, URLError
 
+import httpx2
 import pytest
 from tesla_personal_platform.tesla_client import (
+    HttpxTransport,
     LocalCommandProxyTransport,
     TeslaFleetClient,
     TeslaIDTokenVerifier,
     TeslaTransportError,
-    UrllibTransport,
     tesla_api_log_context,
 )
 
@@ -22,43 +20,25 @@ VIN = "TESTCAR0000000001"
 LOGGER_NAME = "tesla_personal_platform.tesla_client.api_calls"
 
 
-class FakeResponse:
-    def __init__(self, status: int, document: object) -> None:
-        self.status = status
-        self.body = json.dumps(document).encode("utf-8")
-        self.headers = Message()
-        self.headers["Content-Type"] = "application/json; charset=utf-8"
+def _mock_client(outcomes: list[httpx2.Response | Exception]) -> httpx2.Client:
+    pending = deque(outcomes)
 
-    def __enter__(self) -> "FakeResponse":
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    def read(self) -> bytes:
-        return self.body
-
-
-class FakeOpener:
-    def __init__(self, outcomes: list[FakeResponse | Exception]) -> None:
-        self.outcomes = deque(outcomes)
-
-    def open(self, *_args: object, **_kwargs: object) -> FakeResponse:
-        outcome = self.outcomes.popleft()
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        outcome = pending.popleft()
         if isinstance(outcome, Exception):
             raise outcome
+        outcome.request = request
         return outcome
+
+    return httpx2.Client(transport=httpx2.MockTransport(handle))
 
 
 def _events(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
     return [json.loads(record.message) for record in caplog.records if record.name == LOGGER_NAME]
 
 
-def _http_error(status: int, document: object) -> HTTPError:
-    body = BytesIO(json.dumps(document).encode("utf-8"))
-    headers = Message()
-    headers["Content-Type"] = "application/json"
-    return HTTPError("https://redacted.invalid", status, "failure", headers, body)
+def _response(status: int, document: object) -> httpx2.Response:
+    return httpx2.Response(status, json=document)
 
 
 def test_direct_transport_logs_start_and_redacted_http_result(
@@ -67,21 +47,22 @@ def test_direct_transport_logs_start_and_redacted_http_result(
     access_token = "secret-access-token"
     response_token = "response-secret-token"
     destination = "123 Test Street"
-    transport = UrllibTransport()
-    transport._opener = FakeOpener(  # type: ignore[assignment]
-        [
-            _http_error(
-                400,
-                {
-                    "error": "command not implemented",
-                    "error_description": (
-                        f"vehicle {VIN} owner@example.com at 44.9; "
-                        f"access_token={response_token}; destination {destination}; "
-                        "https://example.invalid/private"
-                    ),
-                },
-            )
-        ]
+    transport = HttpxTransport(
+        client=_mock_client(
+            [
+                _response(
+                    400,
+                    {
+                        "error": "command not implemented",
+                        "error_description": (
+                            f"vehicle {VIN} owner@example.com at 44.9; "
+                            f"access_token={response_token}; destination {destination}; "
+                            "https://example.invalid/private"
+                        ),
+                    },
+                )
+            ]
+        ),
     )
 
     with (
@@ -139,11 +120,10 @@ def test_local_proxy_logs_command_result_without_body_or_credentials(
 ) -> None:
     transport = object.__new__(LocalCommandProxyTransport)
     object.__setattr__(transport, "_origin", "https://localhost:4443")
-    object.__setattr__(transport, "_timeout_seconds", 1.0)
     object.__setattr__(
         transport,
-        "_opener",
-        FakeOpener([FakeResponse(200, {"response": {"result": True, "reason": "ok"}})]),
+        "_client",
+        _mock_client([_response(200, {"response": {"result": True, "reason": "ok"}})]),
     )
 
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
@@ -167,9 +147,10 @@ def test_local_proxy_logs_command_result_without_body_or_credentials(
 def test_successful_read_skips_diagnostic_response_parsing(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    transport = UrllibTransport()
-    transport._opener = FakeOpener(  # type: ignore[assignment]
-        [FakeResponse(200, {"message": "large read response must not be summarized"})]
+    transport = HttpxTransport(
+        client=_mock_client(
+            [_response(200, {"message": "large read response must not be summarized"})]
+        )
     )
 
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
@@ -188,20 +169,21 @@ def test_diagnostic_summary_redacts_common_credential_syntax(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     credential_values = ("alpha-value", "beta-value", "gamma-value", "delta-value")
-    transport = UrllibTransport()
-    transport._opener = FakeOpener(  # type: ignore[assignment]
-        [
-            _http_error(
-                401,
-                {
-                    "error_description": (
-                        f"access_token={credential_values[0]} token: {credential_values[1]} "
-                        f'"client_secret":"{credential_values[2]}" '
-                        f"Bearer {credential_values[3]}"
-                    )
-                },
-            )
-        ]
+    transport = HttpxTransport(
+        client=_mock_client(
+            [
+                _response(
+                    401,
+                    {
+                        "error_description": (
+                            f"access_token={credential_values[0]} token: {credential_values[1]} "
+                            f'"client_secret":"{credential_values[2]}" '
+                            f"Bearer {credential_values[3]}"
+                        )
+                    },
+                )
+            ]
+        ),
     )
 
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
@@ -218,9 +200,8 @@ def test_diagnostic_summary_redacts_common_credential_syntax(
 def test_oversized_error_body_skips_diagnostic_response_parsing(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    transport = UrllibTransport()
-    transport._opener = FakeOpener(  # type: ignore[assignment]
-        [_http_error(500, {"error_description": "x" * (64 * 1024)})]
+    transport = HttpxTransport(
+        client=_mock_client([_response(500, {"error_description": "x" * (64 * 1024)})])
     )
 
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
@@ -236,9 +217,11 @@ def test_oversized_error_body_skips_diagnostic_response_parsing(
 
 
 def test_transport_failure_logs_safe_terminal_event(caplog: pytest.LogCaptureFixture) -> None:
-    transport = UrllibTransport()
-    transport._opener = FakeOpener(  # type: ignore[assignment]
-        [URLError("network failure containing secret-access-token")]
+    request = httpx2.Request("GET", f"{NA_BASE}/api/1/vehicles/{VIN}")
+    transport = HttpxTransport(
+        client=_mock_client(
+            [httpx2.ConnectError("network failure containing secret-access-token", request=request)]
+        )
     )
 
     with (
@@ -264,9 +247,8 @@ def test_transport_failure_logs_safe_terminal_event(caplog: pytest.LogCaptureFix
 def test_unexpected_transport_failure_is_logged_without_exception_text(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    transport = UrllibTransport()
-    transport._opener = FakeOpener(  # type: ignore[assignment]
-        [RuntimeError("unexpected failure containing secret-access-token")]
+    transport = HttpxTransport(
+        client=_mock_client([RuntimeError("unexpected failure containing secret-access-token")])
     )
 
     with (
@@ -289,8 +271,7 @@ def test_unexpected_transport_failure_is_logged_without_exception_text(
 
 
 def test_jwks_fetch_uses_logged_tesla_transport(caplog: pytest.LogCaptureFixture) -> None:
-    transport = UrllibTransport()
-    transport._opener = FakeOpener([FakeResponse(200, {"keys": []})])  # type: ignore[assignment]
+    transport = HttpxTransport(client=_mock_client([_response(200, {"keys": []})]))
     verifier = TeslaIDTokenVerifier(transport=transport)
 
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
@@ -305,12 +286,13 @@ def test_jwks_fetch_uses_logged_tesla_transport(caplog: pytest.LogCaptureFixture
 
 
 def test_each_safe_read_retry_has_an_attempt_number(caplog: pytest.LogCaptureFixture) -> None:
-    transport = UrllibTransport()
-    transport._opener = FakeOpener(  # type: ignore[assignment]
-        [
-            _http_error(503, {"error": "temporarily_unavailable"}),
-            FakeResponse(200, {"response": {"enabled": True}}),
-        ]
+    transport = HttpxTransport(
+        client=_mock_client(
+            [
+                _response(503, {"error": "temporarily_unavailable"}),
+                _response(200, {"response": {"enabled": True}}),
+            ]
+        ),
     )
     client = TeslaFleetClient(transport, sleep=lambda _seconds: None)
 
@@ -337,7 +319,7 @@ def test_invalid_destination_is_rejected_without_logging(
         caplog.at_level(logging.INFO, logger=LOGGER_NAME),
         pytest.raises(ValueError, match="approved Tesla HTTPS host"),
     ):
-        UrllibTransport().request(
+        HttpxTransport().request(
             "GET",
             "https://attacker.example/collect",
             headers={"Authorization": "Bearer secret-access-token"},

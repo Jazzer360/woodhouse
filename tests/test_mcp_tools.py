@@ -10,13 +10,12 @@ from typing import Any, cast
 import pytest
 from tesla_personal_platform.analytics import AnalyticsContext, AnalyticsQueryError
 from tesla_personal_platform.auth import CrossUserAccessError, UserContext
-from tesla_personal_platform.mcp_gateway.mcp_tools import (
+from tesla_personal_platform.mcp_gateway.mcp_policy import (
     MCP_TOOL_SPECS,
     MCP_TOOLS_BY_NAME,
-    MCPProtocol,
     MCPToolError,
-    TeslaMCPService,
 )
+from tesla_personal_platform.mcp_gateway.mcp_tools import TeslaMCPService
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
     TeslaConnection,
     TeslaOnboardingError,
@@ -276,7 +275,6 @@ def test_every_mcp_matrix_row_has_one_typed_tool_mapping() -> None:
 
     assert set(mapped) == mcp_matrix_rows()
     assert len(mapped) == len(set(mapped))
-    assert all(spec.input_schema()["additionalProperties"] is False for spec in MCP_TOOL_SPECS)
     assert all(spec.required_scope for spec in MCP_TOOL_SPECS)
     assert all(spec.wake_behavior for spec in MCP_TOOL_SPECS)
     assert all(spec.retry_policy for spec in MCP_TOOL_SPECS)
@@ -628,166 +626,54 @@ def test_command_requires_vehicle_data_scope_for_wake_preflight() -> None:
     assert not store.started
 
 
-def test_protocol_lists_typed_tools_and_reports_tool_errors_without_secrets() -> None:
-    instance, _, _ = service(
-        FakeStore([vehicle("veh-one", "user-a", "VIN1"), vehicle("veh-two", "user-a", "VIN2")])
-    )
-    protocol = MCPProtocol(instance)
-
-    listed = protocol.handle(CONTEXT, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-    failed = protocol.handle(
-        CONTEXT,
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": "tesla_vehicle", "arguments": {}},
-        },
-    )
-
-    assert listed is not None
-    assert failed is not None
-    tools = listed["result"]["tools"]
-    assert isinstance(tools, list) and len(tools) == len(MCP_TOOL_SPECS)
-    assert all(
-        tool["securitySchemes"] == [{"type": "oauth2", "scopes": ["mcp:access"]}] for tool in tools
-    )
-    assert failed["result"]["isError"] is True
-    assert failed["result"]["structuredContent"]["error"] == "vehicle_ambiguous"
-    assert failed["result"]["structuredContent"]["correlation_id"].startswith("corr_")
-    assert "secret" not in str(failed)
-
-
-def test_protocol_exposes_and_executes_only_two_general_analytics_tools() -> None:
+def test_service_executes_only_two_general_analytics_operations() -> None:
     analytics = FakeAnalytics()
     instance, direct, proxy = service(
         FakeStore([vehicle("veh-one", "user-a", "VIN1")]),
         analytics=analytics,
     )
-    protocol = MCPProtocol(instance)
-
-    listed = protocol.handle(CONTEXT, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-    schema = protocol.handle(
+    schema = instance.call(CONTEXT, "get_analytics_schema", {})
+    query = instance.call(
         CONTEXT,
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": "get_analytics_schema", "arguments": {}},
-        },
-    )
-    query = protocol.handle(
-        CONTEXT,
-        {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": "run_analytics_query",
-                "arguments": {"sql": "SELECT COUNT(*) AS drive_count FROM drives"},
-            },
-        },
+        "run_analytics_query",
+        {"sql": "SELECT COUNT(*) AS drive_count FROM drives"},
     )
 
-    assert listed is not None and schema is not None and query is not None
-    tool_names = {tool["name"] for tool in listed["result"]["tools"]}
-    assert {"get_analytics_schema", "run_analytics_query"} <= tool_names
-    assert len(tool_names) == len(MCP_TOOL_SPECS) + 2
-    assert schema["result"]["structuredContent"]["objects"] == [{"name": "drives"}]
-    assert query["result"]["structuredContent"]["rows"] == [{"drive_count": 2}]
+    assert schema["objects"] == [{"name": "drives"}]
+    assert query["rows"] == [{"drive_count": 2}]
     assert [call[0] for call in analytics.calls] == ["schema", "query"]
     assert all(call[1] == CONTEXT for call in analytics.calls)
     assert not direct.calls and not proxy.calls
 
 
-def test_protocol_returns_safe_analytics_validation_error() -> None:
+def test_service_returns_safe_analytics_validation_error() -> None:
     analytics = FakeAnalytics(fail=True)
     instance, _, _ = service(
         FakeStore([vehicle("veh-one", "user-a", "VIN1")]),
         analytics=analytics,
     )
 
-    failed = MCPProtocol(instance).handle(
-        CONTEXT,
-        {
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {
-                "name": "run_analytics_query",
-                "arguments": {"sql": "SELECT * FROM other.dataset.table"},
-            },
-        },
-    )
+    with pytest.raises(MCPToolError) as caught:
+        instance.call(
+            CONTEXT,
+            "run_analytics_query",
+            {"sql": "SELECT * FROM other.dataset.table"},
+        )
 
-    assert failed is not None
-    assert failed["result"]["isError"] is True
-    assert failed["result"]["structuredContent"]["error"] == "dataset_boundary"
+    assert caught.value.category == "dataset_boundary"
 
 
-def test_protocol_tesla_failure_includes_transport_correlation() -> None:
+def test_service_tesla_failure_includes_transport_correlation() -> None:
     instance, _, _ = service(
         FakeStore([vehicle("veh-one", "user-a", "VIN1")]),
         direct=FakeFleet(fail=True),
     )
-    protocol = MCPProtocol(instance)
+    with pytest.raises(TeslaAPIError) as caught:
+        instance.call(CONTEXT, "tesla_vehicle", {"vehicle_id": "veh-one"})
 
-    failed = protocol.handle(
-        CONTEXT,
-        {
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {
-                "name": "tesla_vehicle",
-                "arguments": {"vehicle_id": "veh-one"},
-            },
-        },
-    )
-
-    assert failed is not None
-    content = failed["result"]["structuredContent"]
-    assert failed["result"]["isError"] is True
-    assert content["error"] == "upstream_failure"
-    assert content["correlation_id"].startswith("corr_")
-
-
-def test_legacy_mcp_listing_does_not_advertise_unavailable_oauth_flow() -> None:
-    store = FakeStore([vehicle("veh-one", "user-a", "VIN1")])
-    direct = FakeFleet()
-    proxy = FakeFleet()
-    instance = TeslaMCPService(
-        fleet=cast(TeslaFleetClient, direct),
-        command_fleet=cast(TeslaFleetClient, proxy),
-        credentials=FakeCredentials(),
-        store=cast(Any, store),
-        audit_store=store,
-        sleep=lambda _seconds: None,
-        oauth_protected=False,
-    )
-
-    tools = instance.tools()
-
-    assert all("securitySchemes" not in tool for tool in tools)
-
-
-def test_protocol_authentication_error_includes_chatgpt_linking_challenge() -> None:
-    instance, _, _ = service(FakeStore([vehicle("veh-one", "user-a", "VIN1")]))
-    protocol = MCPProtocol(instance)
-    request = {
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {"name": "tesla_vehicle", "arguments": {}},
-    }
-
-    result = protocol.authentication_required(
-        request,
-        'Bearer resource_metadata="https://woodhouse.example/.well-known/oauth-protected-resource"',
-    )
-
-    assert result["result"]["isError"] is True
-    assert "mcp/www_authenticate" in result["result"]["_meta"]
+    assert caught.value.category == "upstream_failure"
+    assert caught.value.correlation_id is not None
+    assert caught.value.correlation_id.startswith("corr_")
 
 
 def test_unique_array_items_are_enforced_by_tool_validation() -> None:

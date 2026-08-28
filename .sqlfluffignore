@@ -1,0 +1,2 @@
+packages/analytics/src/tesla_personal_platform/analytics/view_definitions/sql/samples/category_samples.sql.j2
+packages/analytics/src/tesla_personal_platform/analytics/view_definitions/sql/telemetry/telemetry_field_catalog.sql.j2

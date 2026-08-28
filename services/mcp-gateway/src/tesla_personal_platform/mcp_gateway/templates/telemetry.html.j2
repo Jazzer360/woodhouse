@@ -1,0 +1,52 @@
+{% extends "base.html.j2" %}
+{% block body %}
+<header class="topbar">
+  <div><span class="mark">W</span><span>Woodhouse</span></div>
+  <a class="link-button" href="/onboarding">Back to vehicles</a>
+</header>
+<main>
+  <section class="hero telemetry-hero">
+    <p class="eyebrow">Operator checkpoint</p>
+    <h1>{{ display_name }} telemetry</h1>
+    <p>Review the complete redacted desired-versus-current configuration below. Applying,
+      repairing, and removing are per-vehicle operations and require explicit approval.</p>
+    {% if message %}<p class="notice">{{ message }}</p>{% endif %}
+    <p><span class="badge {{ 'ok' if status == 'in_sync' else 'pending' }}">{{ status }}</span></p>
+  </section>
+  <section class="vehicle telemetry-plan">
+    <h2>Exact configuration plan</h2>
+    <pre>{{ document_json }}</pre>
+    <div class="actions telemetry-actions">
+      <form method="post" action="/onboarding/vehicles/{{ encoded_id }}/telemetry/verify">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <p>Read Tesla's current configuration and errors. If it exactly matches this plan and is
+          synchronized, record the trusted profile provenance without changing the vehicle.</p>
+        <button class="button ghost" type="submit">Verify and record provenance</button>
+      </form>
+      <form method="post" action="/onboarding/vehicles/{{ encoded_id }}/telemetry/apply">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="expected_config_hash" value="{{ desired_hash }}">
+        <label><input required type="checkbox" name="confirm" value="yes">
+          I approve applying this exact configuration to this vehicle.</label>
+        <label><input type="checkbox" name="transport_maintenance_opt_in"
+          value="yes"{% if transport_opt_in %} checked{% endif %}>
+          Permit future automatic transport-only trust maintenance for this vehicle.</label>
+        <button class="button" type="submit">Apply or repair configuration</button>
+      </form>
+      <form method="post" action="/onboarding/vehicles/{{ encoded_id }}/telemetry/remove">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label><input required type="checkbox" name="confirm" value="yes">
+          I approve removing telemetry from this vehicle.</label>
+        <button class="button danger" type="submit">Remove configuration</button>
+      </form>
+      <form method="post" action="/onboarding/vehicles/{{ encoded_id }}/telemetry/reconcile">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label><input required type="checkbox" name="confirm" value="yes">
+          Use this vehicle as the canary for an opted-in transport-only migration.</label>
+        <button class="button ghost" type="submit">Reconcile transport trust</button>
+      </form>
+    </div>
+    <p>Persisted state: <code>{{ persisted_json }}</code></p>
+  </section>
+</main>
+{% endblock %}

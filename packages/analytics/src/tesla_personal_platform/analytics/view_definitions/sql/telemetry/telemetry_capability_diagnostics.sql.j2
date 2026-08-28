@@ -1,0 +1,115 @@
+WITH message_fields AS (
+  SELECT
+    vehicle_id,
+    source_timestamp,
+    pubsub_message_id,
+    MAX(telemetry_client_version) AS telemetry_client_version,
+    MAX(telemetry_receiver_version) AS telemetry_receiver_version,
+    MAX(telemetry_config_version) AS telemetry_config_version,
+    MAX(telemetry_config_hash) AS telemetry_config_hash,
+    ARRAY_AGG(DISTINCT field_name ORDER BY field_name) AS fields
+  FROM {{ ref("telemetry_observations") }}
+  GROUP BY vehicle_id, source_timestamp, pubsub_message_id
+), latest AS (
+  SELECT *
+  FROM message_fields
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY vehicle_id ORDER BY source_timestamp DESC, pubsub_message_id DESC
+  ) = 1
+), version_spans AS (
+  SELECT
+    vehicle_id,
+    telemetry_client_version,
+    MIN(source_timestamp) AS first_seen_at,
+    MAX(source_timestamp) AS last_seen_at
+  FROM message_fields
+  WHERE telemetry_client_version IS NOT NULL
+  GROUP BY vehicle_id, telemetry_client_version
+), version_history AS (
+  SELECT
+    vehicle_id,
+    ARRAY_AGG(telemetry_client_version ORDER BY first_seen_at) AS observed_client_versions
+  FROM version_spans
+  GROUP BY vehicle_id
+), firmware AS (
+  SELECT
+    vehicle_id,
+    ARRAY_AGG(string_value IGNORE NULLS ORDER BY source_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)]
+      AS vehicle_firmware
+  FROM {{ ref("telemetry_observations") }}
+  WHERE field_name = 'Version' AND NOT is_invalid
+  GROUP BY vehicle_id
+), anchors AS (
+  SELECT
+    vehicle_id,
+    COUNTIF('Gear' IN UNNEST(fields)) AS gear_anchor_messages,
+    COUNTIF('Gear' IN UNNEST(fields) AND (
+      'Odometer' IN UNNEST(fields) OR 'EnergyRemaining' IN UNNEST(fields)
+      OR 'Soc' IN UNNEST(fields) OR 'Location' IN UNNEST(fields)
+    )) AS synchronized_gear_messages,
+    COUNTIF('DetailedChargeState' IN UNNEST(fields)) AS charge_anchor_messages,
+    COUNTIF('DetailedChargeState' IN UNNEST(fields) AND (
+      'ACChargingEnergyIn' IN UNNEST(fields) OR 'DCChargingEnergyIn' IN UNNEST(fields)
+      OR 'Soc' IN UNNEST(fields) OR 'Odometer' IN UNNEST(fields)
+    )) AS synchronized_charge_messages,
+    COUNTIF('MilesSinceReset' IN UNNEST(fields)
+      OR 'SelfDrivingMilesSinceReset' IN UNNEST(fields)) AS fsd_counter_messages,
+    COUNTIF('MilesSinceReset' IN UNNEST(fields)
+      AND 'SelfDrivingMilesSinceReset' IN UNNEST(fields)) AS synchronized_fsd_messages
+  FROM message_fields
+  WHERE source_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
+  GROUP BY vehicle_id
+)
+SELECT
+  latest.vehicle_id,
+  firmware.vehicle_firmware,
+  latest.telemetry_client_version,
+  history.observed_client_versions,
+  span.first_seen_at AS current_client_first_seen_at,
+  span.last_seen_at AS current_client_last_seen_at,
+  latest.telemetry_receiver_version,
+  latest.telemetry_config_version AS desired_profile_version,
+  latest.telemetry_config_hash AS desired_profile_hash,
+  '1.3.0' AS minimum_client_for_include_fields,
+  latest.telemetry_config_version = 'broad-v4'
+    AND (
+      SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) > 1
+      OR (
+        SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) = 1
+        AND SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(1)] AS INT64) >= 3
+      )
+    )
+    AS include_fields_requested,
+  COALESCE(anchors.synchronized_gear_messages, 0) > 0
+    OR COALESCE(anchors.synchronized_charge_messages, 0) > 0
+    OR COALESCE(anchors.synchronized_fsd_messages, 0) > 0
+    AS include_fields_observed_recently,
+  COALESCE(anchors.gear_anchor_messages, 0) AS gear_anchor_messages,
+  COALESCE(anchors.synchronized_gear_messages, 0) AS synchronized_gear_messages,
+  COALESCE(anchors.charge_anchor_messages, 0) AS charge_anchor_messages,
+  COALESCE(anchors.synchronized_charge_messages, 0) AS synchronized_charge_messages,
+  COALESCE(anchors.fsd_counter_messages, 0) AS fsd_counter_messages,
+  COALESCE(anchors.synchronized_fsd_messages, 0) AS synchronized_fsd_messages,
+  CASE
+    WHEN latest.telemetry_client_version IS NULL THEN 'client_version_unavailable'
+    WHEN SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) < 1
+      OR (SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) = 1
+        AND SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(1)] AS INT64) < 3)
+      THEN 'client_capability_limited'
+    WHEN latest.telemetry_config_version != 'broad-v4' THEN 'profile_upgrade_required'
+    WHEN COALESCE(anchors.gear_anchor_messages, 0)
+      + COALESCE(anchors.charge_anchor_messages, 0)
+      + COALESCE(anchors.fsd_counter_messages, 0) = 0 THEN 'insufficient_recent_evidence'
+    WHEN COALESCE(anchors.synchronized_gear_messages, 0)
+      + COALESCE(anchors.synchronized_charge_messages, 0)
+      + COALESCE(anchors.synchronized_fsd_messages, 0) = 0 THEN 'include_fields_not_observed'
+    ELSE 'healthy'
+  END AS capability_status,
+  latest.source_timestamp AS latest_telemetry_at
+FROM latest
+LEFT JOIN version_spans AS span
+  ON span.vehicle_id = latest.vehicle_id
+  AND span.telemetry_client_version = latest.telemetry_client_version
+LEFT JOIN version_history AS history ON history.vehicle_id = latest.vehicle_id
+LEFT JOIN firmware ON firmware.vehicle_id = latest.vehicle_id
+LEFT JOIN anchors ON anchors.vehicle_id = latest.vehicle_id

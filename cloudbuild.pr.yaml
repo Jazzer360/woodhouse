@@ -15,6 +15,7 @@ steps:
       - |
         uv run ruff check .
         uv run ruff format --check .
+        uv run sqlfluff lint packages/analytics/src/tesla_personal_platform/analytics/view_definitions/sql
         uv run mypy services packages tests
 
   - id: unit-tests

@@ -1,0 +1,164 @@
+WITH gear_events AS (
+  SELECT
+    source_timestamp,
+    vehicle_id,
+    pubsub_message_id,
+    string_value AS gear,
+    string_value IN ('ShiftStateD', 'ShiftStateR', 'D', 'R') AS is_driving
+  FROM {{ ref("vehicle_state_changes") }}
+  WHERE field_name = 'Gear' AND string_value IS NOT NULL
+), ordered_gears AS (
+  SELECT
+    *,
+    LAG(is_driving, 1, FALSE) OVER (
+      PARTITION BY vehicle_id ORDER BY source_timestamp
+    ) AS was_driving
+  FROM gear_events
+), marked_gears AS (
+  SELECT
+    *,
+    IF(is_driving AND NOT was_driving, 1, 0) AS begins_drive
+  FROM ordered_gears
+), sessionized_gears AS (
+  SELECT
+    *,
+    SUM(begins_drive) OVER (
+      PARTITION BY vehicle_id ORDER BY source_timestamp ROWS UNBOUNDED PRECEDING
+    ) AS drive_number
+  FROM marked_gears
+), segments AS (
+  SELECT
+    vehicle_id,
+    drive_number,
+    MIN(IF(is_driving, source_timestamp, NULL)) AS started_at,
+    ARRAY_AGG(IF(is_driving, pubsub_message_id, NULL) IGNORE NULLS
+      ORDER BY source_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS start_gear_message_id,
+    MIN(IF(NOT is_driving, source_timestamp, NULL)) AS ended_at,
+    ARRAY_AGG(IF(NOT is_driving, pubsub_message_id, NULL) IGNORE NULLS
+      ORDER BY source_timestamp LIMIT 1)[SAFE_OFFSET(0)] AS end_gear_message_id
+  FROM sessionized_gears
+  WHERE drive_number > 0
+  GROUP BY vehicle_id, drive_number
+  HAVING started_at IS NOT NULL
+), identified AS (
+  SELECT
+    TO_HEX(SHA256(CONCAT(vehicle_id, '|', CAST(started_at AS STRING)))) AS drive_id,
+    vehicle_id,
+    started_at,
+    ended_at,
+    start_gear_message_id,
+    end_gear_message_id,
+    LAG(ended_at) OVER (PARTITION BY vehicle_id ORDER BY started_at)
+      AS previous_drive_ended_at,
+    LEAD(started_at) OVER (PARTITION BY vehicle_id ORDER BY started_at)
+      AS next_drive_started_at
+  FROM segments
+), boundary_specs AS (
+  SELECT
+    drive.*,
+    boundary_name,
+    field_name,
+    IF(boundary_name = 'start', started_at, ended_at) AS boundary_at,
+    IF(boundary_name = 'start', start_gear_message_id, end_gear_message_id)
+      AS boundary_message_id,
+    IF(
+      boundary_name = 'start',
+      IF(previous_drive_ended_at IS NULL,
+        TIMESTAMP_SUB(started_at, INTERVAL 5 MINUTE),
+        GREATEST(TIMESTAMP_SUB(started_at, INTERVAL 5 MINUTE), previous_drive_ended_at)),
+      GREATEST(TIMESTAMP_SUB(ended_at, INTERVAL 90 SECOND), started_at)
+    ) AS candidate_window_start,
+    IF(
+      boundary_name = 'start',
+      LEAST(TIMESTAMP_ADD(started_at, INTERVAL 90 SECOND),
+        COALESCE(ended_at, TIMESTAMP_ADD(started_at, INTERVAL 90 SECOND))),
+      IF(next_drive_started_at IS NULL,
+        TIMESTAMP_ADD(ended_at, INTERVAL 5 MINUTE),
+        LEAST(TIMESTAMP_ADD(ended_at, INTERVAL 5 MINUTE), next_drive_started_at))
+    ) AS candidate_window_end
+  FROM identified AS drive
+  CROSS JOIN UNNEST([
+    STRUCT('start' AS boundary_name, 'Odometer' AS field_name),
+    STRUCT('start', 'EnergyRemaining'),
+    STRUCT('start', 'Soc'),
+    STRUCT('start', 'Location'),
+    STRUCT('end', 'Odometer'),
+    STRUCT('end', 'EnergyRemaining'),
+    STRUCT('end', 'Soc'),
+    STRUCT('end', 'Location')
+  ])
+  WHERE boundary_name = 'start' OR ended_at IS NOT NULL
+), candidates AS (
+  SELECT
+    boundary.*,
+    observation.source_timestamp AS selected_observation_at,
+    observation.numeric_value AS selected_numeric_value,
+    observation.latitude AS selected_latitude,
+    observation.longitude AS selected_longitude,
+    observation.pubsub_message_id AS observation_message_id,
+    CASE
+      WHEN observation.source_timestamp IS NULL THEN 'unavailable'
+      WHEN observation.pubsub_message_id = boundary.boundary_message_id
+        THEN 'exact_synchronized_boundary'
+      WHEN boundary.field_name IN ('EnergyRemaining', 'Soc')
+        THEN 'as_of_state'
+      WHEN boundary.boundary_name = 'start'
+        AND observation.source_timestamp <= boundary.boundary_at
+        THEN 'stationary_pre_boundary'
+      WHEN boundary.boundary_name = 'end'
+        AND observation.source_timestamp >= boundary.boundary_at
+        THEN 'stationary_post_boundary'
+      ELSE 'inside_drive_fallback'
+    END AS inference_method,
+    ROW_NUMBER() OVER (
+      PARTITION BY boundary.drive_id, boundary.boundary_name, boundary.field_name
+      ORDER BY
+        CASE
+          WHEN observation.pubsub_message_id = boundary.boundary_message_id THEN 0
+          WHEN boundary.field_name IN ('EnergyRemaining', 'Soc') THEN 1
+          WHEN boundary.boundary_name = 'start'
+            AND observation.source_timestamp <= boundary.boundary_at THEN 2
+          WHEN boundary.boundary_name = 'end'
+            AND observation.source_timestamp >= boundary.boundary_at THEN 2
+          ELSE 3
+        END,
+        IF(
+          boundary.field_name IN ('EnergyRemaining', 'Soc'),
+          -UNIX_MILLIS(observation.source_timestamp),
+          ABS(TIMESTAMP_DIFF(observation.source_timestamp, boundary.boundary_at, MILLISECOND))
+        ),
+        observation.source_timestamp
+    ) AS candidate_rank
+  FROM boundary_specs AS boundary
+  LEFT JOIN {{ ref("telemetry_observations") }} AS observation
+    ON observation.vehicle_id = boundary.vehicle_id
+    AND NOT observation.is_invalid
+    AND observation.field_name = boundary.field_name
+    AND (
+      (boundary.field_name IN ('EnergyRemaining', 'Soc')
+        AND observation.source_timestamp <= boundary.boundary_at)
+      OR
+      (boundary.field_name NOT IN ('EnergyRemaining', 'Soc')
+        AND observation.source_timestamp BETWEEN boundary.candidate_window_start
+          AND boundary.candidate_window_end)
+    )
+)
+SELECT
+  drive_id,
+  vehicle_id,
+  started_at,
+  ended_at,
+  boundary_name,
+  field_name,
+  boundary_at,
+  selected_observation_at,
+  TIMESTAMP_DIFF(selected_observation_at, boundary_at, MILLISECOND)
+    AS observation_offset_milliseconds,
+  selected_numeric_value,
+  selected_latitude,
+  selected_longitude,
+  inference_method,
+  boundary_message_id,
+  observation_message_id
+FROM candidates
+WHERE candidate_rank = 1

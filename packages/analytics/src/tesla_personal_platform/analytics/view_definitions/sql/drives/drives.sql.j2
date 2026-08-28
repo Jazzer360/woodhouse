@@ -1,0 +1,108 @@
+WITH sessions AS (
+  SELECT drive_id, vehicle_id, started_at, ended_at
+  FROM {{ ref("drive_metric_boundaries") }}
+  GROUP BY drive_id, vehicle_id, started_at, ended_at
+), joined AS (
+  SELECT
+    drive.*,
+    observation.source_timestamp AS observation_timestamp,
+    observation.field_name,
+    observation.numeric_value,
+    observation.telemetry_config_hash,
+    TIMESTAMP_DIFF(
+      observation.source_timestamp,
+      LAG(observation.source_timestamp) OVER (
+        PARTITION BY drive.drive_id ORDER BY observation.source_timestamp
+      ),
+      SECOND
+    ) AS sample_gap_seconds
+  FROM sessions AS drive
+  LEFT JOIN {{ ref("telemetry_observations") }} AS observation
+    ON observation.vehicle_id = drive.vehicle_id
+    AND NOT observation.is_invalid
+    AND observation.source_timestamp >= drive.started_at
+    AND observation.source_timestamp <= COALESCE(drive.ended_at, CURRENT_TIMESTAMP())
+), observation_summary AS (
+  SELECT
+    drive_id,
+    vehicle_id,
+    started_at,
+    ended_at,
+    MAX(IF(field_name = 'VehicleSpeed', numeric_value, NULL)) AS maximum_speed_mph,
+    COUNT(observation_timestamp) AS observation_count,
+    MAX(sample_gap_seconds) AS largest_sample_gap_seconds,
+    ARRAY_AGG(telemetry_config_hash IGNORE NULLS
+      ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS telemetry_config_hash
+  FROM joined
+  GROUP BY drive_id, vehicle_id, started_at, ended_at
+), boundaries AS (
+  SELECT
+    drive_id,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Odometer',
+      selected_numeric_value, NULL)) AS start_odometer_miles,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Odometer',
+      selected_numeric_value, NULL)) AS end_odometer_miles,
+    MAX(IF(boundary_name = 'start' AND field_name = 'EnergyRemaining',
+      selected_numeric_value, NULL)) AS start_energy_kwh,
+    MAX(IF(boundary_name = 'end' AND field_name = 'EnergyRemaining',
+      selected_numeric_value, NULL)) AS end_energy_kwh,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Soc',
+      selected_numeric_value, NULL)) AS start_soc_percent,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Soc',
+      selected_numeric_value, NULL)) AS end_soc_percent,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Location',
+      selected_latitude, NULL)) AS start_latitude,
+    MAX(IF(boundary_name = 'start' AND field_name = 'Location',
+      selected_longitude, NULL)) AS start_longitude,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Location',
+      selected_latitude, NULL)) AS end_latitude,
+    MAX(IF(boundary_name = 'end' AND field_name = 'Location',
+      selected_longitude, NULL)) AS end_longitude,
+    CASE
+      WHEN COUNTIF(field_name IN ('Odometer', 'EnergyRemaining', 'Soc')
+        AND inference_method = 'exact_synchronized_boundary') = 6
+        THEN 'exact_synchronized_boundary'
+      WHEN COUNTIF(field_name IN ('Odometer', 'EnergyRemaining', 'Soc')
+        AND inference_method = 'inside_drive_fallback') = 0
+        THEN 'stationary_boundary_inference'
+      ELSE 'sparse_boundary_fallback'
+    END AS boundary_quality
+  FROM {{ ref("drive_metric_boundaries") }}
+  GROUP BY drive_id
+), metrics AS (
+  SELECT
+    observation.*,
+    boundary.* EXCEPT(drive_id),
+    GREATEST(end_odometer_miles - start_odometer_miles, 0) AS distance_miles,
+    GREATEST(start_energy_kwh - end_energy_kwh, 0) AS energy_used_kwh
+  FROM observation_summary AS observation
+  JOIN boundaries AS boundary USING (drive_id)
+)
+SELECT
+  drive_id,
+  vehicle_id,
+  started_at,
+  ended_at,
+  ended_at IS NULL AS is_ongoing,
+  TIMESTAMP_DIFF(COALESCE(ended_at, CURRENT_TIMESTAMP()), started_at, SECOND)
+    AS duration_seconds,
+  start_odometer_miles,
+  end_odometer_miles,
+  distance_miles,
+  start_energy_kwh,
+  end_energy_kwh,
+  energy_used_kwh,
+  start_soc_percent,
+  end_soc_percent,
+  SAFE_DIVIDE(energy_used_kwh * 1000, NULLIF(distance_miles, 0))
+    AS efficiency_wh_per_mile,
+  maximum_speed_mph,
+  start_latitude,
+  start_longitude,
+  end_latitude,
+  end_longitude,
+  observation_count,
+  largest_sample_gap_seconds,
+  telemetry_config_hash,
+  boundary_quality
+FROM metrics

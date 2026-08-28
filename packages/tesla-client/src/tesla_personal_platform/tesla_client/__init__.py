@@ -48,8 +48,8 @@ from tesla_personal_platform.tesla_client.telemetry import (
     telemetry_config_hash,
 )
 from tesla_personal_platform.tesla_client.transport import (
+    HttpxTransport,
     LocalCommandProxyTransport,
-    UrllibTransport,
 )
 
 COMPONENT = "tesla-client"
@@ -60,6 +60,7 @@ __all__ = [
     "CommandResult",
     "FleetStatus",
     "FleetTelemetryProfile",
+    "HttpxTransport",
     "ListResponse",
     "LocalCommandProxyTransport",
     "ObjectResponse",
@@ -84,7 +85,6 @@ __all__ = [
     "TeslaVehicle",
     "TeslaTransportError",
     "TokenSet",
-    "UrllibTransport",
     "ValueResponse",
     "VehicleData",
     "broad_profile",

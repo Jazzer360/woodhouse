@@ -63,7 +63,7 @@ def test_service_health_documents_match_implemented_phase(
     health: Callable[[], dict[str, str]], service: str
 ) -> None:
     expected_phase = {
-        "mcp-gateway": "typed-tesla-mcp",
+        "mcp-gateway": "official-mcp-asgi",
         "telemetry-edge": "fleet-telemetry",
         "telemetry-processor": "raw-telemetry-history",
     }[service]

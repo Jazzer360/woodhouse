@@ -1,0 +1,19 @@
+SELECT
+  drive.drive_id,
+  drive.vehicle_id,
+  drive.started_at,
+  drive.ended_at,
+  drive.distance_miles AS total_distance_miles,
+  SUM(IF(segment.state = 'fsd', segment.distance_miles, 0)) AS fsd_distance_miles,
+  SUM(IF(segment.state = 'manual', segment.distance_miles, 0)) AS manual_distance_miles,
+  SUM(IF(segment.state = 'uncertain', segment.distance_miles, 0)) AS uncertain_distance_miles,
+  SAFE_MULTIPLY(100, SAFE_DIVIDE(
+    SUM(IF(segment.state = 'fsd', segment.distance_miles, 0)),
+    NULLIF(drive.distance_miles, 0)
+  )) AS fsd_percent,
+  MIN(segment.confidence) AS minimum_confidence,
+  COUNT(*) AS segment_count
+FROM {{ ref("drives") }} AS drive
+LEFT JOIN {{ ref("drive_fsd_segments") }} AS segment USING (drive_id)
+GROUP BY drive.drive_id, drive.vehicle_id, drive.started_at, drive.ended_at,
+  drive.distance_miles

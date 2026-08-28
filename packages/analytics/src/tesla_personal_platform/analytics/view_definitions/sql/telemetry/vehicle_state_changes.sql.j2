@@ -1,0 +1,35 @@
+WITH ordered AS (
+  SELECT
+    observation.*,
+    LAG(numeric_value) OVER field_window AS previous_numeric_value,
+    LAG(string_value) OVER field_window AS previous_string_value,
+    LAG(boolean_value) OVER field_window AS previous_boolean_value,
+    LAG(latitude) OVER field_window AS previous_latitude,
+    LAG(longitude) OVER field_window AS previous_longitude,
+    LAG(TO_JSON_STRING(value_json)) OVER field_window AS previous_value_text
+  FROM {{ ref("telemetry_observations") }} AS observation
+  WHERE NOT is_invalid
+  WINDOW field_window AS (
+    PARTITION BY vehicle_id, field_name
+    ORDER BY source_timestamp, pubsub_message_id
+  )
+)
+SELECT
+  source_timestamp,
+  vehicle_id,
+  field_name,
+  numeric_value,
+  previous_numeric_value,
+  string_value,
+  previous_string_value,
+  boolean_value,
+  previous_boolean_value,
+  latitude,
+  longitude,
+  previous_latitude,
+  previous_longitude,
+  value_json,
+  PARSE_JSON(previous_value_text) AS previous_value_json,
+  pubsub_message_id
+FROM ordered
+WHERE previous_value_text IS NULL OR previous_value_text != TO_JSON_STRING(value_json)

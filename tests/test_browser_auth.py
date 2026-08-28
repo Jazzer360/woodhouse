@@ -3,8 +3,8 @@
 from datetime import UTC, datetime, timedelta
 from typing import cast
 from urllib.parse import parse_qs, urlsplit
-from urllib.request import Request
 
+import httpx2
 import pytest
 from tesla_personal_platform.auth import (
     AllowedUser,
@@ -23,8 +23,8 @@ from tesla_personal_platform.mcp_gateway.browser_auth import (
     BrowserLoginStart,
     BrowserOIDCConfig,
     BrowserSession,
+    OIDCBrowserTokenClient,
     PendingBrowserLogin,
-    _RejectRedirects,
 )
 from tesla_personal_platform.mcp_gateway.onboarding_web import (
     onboarding_page,
@@ -235,20 +235,33 @@ def test_sensitive_browser_auth_values_are_absent_from_repr() -> None:
 
 
 def test_browser_token_exchange_redirects_are_rejected() -> None:
-    handler = _RejectRedirects()
-    request = Request("https://tenant.example.auth0.com/oauth/token", method="POST")
+    requests: list[httpx2.Request] = []
 
-    assert (
-        handler.redirect_request(  # type: ignore[no-untyped-call]
-            request,
-            None,
+    def redirect(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(
             307,
-            "Temporary Redirect",
-            {},
-            "https://attacker.example/token",
+            headers={"Location": "https://attacker.example/token"},
+            request=request,
         )
-        is None
+
+    config = BrowserOIDCConfig(
+        issuer=IDENTITY.issuer,
+        audience="https://woodhouse.derekjass.com/mcp",
+        client_id="browser-client",
+        client_secret="test-only-secret",
+        redirect_uri="https://woodhouse.derekjass.com/auth/callback",
     )
+    tokens = OIDCBrowserTokenClient(
+        config,
+        client=httpx2.Client(transport=httpx2.MockTransport(redirect)),
+    )
+
+    with pytest.raises(BrowserAuthenticationError):
+        tokens.exchange_code("authorization-code", code_verifier="v" * 64)
+
+    assert len(requests) == 1
+    assert requests[0].url.host == "tenant.example.auth0.com"
 
 
 def test_onboarding_page_lists_each_vehicle_and_escapes_content() -> None:

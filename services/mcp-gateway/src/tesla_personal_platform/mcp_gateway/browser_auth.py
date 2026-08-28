@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -10,10 +9,12 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from hmac import compare_digest
 from typing import Any, Protocol, cast
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+import httpx2
+from authlib.oauth2 import OAuth2Client
+from authlib.oauth2.auth import ClientAuth
+from authlib.oauth2.rfc6749.errors import OAuth2Error
 from google.cloud import firestore
 from google.cloud.firestore_v1 import Client
 from google.cloud.firestore_v1.transaction import Transaction
@@ -34,12 +35,6 @@ WEB_SESSIONS_COLLECTION = "platform_web_sessions"
 
 class BrowserAuthenticationError(Exception):
     """Safe browser authentication failure."""
-
-
-class _RejectRedirects(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        """Never forward browser OAuth credentials across an HTTP redirect."""
-        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,41 +113,111 @@ class BrowserTokenClient(Protocol):
 
 
 class OIDCBrowserTokenClient:
-    """Exchange a browser authorization code without exposing credentials."""
+    """Use Authlib protocol handling over a pooled, no-redirect HTTPX2 client."""
 
-    def __init__(self, config: BrowserOIDCConfig, *, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        config: BrowserOIDCConfig,
+        *,
+        timeout_seconds: float = 10.0,
+        client: httpx2.Client | None = None,
+    ) -> None:
         self._config = config
-        self._timeout_seconds = timeout_seconds
-        self._opener = build_opener(_RejectRedirects)
+        self._owns_client = client is None
+        self._session = _Httpx2OAuthSession(
+            client
+            or httpx2.Client(
+                timeout=timeout_seconds,
+                follow_redirects=False,
+            )
+        )
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._session.close()
+
+    def authorization_url(
+        self,
+        *,
+        state: str,
+        nonce: str,
+        code_verifier: str,
+    ) -> str:
+        client = self._oauth_client()
+        url, _ = client.create_authorization_url(
+            self._config.authorization_endpoint,
+            state=state,
+            nonce=nonce,
+            audience=self._config.audience,
+            code_verifier=code_verifier,
+        )
+        return url
 
     def exchange_code(self, code: str, *, code_verifier: str) -> Mapping[str, Any]:
-        body = urlencode(
-            {
-                "grant_type": "authorization_code",
-                "client_id": self._config.client_id,
-                "client_secret": self._config.client_secret,
-                "code": code,
-                "code_verifier": code_verifier,
-                "redirect_uri": self._config.redirect_uri,
-            }
-        ).encode()
-        request = Request(  # noqa: S310 - endpoint derives from validated HTTPS issuer
-            self._config.token_endpoint,
-            data=body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            method="POST",
-        )
         try:
-            with self._opener.open(request, timeout=self._timeout_seconds) as response:
-                payload = json.load(response)
-        except (HTTPError, URLError, TimeoutError, ValueError) as error:
+            payload = self._oauth_client().fetch_token(
+                self._config.token_endpoint,
+                grant_type="authorization_code",
+                code=code,
+                code_verifier=code_verifier,
+                redirect_uri=self._config.redirect_uri,
+            )
+        except (OAuth2Error, httpx2.RequestError, httpx2.HTTPStatusError, ValueError) as error:
             raise BrowserAuthenticationError("Platform sign-in could not be completed") from error
         if not isinstance(payload, dict):
             raise BrowserAuthenticationError("Platform token response is invalid")
         return cast(Mapping[str, Any], payload)
+
+    def _oauth_client(self) -> OAuth2Client:
+        return OAuth2Client(
+            self._session,
+            client_id=self._config.client_id,
+            client_secret=self._config.client_secret,
+            token_endpoint_auth_method="client_secret_post",  # noqa: S106 - Authlib method ID
+            scope=self._config.scopes,
+            redirect_uri=self._config.redirect_uri,
+            code_challenge_method="S256",
+        )
+
+
+class _Httpx2OAuthSession:
+    """Minimal Authlib session adapter that retains HTTPX2 transport guarantees."""
+
+    def __init__(self, client: httpx2.Client) -> None:
+        self._client = client
+
+    def post(
+        self,
+        url: str,
+        *,
+        data: Mapping[str, object],
+        headers: Mapping[str, str] | None = None,
+        auth: ClientAuth | None = None,
+        **kwargs: object,
+    ) -> httpx2.Response:
+        del kwargs
+        request_headers = dict(headers or {})
+        body = urlencode(data)
+        method = "POST"
+        if auth is not None:
+            url, request_headers, body = auth.prepare(  # type: ignore[no-untyped-call]
+                method,
+                url,
+                request_headers,
+                body,
+            )
+        response = self._client.request(
+            method,
+            url,
+            content=body.encode(),
+            headers=request_headers,
+        )
+        if response.status_code >= 500:
+            response.raise_for_status()
+        return response
+
+    def close(self) -> None:
+        self._client.close()
 
 
 class BrowserAuthService:
@@ -173,7 +238,9 @@ class BrowserAuthService:
         self._identities = identities
         self._access_tokens = access_tokens
         self._id_tokens = id_tokens
-        self._tokens = token_client or OIDCBrowserTokenClient(config)
+        authlib_client = OIDCBrowserTokenClient(config)
+        self._authorization = authlib_client
+        self._tokens = token_client or authlib_client
 
     def start(self, *, now: datetime | None = None) -> BrowserLoginStart:
         current = now or datetime.now(UTC)
@@ -181,7 +248,6 @@ class BrowserAuthService:
         nonce = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(64)
         browser_binding_token = secrets.token_urlsafe(32)
-        challenge = _pkce_challenge(verifier)
         self._store.create_login(
             state,
             PendingBrowserLogin(
@@ -191,21 +257,12 @@ class BrowserAuthService:
                 current + LOGIN_STATE_LIFETIME,
             ),
         )
-        query = urlencode(
-            {
-                "response_type": "code",
-                "client_id": self.config.client_id,
-                "redirect_uri": self.config.redirect_uri,
-                "scope": " ".join(self.config.scopes),
-                "audience": self.config.audience,
-                "state": state,
-                "nonce": nonce,
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-            }
-        )
         return BrowserLoginStart(
-            f"{self.config.authorization_endpoint}?{query}",
+            self._authorization.authorization_url(
+                state=state,
+                nonce=nonce,
+                code_verifier=verifier,
+            ),
             browser_binding_token,
         )
 
@@ -266,6 +323,9 @@ class BrowserAuthService:
 
     def logout(self, token: str) -> None:
         self._store.delete_session(token)
+
+    def close(self) -> None:
+        self._authorization.close()
 
     @staticmethod
     def session_binding(token: str) -> str:
@@ -383,10 +443,3 @@ def _require_browser_binding(login: PendingBrowserLogin, token: str) -> None:
 
 def _opaque_id(value: str) -> str:
     return sha256(value.encode()).hexdigest()
-
-
-def _pkce_challenge(verifier: str) -> str:
-    import base64
-
-    digest = sha256(verifier.encode()).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()

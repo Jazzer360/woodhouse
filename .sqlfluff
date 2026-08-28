@@ -1,0 +1,16 @@
+[sqlfluff]
+dialect = bigquery
+templater = jinja
+max_line_length = 100
+large_file_skip_byte_limit = 0
+rules = capitalisation.keywords, layout.end_of_file
+
+[sqlfluff:indentation]
+indented_joins = false
+
+[sqlfluff:templater:jinja]
+apply_dbt_builtins = false
+
+[sqlfluff:templater:jinja:macros]
+ref = {% macro ref(name) %}`project.dataset.{{ name }}`{% endmacro %}
+source = {% macro source(name) %}`project.dataset.{{ name }}`{% endmacro %}

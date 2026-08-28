@@ -8,10 +8,9 @@ import ssl
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
-from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
-from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
+import httpx2
 from tesla_personal_platform.tesla_client.coverage import COMMAND_NAMES, IMPLEMENTED_ENDPOINTS
 from tesla_personal_platform.tesla_client.observability import current_tesla_api_log_context
 
@@ -77,12 +76,6 @@ _SAFE_DIAGNOSTIC_KEYS = ("error", "error_description", "message")
 _MAX_DIAGNOSTIC_BODY_BYTES = 64 * 1024
 
 
-class _RejectRedirects(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        """Never forward a Tesla bearer credential across an HTTP redirect."""
-        return None
-
-
 @dataclass(frozen=True, slots=True)
 class HttpResponse:
     """Transport response whose body is deliberately absent from repr/log output."""
@@ -112,12 +105,20 @@ class HttpTransport(Protocol):
         ...
 
 
-class UrllibTransport:
-    """Standard-library HTTPS transport with bounded request duration."""
+class HttpxTransport:
+    """Pooled HTTPX2 transport restricted to approved Tesla HTTPS hosts."""
 
-    def __init__(self, timeout_seconds: float = 20.0) -> None:
-        self._timeout_seconds = timeout_seconds
-        self._opener = build_opener(_RejectRedirects)
+    def __init__(
+        self,
+        timeout_seconds: float = 20.0,
+        *,
+        client: httpx2.Client | None = None,
+    ) -> None:
+        self._owns_client = client is None
+        self._client = client or httpx2.Client(
+            timeout=timeout_seconds,
+            follow_redirects=False,
+        )
 
     def request(
         self,
@@ -131,18 +132,15 @@ class UrllibTransport:
         if form is not None and json_body is not None:
             raise ValueError("form and json_body are mutually exclusive")
         request_headers = dict(headers or {})
-        data: bytes | None = None
+        body_size = 0
         if form is not None:
-            data = urlencode(form).encode("utf-8")
-            request_headers["Content-Type"] = "application/x-www-form-urlencoded"
+            body_size = len(urlencode(form).encode("utf-8"))
         elif json_body is not None:
-            data = json.dumps(json_body, separators=(",", ":")).encode("utf-8")
-            request_headers["Content-Type"] = "application/json"
+            body_size = len(json.dumps(json_body, separators=(",", ":")).encode("utf-8"))
 
         parsed = urlsplit(url)
         if parsed.scheme != "https" or parsed.hostname not in _TESLA_API_HOSTS:
             raise ValueError("Tesla HTTP transport requires an approved Tesla HTTPS host")
-        request = Request(url, data=data, headers=request_headers, method=method)  # noqa: S310
         request_log = _TeslaRequestLog.create(
             method=method,
             parsed_url=parsed,
@@ -150,29 +148,22 @@ class UrllibTransport:
             request_headers=request_headers,
             form=form,
             json_body=json_body,
-            body_size=len(data) if data is not None else 0,
+            body_size=body_size,
         )
         request_log.started()
         try:
-            try:
-                with self._opener.open(request, timeout=self._timeout_seconds) as response:
-                    result = HttpResponse(
-                        status=response.status,
-                        body=response.read(),
-                        content_type=response.headers.get("Content-Type"),
-                        headers={key.casefold(): value for key, value in response.headers.items()},
-                    )
-            except HTTPError as error:
-                result = HttpResponse(
-                    status=error.code,
-                    body=error.read(),
-                    content_type=error.headers.get("Content-Type"),
-                    headers={key.casefold(): value for key, value in error.headers.items()},
-                )
+            response = self._client.request(
+                method,
+                url,
+                headers=request_headers,
+                data=form,
+                json=json_body,
+            )
+            result = _http_response(response)
             request_log.completed(result)
             return result
-        except (TimeoutError, URLError):
-            # Never include urllib's exception text: it may contain a credential-bearing URL.
+        except httpx2.RequestError:
+            # Never include the exception text: it may contain a credential-bearing URL.
             from tesla_personal_platform.tesla_client.errors import TeslaTransportError
 
             request_log.failed("transport_error")
@@ -180,6 +171,11 @@ class UrllibTransport:
         except Exception:
             request_log.failed("unexpected_transport_error")
             raise
+
+    def close(self) -> None:
+        """Close the owned connection pool."""
+        if self._owns_client:
+            self._client.close()
 
 
 class LocalCommandProxyTransport:
@@ -191,6 +187,7 @@ class LocalCommandProxyTransport:
         proxy_origin: str = "https://localhost:4443",
         ca_file: str,
         timeout_seconds: float = 20.0,
+        client: httpx2.Client | None = None,
     ) -> None:
         parsed = urlsplit(proxy_origin)
         if (
@@ -203,8 +200,12 @@ class LocalCommandProxyTransport:
             raise ValueError("Vehicle Command Proxy must use a loopback HTTPS origin")
         context = ssl.create_default_context(cafile=ca_file)
         self._origin = proxy_origin.rstrip("/")
-        self._timeout_seconds = timeout_seconds
-        self._opener = build_opener(_RejectRedirects, HTTPSHandler(context=context))
+        self._owns_client = client is None
+        self._client = client or httpx2.Client(
+            timeout=timeout_seconds,
+            follow_redirects=False,
+            verify=context,
+        )
 
     def request(
         self,
@@ -240,13 +241,6 @@ class LocalCommandProxyTransport:
 
         request_headers = dict(headers or {})
         data = json.dumps(json_body or {}, separators=(",", ":")).encode("utf-8")
-        request_headers["Content-Type"] = "application/json"
-        request = Request(  # noqa: S310 - fixed loopback origin validated above
-            f"{self._origin}{parsed.path}",
-            data=data,
-            headers=request_headers,
-            method="POST",
-        )
         request_log = _TeslaRequestLog.create(
             method="POST",
             parsed_url=parsed,
@@ -258,24 +252,16 @@ class LocalCommandProxyTransport:
         )
         request_log.started()
         try:
-            try:
-                with self._opener.open(request, timeout=self._timeout_seconds) as response:
-                    result = HttpResponse(
-                        status=response.status,
-                        body=response.read(),
-                        content_type=response.headers.get("Content-Type"),
-                        headers={key.casefold(): value for key, value in response.headers.items()},
-                    )
-            except HTTPError as error:
-                result = HttpResponse(
-                    status=error.code,
-                    body=error.read(),
-                    content_type=error.headers.get("Content-Type"),
-                    headers={key.casefold(): value for key, value in error.headers.items()},
-                )
+            response = self._client.request(
+                "POST",
+                f"{self._origin}{parsed.path}",
+                headers=request_headers,
+                json=json_body or {},
+            )
+            result = _http_response(response)
             request_log.completed(result)
             return result
-        except (TimeoutError, URLError):
+        except httpx2.RequestError:
             from tesla_personal_platform.tesla_client.errors import TeslaTransportError
 
             request_log.failed("transport_error")
@@ -283,6 +269,20 @@ class LocalCommandProxyTransport:
         except Exception:
             request_log.failed("unexpected_transport_error")
             raise
+
+    def close(self) -> None:
+        """Close the owned loopback connection pool."""
+        if self._owns_client:
+            self._client.close()
+
+
+def _http_response(response: httpx2.Response) -> HttpResponse:
+    return HttpResponse(
+        status=response.status_code,
+        body=response.content,
+        content_type=response.headers.get("Content-Type"),
+        headers={key.casefold(): value for key, value in response.headers.items()},
+    )
 
 
 @dataclass(slots=True)
