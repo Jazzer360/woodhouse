@@ -13,7 +13,7 @@
 # normal changed-value behavior.
 
 [profile]
-version = "broad-v3"
+version = "broad-v4"
 schema_version = "fleet-telemetry-v0.9.4-2026-08-25"
 baseline = "tessie-operator-snapshot-2026-08-23"
 delivery_policy = "latest"
@@ -26,10 +26,13 @@ alert_types = ["service", "customer", "service-fix"]
 "GpsHeading" = { interval_seconds = 5, minimum_delta = 5, rationale = "Align heading with the five-second trip-path cadence while ignoring small directional jitter." }
 "HvacLeftTemperatureRequest" = { interval_seconds = 5, rationale = "A setpoint is discrete in practice; five-second latency is enough and needs no numeric delta." }
 "Location" = { interval_seconds = 5, minimum_delta = 5, rationale = "Improve trip-path and low-speed maneuver reconstruction while retaining a five-meter GPS-drift filter; observed signal volume leaves substantial monthly-discount headroom." }
-"MediaNowPlayingAlbum" = { interval_seconds = 10, rationale = "Capture short tracks and skips for media history; unchanged metadata emits nothing." }
-"MediaNowPlayingArtist" = { interval_seconds = 10, rationale = "Capture short tracks and skips for media history; unchanged metadata emits nothing." }
-"MediaNowPlayingStation" = { interval_seconds = 10, rationale = "Capture station changes promptly; unchanged metadata emits nothing." }
-"MediaNowPlayingTitle" = { interval_seconds = 10, rationale = "Capture short tracks and skips for media history; unchanged metadata emits nothing." }
+"MediaAudioVolume" = { interval_seconds = 1, include_fields = ["MediaNowPlayingAlbum", "MediaNowPlayingArtist", "MediaNowPlayingDuration", "MediaNowPlayingElapsed", "MediaNowPlayingStation", "MediaNowPlayingTitle"], rationale = "Capture volume changes as a high-resolution reaction signal; on Fleet Telemetry 1.3+, carry the current now-playing context in the same payload." }
+"MediaNowPlayingAlbum" = { interval_seconds = 1, rationale = "Capture album changes with one-second transition latency; unchanged metadata emits nothing." }
+"MediaNowPlayingArtist" = { interval_seconds = 1, rationale = "Capture artist changes with one-second transition latency; unchanged metadata emits nothing." }
+"MediaNowPlayingDuration" = { interval_seconds = 1, rationale = "Capture track-duration changes with one-second transition latency; unchanged duration emits nothing." }
+"MediaNowPlayingElapsed" = { interval_seconds = 15, rationale = "Improve independent playback-position resolution for song-relative reaction analysis without creating a continuous one-signal-per-second stream." }
+"MediaNowPlayingStation" = { interval_seconds = 1, rationale = "Capture station changes with one-second transition latency; unchanged metadata emits nothing." }
+"MediaNowPlayingTitle" = { interval_seconds = 1, rationale = "Capture title changes with one-second transition latency; unchanged metadata emits nothing." }
 "MediaPlaybackSource" = { interval_seconds = 10, rationale = "Capture source changes promptly; unchanged state emits nothing." }
 "MediaPlaybackStatus" = { interval_seconds = 10, rationale = "Capture play/pause transitions promptly; unchanged state emits nothing." }
 "Odometer" = { interval_seconds = 60, minimum_delta = 0.01, rationale = "Tessie's precision is retained but cadence is reduced to Tesla's economical example." }

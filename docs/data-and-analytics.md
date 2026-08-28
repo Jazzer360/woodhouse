@@ -184,7 +184,7 @@ and every future/unknown representation remain intact in `value_json`.
 
 | View | Interpretation |
 |---|---|
-| `telemetry_field_catalog` | All 239 fields in the pinned Tesla schema with category/type/description, broad-v3 inclusion, interval/delta/include-fields policy, exclusion reason, profile/schema versions, and the client-capability target used to expand that policy. `configured` describes the full policy, not proof that a particular vehicle supports or emitted the field. |
+| `telemetry_field_catalog` | All 239 fields in the pinned Tesla schema with category/type/description, broad-v4 inclusion, interval/delta/include-fields policy, exclusion reason, profile/schema versions, and the client-capability target used to expand that policy. `configured` describes the full policy, not proof that a particular vehicle supports or emitted the field. |
 | `telemetry_observations` | Expands each `V` payload datum into typed numeric, string/enum, boolean, location, and complete JSON values. Exact Pub/Sub redeliveries are de-duplicated by `pubsub_message_id` here; Tesla-marked resends remain observations. |
 | `charging_samples` | Sparse wide charging rows keyed by the exact emitted message timestamp and delivery ID. |
 | `climate_samples` | Sparse wide climate rows keyed by the exact emitted message timestamp and delivery ID. |
@@ -315,6 +315,15 @@ Configure and retain available Tesla media telemetry such as:
 - playback status;
 - duration;
 - elapsed position.
+
+The `broad-v4` profile requests `MediaAudioVolume` and the five change-oriented
+now-playing metadata/duration fields at a one-second interval. The continuously
+advancing `MediaNowPlayingElapsed` uses a 15-second interval: enough independent
+playback-position detail for song-relative analysis without a steady
+one-signal-per-second stream. On Fleet Telemetry 1.3.0+, a volume change also
+carries all six now-playing fields in the same payload so reaction analysis has
+exact track and playback-position context. Tesla's normal changed-value rule
+still applies to each independently configured field.
 
 Derived `media_history` should reconstruct track/playback intervals from emitted changes.
 

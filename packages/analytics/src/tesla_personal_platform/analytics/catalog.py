@@ -58,7 +58,7 @@ TELEMETRY_FIELD_CATALOG = AnalyticsObject(
         (
             "configured",
             "BOOLEAN",
-            "Whether the full broad-v3 profile requests this field; not proof of emission.",
+            "Whether the full broad-v4 profile requests this field; not proof of emission.",
         ),
         ("interval_seconds", "INTEGER", "Requested minimum emission interval."),
         ("minimum_delta", "FLOAT64", "Requested change threshold when configured."),
