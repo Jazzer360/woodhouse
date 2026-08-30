@@ -20,7 +20,7 @@ or a Tesla credential.
 | Tool | Purpose | Input model |
 |---|---|---|
 | `get_tesla_account` | Account metadata and owned-vehicle discovery | `action`: `feature_config`, `me`, `orders`, or `list_vehicles` |
-| `get_vehicle_status` | Live per-vehicle reads without implicit wake | `action` selects vehicle metadata, Fleet status, telemetry status/errors, mobile capability, nearby charging, alerts, release notes, service data, or targeted vehicle data |
+| `get_vehicle_status` | Live per-vehicle reads without implicit wake | `action` selects authorized drivers, vehicle metadata, Fleet status, telemetry status/errors, mobile capability, nearby charging, alerts, release notes, service data, or targeted vehicle data |
 | `get_charging_records` | Charging history and invoice reads | `action`: `charging_history` or `charging_invoice` |
 | `control_vehicle_access` | Locks, openings, HomeLink, keyless drive, lights, horn, and Guest Mode | typed `action` plus only the family fields needed by that operation |
 | `control_vehicle_climate` | Cabin, seat, steering-wheel, keeper, and overheat controls | typed `action` plus climate fields |

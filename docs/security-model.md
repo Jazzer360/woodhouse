@@ -190,8 +190,10 @@ advertise PKCE for this confidential-client flow; see `docs/tesla-onboarding.md`
 Firestore TTL deletes abandoned state records after `expires_at`; correctness
 still comes from transactional expiry validation and single-use deletion because
 TTL processing is asynchronous.
-Gateway application access logs omit all query strings. Cloud Run's platform
-request log records the full request URL before application-level redaction, so
+Gateway application access logs omit all query strings. Uvicorn's built-in access
+logger is disabled; gateway middleware emits only the method, path, status, and
+duration. Cloud Run's platform request log records the full request URL before
+application-level redaction, so
 Terraform excludes `run.googleapis.com/requests` entries for callback URLs that
 contain a query string. This prevents callback authorization codes and state
 values from being retained prospectively; the exclusion does not retroactively

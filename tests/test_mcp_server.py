@@ -3,10 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, cast
+from collections import Counter
+from typing import Any, cast, get_args
 
 from mcp import Client
 from tesla_personal_platform.auth import UserContext
+from tesla_personal_platform.mcp_gateway.mcp_models import (
+    AccountRead,
+    ChargingControl,
+    ChargingRecordRead,
+    ClimateControl,
+    MediaControl,
+    NavigationControl,
+    SecurityControl,
+    VehicleAccessControl,
+    VehicleRead,
+    VehicleSettingsControl,
+)
+from tesla_personal_platform.mcp_gateway.mcp_policy import MCP_TOOL_SPECS
 from tesla_personal_platform.mcp_gateway.mcp_server import create_mcp_server
 from tesla_personal_platform.mcp_gateway.mcp_tools import TeslaMCPService
 from tesla_personal_platform.tesla_client import TeslaAPIError
@@ -21,6 +35,30 @@ class RecordingService:
     def call(self, context: UserContext, name: str, arguments: object) -> dict[str, Any]:
         self.calls.append((context, name, arguments))
         return {"operation": name, "arguments": arguments}
+
+
+def test_every_private_operation_is_reachable_from_exactly_one_semantic_family() -> None:
+    family_models = (
+        AccountRead,
+        VehicleRead,
+        ChargingRecordRead,
+        VehicleAccessControl,
+        ClimateControl,
+        ChargingControl,
+        MediaControl,
+        NavigationControl,
+        SecurityControl,
+        VehicleSettingsControl,
+    )
+    exposed = Counter(
+        action
+        for model in family_models
+        for action in get_args(model.model_fields["action"].annotation)
+    )
+    expected = {spec.client_method for spec in MCP_TOOL_SPECS if spec.client_method != "wake_up"}
+
+    assert set(exposed) == expected
+    assert all(count == 1 for count in exposed.values())
 
 
 def test_official_sdk_exposes_compact_semantic_surface_and_routes_typed_call() -> None:

@@ -51,6 +51,7 @@ class AccountRead(ToolInput):
 
 class VehicleRead(ToolInput):
     action: Literal[
+        "drivers",
         "vehicle",
         "fleet_status",
         "fleet_telemetry_config_get",

@@ -118,6 +118,7 @@ class HttpxTransport:
         self._client = client or httpx2.Client(
             timeout=timeout_seconds,
             follow_redirects=False,
+            trust_env=False,
         )
 
     def request(
@@ -204,6 +205,7 @@ class LocalCommandProxyTransport:
         self._client = client or httpx2.Client(
             timeout=timeout_seconds,
             follow_redirects=False,
+            trust_env=False,
             verify=context,
         )
 

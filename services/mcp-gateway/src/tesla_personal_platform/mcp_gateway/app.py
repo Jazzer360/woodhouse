@@ -34,6 +34,7 @@ from tesla_personal_platform.mcp_gateway.http_boundary import (
     MAX_FORM_BYTES,
     MAX_REQUEST_BYTES,
     RequestBodyBoundaryMiddleware,
+    SafeAccessLogMiddleware,
 )
 from tesla_personal_platform.mcp_gateway.http_boundary import (
     cookie_token as _cookie_token,
@@ -572,7 +573,10 @@ def create_app(runtime: GatewayRuntime) -> Starlette:
         routes.append(Route("/mcp", unavailable_mcp, methods=["GET", "POST", "DELETE"]))
     return Starlette(
         routes=routes,
-        middleware=[Middleware(RequestBodyBoundaryMiddleware)],
+        middleware=[
+            Middleware(SafeAccessLogMiddleware),
+            Middleware(RequestBodyBoundaryMiddleware),
+        ],
         lifespan=lifespan,
     )
 

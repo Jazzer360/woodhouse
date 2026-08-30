@@ -21,6 +21,7 @@ def main() -> None:
         port=settings.server.port,
         timeout_keep_alive=15,
         server_header=False,
+        access_log=False,
     )
 
 
