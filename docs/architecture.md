@@ -252,12 +252,16 @@ the TLS public certificate. Cloud Run's single revision service account is a
 known isolation limit; the sidecar mount boundary is the smallest supported
 private deployment for this personal platform.
 
-The live MCP surface is an explicit registry of typed tool names and schemas.
-It derives the platform user before dispatch, resolves only that user's vehicle
+The live MCP surface is 13 semantic capability tools implemented with the
+official MCP Python SDK v2. Pydantic models generate and validate the public
+schemas; the application does not implement JSON-RPC or MCP transport. A
+private operation-policy map retains complete Tesla endpoint coverage, scope,
+wake, risk, retry, and audit rules behind those grouped tools. The gateway
+derives the platform user before dispatch, resolves only that user's vehicle
 records, and uses a vehicle only when selected by opaque internal ID or when
 exactly one eligible vehicle exists. Current-state tools call Fleet API, never
-BigQuery. See `docs/mcp-tool-catalog.md` for the complete mapping and safety
-metadata.
+BigQuery. See `docs/mcp-tool-catalog.md` for the public families and safety
+contract.
 
 ### Why Pub/Sub stays in the design
 
@@ -268,6 +272,36 @@ vehicle -> VM -> Pub/Sub -> BigQuery processor
 ```
 
 The Pub/Sub hop is **not** a filtering layer. It exists so temporary downstream failures do not cause telemetry loss.
+
+### Gateway library boundaries
+
+The gateway runs on Starlette/Uvicorn. Its ordinary onboarding, OAuth callback,
+health, public-key, and narrowly scoped administrative routes share one ASGI
+application with the official MCP SDK sub-application mounted at `/mcp`. The
+SDK owns Streamable HTTP session lifecycle and OAuth bearer middleware.
+
+Library responsibilities are intentionally explicit:
+
+- `pydantic-settings` validates environment configuration before clients or
+  cloud resources are constructed;
+- Authlib creates browser authorization requests, PKCE parameters, and token
+  exchange bodies, while HTTPX2 performs the no-redirect network request;
+- HTTPX2 clients are long-lived pools with bounded timeouts; Tesla token and
+  command writes are never automatically retried;
+- Pydantic models define MCP request boundaries and action-specific required
+  fields;
+- the private MCP operation-policy matrix is separate from execution/audit
+  orchestration, and typed vehicle commands are separate from Fleet read and
+  transport behavior;
+- shared ASGI request limits, response security headers, redirects, and cookie
+  parsing live in one HTTP boundary module used by every gateway route;
+- Jinja package templates render the onboarding pages with auto-escaping;
+- SQL templates and a strict manifest define BigQuery views; SQLGlot validates
+  rendered BigQuery ASTs and SQLFluff checks source formatting in CI.
+
+The permanent raw telemetry receiver, Pub/Sub topics, processor ownership
+resolution, and append-only BigQuery write path are not part of this gateway
+refactor and retain their existing runtime and deployment boundaries.
 
 The implemented edge is Tesla's official Fleet Telemetry `v0.9.4` receiver,
 pinned by image digest and configured to use its native Google Pub/Sub

@@ -1,0 +1,89 @@
+WITH raw_deduplicated AS (
+  SELECT * EXCEPT(delivery_rank)
+  FROM (
+    SELECT
+      raw.*,
+      ROW_NUMBER() OVER (
+        PARTITION BY pubsub_message_id
+        ORDER BY processed_at, ingested_at
+      ) AS delivery_rank
+    FROM {{ source("raw_telemetry_events") }} AS raw
+    WHERE record_type = 'V'
+  )
+  WHERE delivery_rank = 1
+)
+SELECT
+  raw.source_timestamp,
+  raw.ingested_at,
+  raw.processed_at,
+  raw.vehicle_id,
+  raw.record_type,
+  JSON_VALUE(datum, '$.key') AS field_name,
+  JSON_QUERY(datum, '$.value.invalid') IS NOT NULL AS is_invalid,
+  COALESCE(
+    SAFE_CAST(JSON_VALUE(datum, '$.value.doubleValue') AS FLOAT64),
+    SAFE_CAST(JSON_VALUE(datum, '$.value.floatValue') AS FLOAT64),
+    SAFE_CAST(JSON_VALUE(datum, '$.value.longValue') AS FLOAT64),
+    SAFE_CAST(JSON_VALUE(datum, '$.value.intValue') AS FLOAT64),
+    SAFE_CAST(JSON_VALUE(datum, '$.value.stringValue') AS FLOAT64)
+  ) AS numeric_value,
+  COALESCE(
+    JSON_VALUE(datum, '$.value.stringValue'),
+    JSON_VALUE(datum, '$.value.shiftStateValue'),
+    JSON_VALUE(datum, '$.value.detailedChargeStateValue'),
+    JSON_VALUE(datum, '$.value.chargingValue'),
+    JSON_VALUE(datum, '$.value.laneAssistLevelValue'),
+    JSON_VALUE(datum, '$.value.scheduledChargingModeValue'),
+    JSON_VALUE(datum, '$.value.sentryModeStateValue'),
+    JSON_VALUE(datum, '$.value.speedAssistLevelValue'),
+    JSON_VALUE(datum, '$.value.mediaStatusValue'),
+    JSON_VALUE(datum, '$.value.bmsStateValue'),
+    JSON_VALUE(datum, '$.value.buckleStatusValue'),
+    JSON_VALUE(datum, '$.value.carTypeValue'),
+    JSON_VALUE(datum, '$.value.chargePortValue'),
+    JSON_VALUE(datum, '$.value.chargePortLatchValue'),
+    JSON_VALUE(datum, '$.value.doorValue'),
+    JSON_VALUE(datum, '$.value.driveInverterStateValue'),
+    JSON_VALUE(datum, '$.value.hvilStatusValue'),
+    JSON_VALUE(datum, '$.value.hvacPowerValue'),
+    JSON_VALUE(datum, '$.value.windowStateValue'),
+    JSON_VALUE(datum, '$.value.seatFoldPositionValue'),
+    JSON_VALUE(datum, '$.value.tractorAirStatusValue'),
+    JSON_VALUE(datum, '$.value.followDistanceValue'),
+    JSON_VALUE(datum, '$.value.forwardCollisionSensitivityValue'),
+    JSON_VALUE(datum, '$.value.guestModeMobileAccessValue'),
+    JSON_VALUE(datum, '$.value.trailerAirStatusValue'),
+    JSON_VALUE(datum, '$.value.hvacAutoModeValue'),
+    JSON_VALUE(datum, '$.value.cabinOverheatProtectionModeValue'),
+    JSON_VALUE(datum, '$.value.cabinOverheatProtectionTemperatureLimitValue'),
+    JSON_VALUE(datum, '$.value.defrostModeValue'),
+    JSON_VALUE(datum, '$.value.climateKeeperModeValue'),
+    JSON_VALUE(datum, '$.value.fastChargerValue'),
+    JSON_VALUE(datum, '$.value.cableTypeValue'),
+    JSON_VALUE(datum, '$.value.tonneauTentModeValue'),
+    JSON_VALUE(datum, '$.value.tonneauPositionValue'),
+    JSON_VALUE(datum, '$.value.powershareTypeValue'),
+    JSON_VALUE(datum, '$.value.powershareStateValue'),
+    JSON_VALUE(datum, '$.value.powershareStopReasonValue'),
+    JSON_VALUE(datum, '$.value.displayStateValue'),
+    JSON_VALUE(datum, '$.value.distanceUnitValue'),
+    JSON_VALUE(datum, '$.value.temperatureUnitValue'),
+    JSON_VALUE(datum, '$.value.pressureUnitValue'),
+    JSON_VALUE(datum, '$.value.chargeUnitPreferenceValue'),
+    JSON_VALUE(datum, '$.value.turnSignalStateValue'),
+    JSON_VALUE(datum, '$.value.sunroofInstalledStateValue')
+  ) AS string_value,
+  SAFE_CAST(JSON_VALUE(datum, '$.value.booleanValue') AS BOOL) AS boolean_value,
+  SAFE_CAST(JSON_VALUE(datum, '$.value.locationValue.latitude') AS FLOAT64) AS latitude,
+  SAFE_CAST(JSON_VALUE(datum, '$.value.locationValue.longitude') AS FLOAT64) AS longitude,
+  JSON_QUERY(datum, '$.value') AS value_json,
+  raw.telemetry_config_version,
+  raw.telemetry_config_hash,
+  raw.transport_message_id,
+  raw.pubsub_message_id,
+  raw.telemetry_client_version,
+  raw.telemetry_receiver_version,
+  raw.receiver_record_version
+FROM raw_deduplicated AS raw
+CROSS JOIN UNNEST(JSON_QUERY_ARRAY(raw.payload, '$.data')) AS datum
+WHERE JSON_VALUE(datum, '$.key') IS NOT NULL

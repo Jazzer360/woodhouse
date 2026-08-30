@@ -5,6 +5,7 @@ description = "Typed Tesla Fleet API client boundary"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "cryptography>=50,<51",
+  "httpx2>=2.5,<3",
   "pyjwt[crypto]>=2.10,<3",
 ]
 

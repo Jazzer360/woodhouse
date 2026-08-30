@@ -1,0 +1,76 @@
+WITH drive_events AS (
+  SELECT
+    drive.drive_id,
+    drive.vehicle_id,
+    drive.started_at,
+    drive.ended_at,
+    drive.distance_miles,
+    observation.source_timestamp,
+    MAX(IF(observation.field_name = 'Location', observation.latitude, NULL)) AS latitude,
+    MAX(IF(observation.field_name = 'Location', observation.longitude, NULL)) AS longitude,
+    MAX(IF(observation.field_name = 'VehicleSpeed', observation.numeric_value, NULL))
+      AS speed_update,
+    MAX(IF(observation.field_name = 'Soc', observation.numeric_value, NULL)) AS soc_update
+  FROM {{ ref("drives") }} AS drive
+  JOIN {{ ref("telemetry_observations") }} AS observation
+    ON observation.vehicle_id = drive.vehicle_id
+    AND NOT observation.is_invalid
+    AND observation.field_name IN ('Location', 'VehicleSpeed', 'Soc')
+    AND observation.source_timestamp BETWEEN drive.started_at
+      AND COALESCE(drive.ended_at, CURRENT_TIMESTAMP())
+  GROUP BY drive.drive_id, drive.vehicle_id, drive.started_at, drive.ended_at,
+    drive.distance_miles, observation.source_timestamp
+), stateful AS (
+  SELECT
+    *,
+    LAST_VALUE(speed_update IGNORE NULLS) OVER drive_window AS speed_mph,
+    LAST_VALUE(soc_update IGNORE NULLS) OVER drive_window AS soc_percent
+  FROM drive_events
+  WINDOW drive_window AS (
+    PARTITION BY drive_id ORDER BY source_timestamp ROWS UNBOUNDED PRECEDING
+  )
+), location_points AS (
+  SELECT
+    *,
+    ST_GEOGPOINT(longitude, latitude) AS point,
+    LAG(ST_GEOGPOINT(longitude, latitude)) OVER (
+      PARTITION BY drive_id ORDER BY source_timestamp
+    ) AS previous_point
+  FROM stateful
+  WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+), route_distances AS (
+  SELECT
+    *,
+    COALESCE(ST_DISTANCE(previous_point, point) / 1609.344, 0) AS segment_distance_miles
+  FROM location_points
+), cumulative AS (
+  SELECT
+    *,
+    SUM(segment_distance_miles) OVER (
+      PARTITION BY drive_id ORDER BY source_timestamp ROWS UNBOUNDED PRECEDING
+    ) AS raw_distance_into_drive_miles
+  FROM route_distances
+), scaled AS (
+  SELECT
+    *,
+    MAX(raw_distance_into_drive_miles) OVER (PARTITION BY drive_id)
+      AS raw_route_distance_miles
+  FROM cumulative
+)
+SELECT
+  drive_id,
+  vehicle_id,
+  source_timestamp,
+  latitude,
+  longitude,
+  speed_mph,
+  soc_percent,
+  CASE
+    WHEN raw_route_distance_miles > 0 AND distance_miles IS NOT NULL
+      THEN raw_distance_into_drive_miles * distance_miles / raw_route_distance_miles
+    ELSE raw_distance_into_drive_miles
+  END AS distance_into_drive_miles,
+  segment_distance_miles,
+  raw_route_distance_miles,
+  distance_miles AS boundary_distance_miles
+FROM scaled

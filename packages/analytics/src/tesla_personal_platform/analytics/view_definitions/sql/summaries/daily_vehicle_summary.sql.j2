@@ -1,0 +1,60 @@
+WITH observation_daily AS (
+  SELECT
+    DATE(source_timestamp) AS summary_date,
+    vehicle_id,
+    MIN(IF(field_name = 'Soc' AND NOT is_invalid, numeric_value, NULL))
+      AS minimum_soc_percent,
+    MAX(IF(field_name = 'Soc' AND NOT is_invalid, numeric_value, NULL))
+      AS maximum_soc_percent,
+    AVG(IF(field_name = 'OutsideTemp' AND NOT is_invalid, numeric_value, NULL))
+      AS average_outside_temp,
+    MAX(IF(field_name = 'VehicleSpeed' AND NOT is_invalid, numeric_value, NULL))
+      AS maximum_speed_mph
+  FROM {{ ref("telemetry_observations") }}
+  GROUP BY summary_date, vehicle_id
+), drive_daily AS (
+  SELECT
+    DATE(started_at) AS summary_date,
+    vehicle_id,
+    SUM(distance_miles) AS distance_miles,
+    SUM(energy_used_kwh) AS drive_energy_used_kwh,
+    COUNT(*) AS drive_count,
+    SUM(duration_seconds) AS driving_seconds
+  FROM {{ ref("drives") }}
+  GROUP BY summary_date, vehicle_id
+), charge_daily AS (
+  SELECT
+    DATE(started_at) AS summary_date,
+    vehicle_id,
+    COUNT(*) AS charge_session_count,
+    SUM(ac_energy_added_kwh) AS ac_energy_added_kwh,
+    SUM(dc_energy_added_kwh) AS dc_energy_added_kwh
+  FROM {{ ref("charge_sessions") }}
+  GROUP BY summary_date, vehicle_id
+), daily_keys AS (
+  SELECT summary_date, vehicle_id FROM observation_daily
+  UNION DISTINCT
+  SELECT summary_date, vehicle_id FROM drive_daily
+  UNION DISTINCT
+  SELECT summary_date, vehicle_id FROM charge_daily
+)
+SELECT
+  key.summary_date,
+  key.vehicle_id,
+  drive.distance_miles,
+  drive.drive_energy_used_kwh,
+  SAFE_DIVIDE(drive.drive_energy_used_kwh * 1000, NULLIF(drive.distance_miles, 0))
+    AS efficiency_wh_per_mile,
+  COALESCE(drive.drive_count, 0) AS drive_count,
+  COALESCE(drive.driving_seconds, 0) AS driving_seconds,
+  COALESCE(charge.charge_session_count, 0) AS charge_session_count,
+  charge.ac_energy_added_kwh,
+  charge.dc_energy_added_kwh,
+  observation.minimum_soc_percent,
+  observation.maximum_soc_percent,
+  observation.average_outside_temp,
+  observation.maximum_speed_mph
+FROM daily_keys AS key
+LEFT JOIN observation_daily AS observation USING (summary_date, vehicle_id)
+LEFT JOIN drive_daily AS drive USING (summary_date, vehicle_id)
+LEFT JOIN charge_daily AS charge USING (summary_date, vehicle_id)

@@ -18,7 +18,7 @@ from tesla_personal_platform.tesla_client.models import TokenSet
 from tesla_personal_platform.tesla_client.transport import (
     HttpResponse,
     HttpTransport,
-    UrllibTransport,
+    HttpxTransport,
 )
 
 TESLA_AUTHORIZE_URL = "https://auth.tesla.com/oauth2/v3/authorize"
@@ -75,7 +75,7 @@ class TeslaIDTokenVerifier:
     ) -> None:
         self._jwks = _LoggedPyJWKClient(
             jwks_url,
-            transport or UrllibTransport(timeout_seconds=5.0),
+            transport or HttpxTransport(timeout_seconds=5.0),
             cache_jwk_set=True,
             lifespan=300,
         )

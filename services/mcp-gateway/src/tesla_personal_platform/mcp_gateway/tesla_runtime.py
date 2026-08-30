@@ -1,25 +1,30 @@
 """Fail-closed construction of the optional Phase 4 Tesla onboarding runtime."""
 
-import os
 from dataclasses import dataclass
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from google.cloud import bigquery, firestore
 from tesla_personal_platform.analytics import BigQueryAnalyticsService
-from tesla_personal_platform.mcp_gateway.mcp_tools import MCPProtocol, TeslaMCPService
+from tesla_personal_platform.mcp_gateway.mcp_tools import TeslaMCPService
+from tesla_personal_platform.mcp_gateway.settings import (
+    CommandProxySettings,
+    TelemetryControlSettings,
+    TeslaSettings,
+    require_setting,
+)
 from tesla_personal_platform.mcp_gateway.telemetry_control import FleetTelemetryControlService
 from tesla_personal_platform.mcp_gateway.tesla_firestore import FirestoreTeslaOnboardingStore
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import TeslaOnboardingService
 from tesla_personal_platform.mcp_gateway.token_crypto import TokenCipher
 from tesla_personal_platform.tesla_client import (
+    HttpxTransport,
     LocalCommandProxyTransport,
     ServerTrustProfile,
     TeslaFleetClient,
     TeslaIDTokenVerifier,
     TeslaOAuthClient,
     TeslaOAuthConfig,
-    UrllibTransport,
 )
 
 
@@ -29,85 +34,93 @@ class TeslaRuntime:
 
     onboarding: TeslaOnboardingService
     public_key_pem: bytes
-    mcp: MCPProtocol | None = None
+    mcp_service: TeslaMCPService | None = None
     telemetry: FleetTelemetryControlService | None = None
+    transports: tuple[HttpxTransport | LocalCommandProxyTransport, ...] = ()
+
+    def close(self) -> None:
+        """Release the runtime's owned HTTPX2 connection pools."""
+        for transport in self.transports:
+            transport.close()
 
 
 def build_tesla_runtime(
     project_id: str,
     *,
-    oauth_protected: bool = False,
+    settings: TeslaSettings | None = None,
+    command_proxy_settings: CommandProxySettings | None = None,
+    telemetry_settings: TelemetryControlSettings | None = None,
+    analytics_location: str = "us-central1",
 ) -> TeslaRuntime | None:
     """Build Tesla support only when Secret Manager-backed env injection is enabled."""
-    enabled = os.environ.get("TESLA_ONBOARDING_ENABLED", "false").strip().casefold()
-    if enabled not in {"true", "1"}:
+    settings = settings or TeslaSettings()
+    if not settings.enabled:
         return None
 
-    values = {
-        "TESLA_CLIENT_ID": os.environ.get("TESLA_CLIENT_ID", ""),
-        "TESLA_CLIENT_SECRET": os.environ.get("TESLA_CLIENT_SECRET", ""),
-        "TESLA_OAUTH_REDIRECT_URI": os.environ.get("TESLA_OAUTH_REDIRECT_URI", ""),
-        "TESLA_INITIAL_AUDIENCE": os.environ.get("TESLA_INITIAL_AUDIENCE", ""),
-        "TESLA_APP_DOMAIN": os.environ.get("TESLA_APP_DOMAIN", ""),
-        "TESLA_PUBLIC_KEY_PEM": os.environ.get("TESLA_PUBLIC_KEY_PEM", ""),
-        "TESLA_TOKEN_ENCRYPTION_KEY": os.environ.get("TESLA_TOKEN_ENCRYPTION_KEY", ""),
-    }
-    missing = sorted(name for name, value in values.items() if not value.strip())
-    if missing:
-        raise RuntimeError(f"Tesla onboarding configuration is incomplete: {', '.join(missing)}")
-
-    public_key_pem = _validated_public_key(values["TESLA_PUBLIC_KEY_PEM"])
-    transport = UrllibTransport()
+    client_id = require_setting(settings.client_id, "TESLA_CLIENT_ID")
+    client_secret = require_setting(settings.client_secret, "TESLA_CLIENT_SECRET")
+    redirect_uri = require_setting(settings.oauth_redirect_uri, "TESLA_OAUTH_REDIRECT_URI")
+    audience = require_setting(settings.initial_audience, "TESLA_INITIAL_AUDIENCE")
+    app_domain = require_setting(settings.app_domain, "TESLA_APP_DOMAIN")
+    public_key = require_setting(settings.public_key_pem, "TESLA_PUBLIC_KEY_PEM")
+    token_key = require_setting(settings.token_encryption_key, "TESLA_TOKEN_ENCRYPTION_KEY")
+    public_key_pem = _validated_public_key(public_key.get_secret_value())
+    transport = HttpxTransport()
     oauth = TeslaOAuthClient(
         TeslaOAuthConfig(
-            client_id=values["TESLA_CLIENT_ID"],
-            client_secret=values["TESLA_CLIENT_SECRET"],
-            redirect_uri=values["TESLA_OAUTH_REDIRECT_URI"],
-            audience=values["TESLA_INITIAL_AUDIENCE"],
+            client_id=client_id,
+            client_secret=client_secret.get_secret_value(),
+            redirect_uri=str(redirect_uri),
+            audience=str(audience),
         ),
         transport,
-        TeslaIDTokenVerifier(),
+        TeslaIDTokenVerifier(transport=transport),
     )
     store = FirestoreTeslaOnboardingStore(
         firestore.Client(project=project_id),
-        TokenCipher.from_base64(values["TESLA_TOKEN_ENCRYPTION_KEY"]),
+        TokenCipher.from_base64(token_key.get_secret_value()),
     )
     fleet = TeslaFleetClient(transport)
-    onboarding = TeslaOnboardingService(oauth, fleet, store, values["TESLA_APP_DOMAIN"])
-    command_fleet = _build_command_fleet()
-    mcp = (
+    onboarding = TeslaOnboardingService(oauth, fleet, store, app_domain)
+    command_transport = _build_command_transport(command_proxy_settings or CommandProxySettings())
+    command_fleet = TeslaFleetClient(command_transport) if command_transport is not None else None
+    mcp_service = (
         _build_mcp_runtime(
             project_id,
             fleet,
             command_fleet,
             onboarding,
             store,
-            oauth_protected=oauth_protected,
+            analytics_location=analytics_location,
         )
         if command_fleet is not None
         else None
     )
-    telemetry = _build_telemetry_runtime(fleet, command_fleet, onboarding, store)
+    telemetry = _build_telemetry_runtime(
+        fleet,
+        command_fleet,
+        onboarding,
+        store,
+        telemetry_settings or TelemetryControlSettings(),
+    )
     return TeslaRuntime(
         onboarding=onboarding,
         public_key_pem=public_key_pem,
-        mcp=mcp,
+        mcp_service=mcp_service,
         telemetry=telemetry,
+        transports=(transport,) + ((command_transport,) if command_transport is not None else ()),
     )
 
 
-def _build_command_fleet() -> TeslaFleetClient | None:
-    enabled = os.environ.get("TESLA_COMMAND_PROXY_ENABLED", "false").strip().casefold()
-    if enabled not in {"true", "1"}:
+def _build_command_transport(
+    settings: CommandProxySettings,
+) -> LocalCommandProxyTransport | None:
+    if not settings.enabled:
         return None
-    ca_file = os.environ.get("TESLA_COMMAND_PROXY_CA_FILE", "").strip()
-    if not ca_file:
-        raise RuntimeError("TESLA_COMMAND_PROXY_CA_FILE must be configured")
-    return TeslaFleetClient(
-        LocalCommandProxyTransport(
-            proxy_origin=os.environ.get("TESLA_COMMAND_PROXY_ORIGIN", "https://localhost:4443"),
-            ca_file=ca_file,
-        )
+    ca_file = require_setting(settings.ca_file, "TESLA_COMMAND_PROXY_CA_FILE")
+    return LocalCommandProxyTransport(
+        proxy_origin=str(settings.origin),
+        ca_file=str(ca_file),
     )
 
 
@@ -118,22 +131,19 @@ def _build_mcp_runtime(
     onboarding: TeslaOnboardingService,
     store: FirestoreTeslaOnboardingStore,
     *,
-    oauth_protected: bool,
-) -> MCPProtocol | None:
-    return MCPProtocol(
-        TeslaMCPService(
-            fleet=fleet,
-            command_fleet=command_fleet,
-            credentials=onboarding,
-            store=store,
-            audit_store=store,
-            analytics=BigQueryAnalyticsService(
-                bigquery.Client(project=project_id),
-                project_id,
-                os.environ.get("ANALYTICS_LOCATION", "us-central1").strip(),
-            ),
-            oauth_protected=oauth_protected,
-        )
+    analytics_location: str,
+) -> TeslaMCPService | None:
+    return TeslaMCPService(
+        fleet=fleet,
+        command_fleet=command_fleet,
+        credentials=onboarding,
+        store=store,
+        audit_store=store,
+        analytics=BigQueryAnalyticsService(
+            bigquery.Client(project=project_id),
+            project_id,
+            analytics_location,
+        ),
     )
 
 
@@ -142,29 +152,28 @@ def _build_telemetry_runtime(
     command_fleet: TeslaFleetClient | None,
     onboarding: TeslaOnboardingService,
     store: FirestoreTeslaOnboardingStore,
+    settings: TelemetryControlSettings,
 ) -> FleetTelemetryControlService | None:
-    enabled = os.environ.get("FLEET_TELEMETRY_CONTROL_ENABLED", "false").strip().casefold()
-    if enabled not in {"true", "1"}:
+    if not settings.enabled:
         return None
     if command_fleet is None:
         raise RuntimeError("Fleet Telemetry control requires the Vehicle Command Proxy")
-    ca_pem = os.environ.get("TELEMETRY_SERVER_CA_PEM", "").strip()
-    profile_id = os.environ.get("TELEMETRY_TRUST_PROFILE_ID", "").strip()
-    hostname = os.environ.get("TELEMETRY_HOSTNAME", "").strip()
-    if not all((ca_pem, profile_id, hostname)):
-        raise RuntimeError("Fleet Telemetry trust profile configuration is incomplete")
-    try:
-        port = int(os.environ.get("TELEMETRY_PORT", "443"))
-    except ValueError as error:
-        raise RuntimeError("TELEMETRY_PORT must be an integer") from error
-    trust = ServerTrustProfile.from_pem(profile_id, hostname, port, ca_pem)
+    ca_pem = require_setting(settings.server_ca_pem, "TELEMETRY_SERVER_CA_PEM")
+    profile_id = require_setting(settings.trust_profile_id, "TELEMETRY_TRUST_PROFILE_ID")
+    hostname = require_setting(settings.hostname, "TELEMETRY_HOSTNAME")
+    trust = ServerTrustProfile.from_pem(
+        profile_id,
+        hostname,
+        settings.port,
+        ca_pem.get_secret_value(),
+    )
     return FleetTelemetryControlService(
         fleet=fleet,
         signed_fleet=command_fleet,
         credentials=onboarding,
         store=store,
         trust_profile=trust,
-        receiver_version=os.environ.get("TELEMETRY_RECEIVER_VERSION", "unknown").strip(),
+        receiver_version=settings.receiver_version,
     )
 
 

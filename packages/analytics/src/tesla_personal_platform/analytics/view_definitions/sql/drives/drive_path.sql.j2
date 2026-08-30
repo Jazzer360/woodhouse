@@ -1,0 +1,22 @@
+SELECT
+  path.drive_id,
+  path.vehicle_id,
+  path.source_timestamp,
+  path.latitude,
+  path.longitude,
+  path.speed_mph,
+  path.soc_percent,
+  path.distance_into_drive_miles,
+  COALESCE(segment.state, 'uncertain') AS fsd_state,
+  COALESCE(segment.confidence, 0) AS fsd_confidence,
+  COALESCE(segment.inference_method, 'insufficient_counter_evidence')
+    AS fsd_inference_method
+FROM {{ ref("drive_path_points") }} AS path
+LEFT JOIN {{ ref("drive_fsd_segments") }} AS segment
+  ON segment.drive_id = path.drive_id
+  AND path.distance_into_drive_miles >= segment.start_distance_miles
+  AND path.distance_into_drive_miles <= segment.end_distance_miles
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY path.drive_id, path.source_timestamp
+  ORDER BY segment.start_distance_miles DESC, segment.segment_index DESC
+) = 1

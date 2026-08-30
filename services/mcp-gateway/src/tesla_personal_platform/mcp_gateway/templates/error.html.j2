@@ -1,0 +1,9 @@
+{% extends "base.html.j2" %}
+{% block body %}
+<section class="card">
+  <p class="eyebrow">Setup interrupted</p>
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  <a class="button" href="{{ retry_path }}">Continue</a>
+</section>
+{% endblock %}

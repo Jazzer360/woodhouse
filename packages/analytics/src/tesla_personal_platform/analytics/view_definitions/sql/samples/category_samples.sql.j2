@@ -1,0 +1,21 @@
+SELECT
+  source_timestamp,
+  MAX(ingested_at) AS ingested_at,
+  MAX(processed_at) AS processed_at,
+  vehicle_id,
+  pubsub_message_id,
+  MAX(transport_message_id) AS transport_message_id,
+  MAX(telemetry_config_version) AS telemetry_config_version,
+  MAX(telemetry_config_hash) AS telemetry_config_hash,
+  MAX(telemetry_client_version) AS telemetry_client_version,
+  ARRAY_AGG(DISTINCT field_name ORDER BY field_name) AS observed_fields,
+  ARRAY_AGG(
+    DISTINCT IF(is_invalid, field_name, NULL)
+    IGNORE NULLS
+    ORDER BY IF(is_invalid, field_name, NULL)
+  )
+    AS invalid_fields,
+{{ projected_columns }}
+FROM {{ ref("telemetry_observations") }}
+WHERE field_name IN ({{ field_names }})
+GROUP BY source_timestamp, vehicle_id, pubsub_message_id

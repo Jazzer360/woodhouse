@@ -103,15 +103,16 @@ when nested. Resource ownership checks compare the derived context with an owner
 ID read from trusted server storage; a caller's ownership statement is never an
 authorization input.
 
-The HTTP boundary limits request size and JSON nesting, applies an idle socket
-timeout, and enforces one absolute deadline for reading each request body. A
-caller cannot keep a worker occupied indefinitely by stalling or trickling a
-declared request body.
+The Starlette boundary buffers at most 1 MiB and enforces a 15-second absolute
+deadline before routing any request, including mounted MCP traffic. Uvicorn
+also bounds keep-alive idle time. MCP request parsing and nesting/type
+validation belong to the official SDK and Pydantic models rather than an
+application JSON parser.
 
-The gateway publishes `/.well-known/oauth-protected-resource`, advertises OAuth
-on every MCP tool, and returns both HTTP `WWW-Authenticate` challenges and MCP
-`_meta["mcp/www_authenticate"]` errors. ChatGPT performs authorization code +
-PKCE against Auth0 and sends only the resulting MCP access token to `/mcp`.
+The gateway publishes `/.well-known/oauth-protected-resource`; the official MCP
+SDK v2 owns Streamable HTTP authentication middleware and HTTP
+`WWW-Authenticate` challenges. ChatGPT performs authorization code + PKCE
+against Auth0 and sends only the resulting MCP access token to `/mcp`.
 
 MCP connection persistence uses short-lived access tokens plus a rotating
 refresh token; it does not make bearer access tokens long-lived. Auth0 must
@@ -136,8 +137,10 @@ immediately, regardless of token lifetime. Existing ChatGPT links created
 before this policy must be unlinked and linked once more so their original
 grant can receive a refresh token.
 
-Browser onboarding uses a separate Auth0 regular-web-app client with
-authorization code + PKCE and nonce/state validation. Its client secret is
+Browser onboarding uses a separate Auth0 regular-web-app client. Authlib owns
+authorization-code request construction, PKCE, and token exchange; HTTPX2
+performs the bounded no-redirect HTTPS request. Nonce/state and signed token
+identity validation remain mandatory. The client secret is
 injected from Secret Manager. A short-lived `Secure; HttpOnly; SameSite=Lax`
 pre-authentication cookie binds OAuth state to the browser that initiated login
 and is cleared at callback. The browser then receives only an opaque, random
@@ -187,8 +190,10 @@ advertise PKCE for this confidential-client flow; see `docs/tesla-onboarding.md`
 Firestore TTL deletes abandoned state records after `expires_at`; correctness
 still comes from transactional expiry validation and single-use deletion because
 TTL processing is asynchronous.
-Gateway application access logs omit all query strings. Cloud Run's platform
-request log records the full request URL before application-level redaction, so
+Gateway application access logs omit all query strings. Uvicorn's built-in access
+logger is disabled; gateway middleware emits only the method, path, status, and
+duration. Cloud Run's platform request log records the full request URL before
+application-level redaction, so
 Terraform excludes `run.googleapis.com/requests` entries for callback URLs that
 contain a query string. This prevents callback authorization codes and state
 values from being retained prospectively; the exclusion does not retroactively

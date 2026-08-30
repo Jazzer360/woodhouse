@@ -9,7 +9,7 @@ from google.cloud import secretmanager
 from tesla_personal_platform.tesla_client.errors import TeslaAPIError
 from tesla_personal_platform.tesla_client.observability import configure_json_logging
 from tesla_personal_platform.tesla_client.partner import PartnerRegistrar
-from tesla_personal_platform.tesla_client.transport import UrllibTransport
+from tesla_personal_platform.tesla_client.transport import HttpxTransport
 
 REGIONAL_BASE_URLS = {
     "na": "https://fleet-api.prd.na.vn.cloud.tesla.com",
@@ -59,7 +59,7 @@ def register_partner_main() -> int:
             manager,
             f"projects/{arguments.project_id}/secrets/{arguments.public_key_secret_name}/versions/latest",
         )
-        results = PartnerRegistrar(UrllibTransport()).ensure_registered(
+        results = PartnerRegistrar(HttpxTransport()).ensure_registered(
             client_id=arguments.client_id,
             client_secret=client_secret,
             domain=arguments.domain,

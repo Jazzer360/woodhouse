@@ -1,14 +1,11 @@
 """Platform authentication, allowlist, and tenant-isolation tests."""
 
-import json
 import logging
 from dataclasses import replace
-from threading import Thread
 from typing import cast
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 import pytest
+from starlette.testclient import TestClient
 from tesla_personal_platform.auth import (
     AllowedUser,
     Authenticator,
@@ -30,18 +27,16 @@ from tesla_personal_platform.auth.admin import (
     UserAdminService,
 )
 from tesla_personal_platform.auth.memory import InMemoryIdentityStore
-from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundary
-from tesla_personal_platform.mcp_gateway.main import (
-    REQUEST_IDLE_TIMEOUT_SECONDS,
+from tesla_personal_platform.mcp_gateway.app import (
     _browser_telemetry_failure,
-    _decode_json_request,
-    _Handler,
     _log_tesla_failure,
-    _read_request_body,
-    _Server,
+    create_app,
 )
+from tesla_personal_platform.mcp_gateway.auth_boundary import GatewayAuthBoundary
+from tesla_personal_platform.mcp_gateway.gateway_runtime import GatewayRuntime
+from tesla_personal_platform.mcp_gateway.http_boundary import MAX_REQUEST_BYTES
 from tesla_personal_platform.mcp_gateway.mcp_auth import MCPAuthorizationSettings
-from tesla_personal_platform.mcp_gateway.mcp_tools import MCPProtocol, TeslaMCPService
+from tesla_personal_platform.mcp_gateway.mcp_tools import TeslaMCPService
 from tesla_personal_platform.mcp_gateway.telemetry_control import TelemetryConfigurationError
 from tesla_personal_platform.mcp_gateway.tesla_onboarding import (
     TeslaOnboardingError,
@@ -79,69 +74,36 @@ def boundary_for(
 
 @pytest.mark.parametrize("path", ["/health", "/healthz"])
 def test_gateway_health_routes_are_unauthenticated(path: str) -> None:
-    server = _Server(("127.0.0.1", 0), boundary_for(InMemoryIdentityStore(), {}))
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    runtime = GatewayRuntime(boundary_for(InMemoryIdentityStore(), {}), None, None, None)
+    with TestClient(create_app(runtime)) as client:
+        response = client.get(path)
 
-    try:
-        with urlopen(  # noqa: S310 - fixed loopback test server
-            f"http://127.0.0.1:{server.server_port}{path}", timeout=2
-        ) as response:
-            assert response.status == 200
-            assert json.load(response) == {
-                "phase": "typed-tesla-mcp",
-                "service": "mcp-gateway",
-                "status": "ok",
-            }
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    assert response.status_code == 200
+    assert response.json() == {
+        "phase": "official-mcp-asgi",
+        "service": "mcp-gateway",
+        "status": "ok",
+    }
 
 
 def test_tesla_public_key_route_is_public_and_exact() -> None:
     public_key = b"-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n"
     runtime = TeslaRuntime(cast(TeslaOnboardingService, object()), public_key)
-    server = _Server(
-        ("127.0.0.1", 0),
-        boundary_for(InMemoryIdentityStore(), {}),
-        runtime,
-    )
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    gateway = GatewayRuntime(boundary_for(InMemoryIdentityStore(), {}), runtime, None, None)
+    with TestClient(create_app(gateway)) as client:
+        response = client.get("/.well-known/appspecific/com.tesla.3p.public-key.pem")
 
-    try:
-        with urlopen(  # noqa: S310 - fixed loopback test server
-            "http://127.0.0.1:"
-            f"{server.server_port}/.well-known/appspecific/com.tesla.3p.public-key.pem",
-            timeout=2,
-        ) as response:
-            assert response.status == 200
-            assert response.headers["Content-Type"] == "application/x-pem-file"
-            assert response.read() == public_key
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "application/x-pem-file"
+    assert response.content == public_key
 
 
 def test_tesla_public_key_route_fails_closed_before_configuration() -> None:
-    server = _Server(("127.0.0.1", 0), boundary_for(InMemoryIdentityStore(), {}))
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    runtime = GatewayRuntime(boundary_for(InMemoryIdentityStore(), {}), None, None, None)
+    with TestClient(create_app(runtime)) as client:
+        response = client.get("/.well-known/appspecific/com.tesla.3p.public-key.pem")
 
-    try:
-        with pytest.raises(HTTPError) as error:
-            urlopen(  # noqa: S310 - fixed loopback test server
-                "http://127.0.0.1:"
-                f"{server.server_port}/.well-known/appspecific/com.tesla.3p.public-key.pem",
-                timeout=2,
-            )
-        assert error.value.code == 503
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    assert response.status_code == 503
 
 
 def test_oauth_protected_resource_metadata_is_public_and_exact() -> None:
@@ -150,111 +112,68 @@ def test_oauth_protected_resource_metadata_is_public_and_exact() -> None:
         "https://tenant.example.auth0.com/",
         ("mcp:access",),
     )
-    server = _Server(
-        ("127.0.0.1", 0),
-        boundary_for(InMemoryIdentityStore(), {}),
-        mcp_authorization=authorization,
-    )
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    runtime = GatewayRuntime(boundary_for(InMemoryIdentityStore(), {}), None, authorization, None)
+    with TestClient(create_app(runtime)) as client:
+        response = client.get("/.well-known/oauth-protected-resource")
 
-    try:
-        with urlopen(  # noqa: S310 - fixed loopback test server
-            f"http://127.0.0.1:{server.server_port}/.well-known/oauth-protected-resource",
-            timeout=2,
-        ) as response:
-            assert response.status == 200
-            assert json.load(response) == {
-                "resource": "https://woodhouse.derekjass.com/mcp",
-                "authorization_servers": ["https://tenant.example.auth0.com/"],
-                "scopes_supported": ["mcp:access"],
-                "resource_documentation": "https://woodhouse.derekjass.com/onboarding",
-            }
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    assert response.status_code == 200
+    assert response.json() == {
+        "resource": "https://woodhouse.derekjass.com/mcp",
+        "authorization_servers": ["https://tenant.example.auth0.com/"],
+        "scopes_supported": ["mcp:access"],
+        "resource_documentation": "https://woodhouse.derekjass.com/onboarding",
+    }
 
 
-def test_unauthenticated_mcp_tool_call_returns_linking_challenge() -> None:
+def test_mcp_route_fails_closed_when_service_or_oauth_is_unavailable() -> None:
+    runtime = GatewayRuntime(boundary_for(InMemoryIdentityStore(), {}), None, None, None)
+    with TestClient(create_app(runtime)) as client:
+        response = client.post("/mcp", json={"jsonrpc": "2.0", "method": "ping"})
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "tesla_mcp_not_configured"}
+
+
+def test_asgi_boundary_rejects_large_body_before_routing() -> None:
+    runtime = GatewayRuntime(boundary_for(InMemoryIdentityStore(), {}), None, None, None)
+    with TestClient(create_app(runtime)) as client:
+        response = client.post("/mcp", content=b"x" * (MAX_REQUEST_BYTES + 1))
+
+    assert response.status_code == 413
+    assert response.json() == {"error": "body_too_large"}
+
+
+def test_official_mcp_route_returns_oauth_resource_challenge_without_redirect() -> None:
     authorization = MCPAuthorizationSettings(
         "https://woodhouse.derekjass.com/mcp",
         "https://tenant.example.auth0.com/",
         ("mcp:access",),
     )
-    protocol = MCPProtocol(cast(TeslaMCPService, object()))
-    runtime = TeslaRuntime(cast(TeslaOnboardingService, object()), b"", protocol)
-    server = _Server(
-        ("127.0.0.1", 0),
-        boundary_for(InMemoryIdentityStore(), {}),
-        runtime,
-        authorization,
+    tesla = TeslaRuntime(
+        cast(TeslaOnboardingService, object()),
+        b"",
+        mcp_service=cast(TeslaMCPService, object()),
     )
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    request = Request(  # noqa: S310 - fixed loopback test server
-        f"http://127.0.0.1:{server.server_port}/mcp",
-        data=json.dumps(
-            {
+    runtime = GatewayRuntime(boundary_for(InMemoryIdentityStore(), {}), tesla, authorization, None)
+    with TestClient(create_app(runtime), follow_redirects=False) as client:
+        response = client.post(
+            "/mcp",
+            json={
                 "jsonrpc": "2.0",
-                "id": 7,
-                "method": "tools/call",
-                "params": {"name": "tesla_vehicle", "arguments": {}},
-            }
-        ).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            },
+            headers={"Accept": "application/json, text/event-stream"},
+        )
 
-    try:
-        with urlopen(request, timeout=2) as response:  # noqa: S310
-            assert response.status == 200
-            http_challenge = response.headers["WWW-Authenticate"]
-            payload = json.load(response)
-        challenge = payload["result"]["_meta"]["mcp/www_authenticate"][0]
-        assert payload["result"]["isError"] is True
-        assert 'resource_metadata="https://woodhouse.derekjass.com/' in challenge
-        assert 'error="invalid_token"' in challenge
-        assert 'error_description="Sign in to use Woodhouse Tesla tools"' in challenge
-        assert http_challenge is not None
-        assert 'resource_metadata="https://woodhouse.derekjass.com/' in http_challenge
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
-@pytest.mark.parametrize("callback_path", ["/oauth/callback", "/auth/callback"])
-def test_gateway_access_log_omits_oauth_callback_query_values(
-    monkeypatch: pytest.MonkeyPatch,
-    callback_path: str,
-) -> None:
-    messages: list[str] = []
-
-    def capture_log(_handler: _Handler, format: str, *args: object) -> None:
-        messages.append(format % args)
-
-    monkeypatch.setattr(_Handler, "log_message", capture_log)
-    server = _Server(("127.0.0.1", 0), boundary_for(InMemoryIdentityStore(), {}))
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    try:
-        with pytest.raises(HTTPError):
-            urlopen(  # noqa: S310 - fixed loopback test server
-                "http://127.0.0.1:"
-                f"{server.server_port}{callback_path}?code=sensitive-code&state=sensitive-state",
-                timeout=2,
-            )
-        captured = "\n".join(messages)
-        assert callback_path in captured
-        assert "sensitive-code" not in captured
-        assert "sensitive-state" not in captured
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    assert response.status_code == 401
+    assert "location" not in response.headers
+    assert "resource_metadata=" in response.headers["www-authenticate"]
 
 
 def test_tesla_failure_log_contains_only_safe_metadata(
@@ -508,77 +427,6 @@ def test_gateway_rejects_excessively_nested_caller_payload() -> None:
 
     with pytest.raises(CallerIdentityClaimError, match="maximum nesting depth"):
         boundary.authorize("Bearer token", payload)
-
-
-def test_json_decoder_rejects_parser_recursion_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def raise_recursion_error(_: str) -> object:
-        raise RecursionError("simulated parser nesting failure")
-
-    monkeypatch.setattr(
-        "tesla_personal_platform.mcp_gateway.main.json.loads",
-        raise_recursion_error,
-    )
-
-    with pytest.raises(ValueError, match="safe nesting depth"):
-        _decode_json_request(b"{}")
-
-
-def test_request_body_read_enforces_one_absolute_deadline() -> None:
-    class DripReader:
-        def read1(self, size: int = -1, /) -> bytes:
-            del size
-            return b"x"
-
-    class RecordingConnection:
-        def __init__(self) -> None:
-            self.timeouts: list[float | None] = []
-
-        def settimeout(self, value: float | None) -> None:
-            self.timeouts.append(value)
-
-    moments = iter([0.0, 0.25, 1.01])
-    connection = RecordingConnection()
-
-    with pytest.raises(TimeoutError, match="deadline"):
-        _read_request_body(
-            DripReader(),
-            connection,
-            2,
-            timeout_seconds=1.0,
-            clock=lambda: next(moments),
-        )
-
-    assert connection.timeouts == [0.75, REQUEST_IDLE_TIMEOUT_SECONDS]
-
-
-def test_request_body_read_restores_idle_timeout_after_success() -> None:
-    class CompleteReader:
-        def read1(self, size: int = -1, /) -> bytes:
-            assert size == 2
-            return b"{}"
-
-    class RecordingConnection:
-        def __init__(self) -> None:
-            self.timeouts: list[float | None] = []
-
-        def settimeout(self, value: float | None) -> None:
-            self.timeouts.append(value)
-
-    moments = iter([0.0, 0.99])
-    connection = RecordingConnection()
-
-    body = _read_request_body(
-        CompleteReader(),
-        connection,
-        2,
-        timeout_seconds=1.0,
-        clock=lambda: next(moments),
-    )
-
-    assert body == b"{}"
-    assert connection.timeouts == [pytest.approx(0.01), REQUEST_IDLE_TIMEOUT_SECONDS]
 
 
 def test_trusted_cross_user_resource_is_rejected() -> None:

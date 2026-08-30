@@ -1,0 +1,117 @@
+[[view]]
+name = "telemetry_field_catalog"
+file = "telemetry/telemetry_field_catalog.sql.j2"
+description = "Pinned Tesla field taxonomy and reviewed Woodhouse collection policy."
+kind = "field_catalog"
+
+[[view]]
+name = "telemetry_observations"
+file = "telemetry/telemetry_observations.sql.j2"
+description = "Typed Fleet Telemetry datum layer with exact Pub/Sub retry de-duplication."
+sources = ["raw_telemetry_events"]
+
+[[view]]
+name = "charging_samples"
+file = "samples/category_samples.sql.j2"
+description = "Sparse exact-emission charging samples. NULL values were not validly emitted in that message; inspect observed_fields and invalid_fields."
+depends_on = ["telemetry_observations"]
+kind = "category_sample"
+category = "Charging"
+
+[[view]]
+name = "climate_samples"
+file = "samples/category_samples.sql.j2"
+description = "Sparse exact-emission climate samples. NULL values were not validly emitted in that message; inspect observed_fields and invalid_fields."
+depends_on = ["telemetry_observations"]
+kind = "category_sample"
+category = "Climate"
+
+[[view]]
+name = "driving_samples"
+file = "samples/category_samples.sql.j2"
+description = "Sparse exact-emission driving samples. NULL values were not validly emitted in that message; inspect observed_fields and invalid_fields."
+depends_on = ["telemetry_observations"]
+kind = "category_sample"
+category = "Driving"
+
+[[view]]
+name = "location_samples"
+file = "samples/category_samples.sql.j2"
+description = "Sparse exact-emission location samples. NULL values were not validly emitted in that message; inspect observed_fields and invalid_fields."
+depends_on = ["telemetry_observations"]
+kind = "category_sample"
+category = "Location"
+
+[[view]]
+name = "media_samples"
+file = "samples/category_samples.sql.j2"
+description = "Sparse exact-emission media samples. NULL values were not validly emitted in that message; inspect observed_fields and invalid_fields."
+depends_on = ["telemetry_observations"]
+kind = "category_sample"
+category = "Media"
+
+[[view]]
+name = "vehicle_state_changes"
+file = "telemetry/vehicle_state_changes.sql.j2"
+description = "Successive valid typed field transitions."
+depends_on = ["telemetry_observations"]
+
+[[view]]
+name = "drive_metric_boundaries"
+file = "drives/drive_metric_boundaries.sql.j2"
+description = "Inspectable drive-boundary state selections with inference provenance."
+depends_on = ["vehicle_state_changes", "telemetry_observations"]
+
+[[view]]
+name = "drives"
+file = "drives/drives.sql.j2"
+description = "Rebuildable drive sessions."
+depends_on = ["drive_metric_boundaries", "telemetry_observations"]
+
+[[view]]
+name = "charge_sessions"
+file = "charging/charge_sessions.sql.j2"
+description = "Rebuildable charging sessions."
+depends_on = ["telemetry_observations"]
+
+[[view]]
+name = "drive_path_points"
+file = "drives/drive_path_points.sql.j2"
+description = "Distance-scaled route points with carried speed and SOC context."
+depends_on = ["drives", "telemetry_observations"]
+
+[[view]]
+name = "drive_fsd_segments"
+file = "drives/drive_fsd_segments.sql.j2"
+description = "Manual, FSD, and uncertain route segments inferred from cumulative counters."
+depends_on = ["telemetry_observations", "drives", "drive_path_points"]
+
+[[view]]
+name = "drive_fsd_summary"
+file = "drives/drive_fsd_summary.sql.j2"
+description = "Aggregate FSD/manual/uncertain mileage and share for each drive."
+depends_on = ["drives", "drive_fsd_segments"]
+
+[[view]]
+name = "drive_path"
+file = "drives/drive_path.sql.j2"
+description = "Route-friendly points annotated with inferred FSD state and confidence."
+depends_on = ["drive_path_points", "drive_fsd_segments"]
+
+[[view]]
+name = "telemetry_capability_diagnostics"
+file = "telemetry/telemetry_capability_diagnostics.sql.j2"
+description = "Recent receiver/client/profile and synchronized-field evidence by vehicle."
+depends_on = ["telemetry_observations"]
+
+[[view]]
+name = "media_history"
+file = "media/media_history.sql.j2"
+description = "Rebuildable media playback intervals."
+depends_on = ["telemetry_observations"]
+
+[[view]]
+name = "daily_vehicle_summary"
+file = "summaries/daily_vehicle_summary.sql.j2"
+description = "Rebuildable UTC daily distance, energy, charging, and state summary."
+depends_on = ["telemetry_observations", "drives", "charge_sessions"]
