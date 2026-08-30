@@ -1,19 +1,38 @@
+WITH aggregated AS (
+  SELECT
+    drive.drive_id,
+    drive.vehicle_id,
+    drive.started_at,
+    drive.ended_at,
+    drive.best_available_distance_miles AS total_distance_miles,
+    SUM(IF(segment.state = 'fsd', segment.distance_miles, 0)) AS fsd_distance_miles,
+    SUM(IF(segment.state = 'manual', segment.distance_miles, 0)) AS manual_distance_miles,
+    SUM(IF(segment.state = 'uncertain', segment.distance_miles, 0)) AS uncertain_distance_miles,
+    SAFE_MULTIPLY(100, SAFE_DIVIDE(
+      SUM(IF(segment.state = 'fsd', segment.distance_miles, 0)),
+      NULLIF(drive.best_available_distance_miles, 0)
+    )) AS fsd_percent,
+    MIN(segment.confidence) AS minimum_confidence,
+    COUNTIF(segment.drive_id IS NOT NULL) AS segment_count
+  FROM {{ ref("drives") }} AS drive
+  LEFT JOIN {{ ref("drive_fsd_segments") }} AS segment USING (drive_id)
+  GROUP BY drive.drive_id, drive.vehicle_id, drive.started_at, drive.ended_at,
+    drive.best_available_distance_miles
+)
 SELECT
-  drive.drive_id,
-  drive.vehicle_id,
-  drive.started_at,
-  drive.ended_at,
-  drive.distance_miles AS total_distance_miles,
-  SUM(IF(segment.state = 'fsd', segment.distance_miles, 0)) AS fsd_distance_miles,
-  SUM(IF(segment.state = 'manual', segment.distance_miles, 0)) AS manual_distance_miles,
-  SUM(IF(segment.state = 'uncertain', segment.distance_miles, 0)) AS uncertain_distance_miles,
-  SAFE_MULTIPLY(100, SAFE_DIVIDE(
-    SUM(IF(segment.state = 'fsd', segment.distance_miles, 0)),
-    NULLIF(drive.distance_miles, 0)
-  )) AS fsd_percent,
-  MIN(segment.confidence) AS minimum_confidence,
-  COUNT(*) AS segment_count
-FROM {{ ref("drives") }} AS drive
-LEFT JOIN {{ ref("drive_fsd_segments") }} AS segment USING (drive_id)
-GROUP BY drive.drive_id, drive.vehicle_id, drive.started_at, drive.ended_at,
-  drive.distance_miles
+  *,
+  fsd_distance_miles + manual_distance_miles + uncertain_distance_miles
+    AS classified_distance_miles,
+  CASE
+    WHEN total_distance_miles IS NULL THEN NULL
+    ELSE GREATEST(
+      total_distance_miles
+        - (fsd_distance_miles + manual_distance_miles + uncertain_distance_miles),
+      0
+    )
+  END AS unclassified_distance_miles,
+  total_distance_miles IS NULL
+    OR ABS(total_distance_miles
+      - (fsd_distance_miles + manual_distance_miles + uncertain_distance_miles)) <= 0.001
+    AS classification_complete
+FROM aggregated

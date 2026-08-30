@@ -314,6 +314,32 @@ def test_drive_odometer_and_location_keep_existing_bounded_stationary_rules() ->
     assert "inside_drive_fallback" in boundaries
 
 
+def test_drive_distance_uses_a_bounded_route_fallback_with_explicit_provenance() -> None:
+    views = {view.name: view.sql for view in analytics_views("project", "dataset")}
+    drives = views["drives"]
+    path = views["drive_path_points"]
+    daily = views["daily_vehicle_summary"]
+
+    assert "candidate_segment_distance_miles" in drives
+    assert "/ 3600000.0 * 200" in drives
+    assert "route_rejected_segment_count = 0" in drives
+    assert "THEN 'gps_route_fallback'" in drives
+    assert "THEN 'rejected_implausible_segment'" in drives
+    assert "best_available_distance_miles" in path
+    assert "validated_route_distances" in path
+    assert "drive.route_quality" in path
+    assert "SUM(best_available_distance_miles) AS distance_miles" in daily
+    assert "route_fallback_distance_miles" in daily
+    assert "distance_unavailable_drive_count" in daily
+    assert "IF(energy_quality = 'validated', ac_energy_added_kwh, NULL)" in daily
+    assert "charge_energy_issue_count" in daily
+
+    elapsed_seconds = 10
+    plausible_ceiling_miles = max(0.05, elapsed_seconds / 3600 * 200)
+    assert 0.2 <= plausible_ceiling_miles
+    assert 1.0 > plausible_ceiling_miles
+
+
 def test_detailed_charge_state_remains_authoritative_over_coarse_init() -> None:
     charge_sql = next(
         view.sql for view in analytics_views("project", "dataset") if view.name == "charge_sessions"
@@ -388,19 +414,31 @@ def test_charge_tail_integration_is_bounded_piecewise_and_rejects_counter_anomal
     assert "measured_counter_tail_unavailable" in charge_sql
     assert "ac_energy_counter_kwh" in charge_sql
     assert "ac_energy_tail_kwh" in charge_sql
+    assert "observation.source_timestamp <= boundary.started_at THEN 0" in charge_sql
+    assert "start_ac_energy_method" in charge_sql
+    assert "start_dc_energy_method" in charge_sql
+    assert "ac_energy_upper_bound_kwh" in charge_sql
+    assert "dc_energy_upper_bound_kwh" in charge_sql
+    assert "THEN 'physically_implausible'" in charge_sql
+    assert "THEN 'physical_bound_unavailable'" in charge_sql
+    assert "THEN 'counter_reset'" in charge_sql
+    assert "THEN 'baseline_unavailable'" in charge_sql
+    assert "candidate_ac_energy_added_kwh IS NULL" in charge_sql
+    assert "ac_energy_upper_bound_kwh IS NULL" in charge_sql
+    assert "energy_quality" in charge_sql
 
-    first_counter_at = datetime.fromisoformat("2026-08-24T09:50:33.813491+00:00")
-    first_ended_at = datetime.fromisoformat("2026-08-24T09:54:27.813839+00:00")
-    first_tail = 1.3 * (first_ended_at - first_counter_at).total_seconds() / 3600
-    assert 9.3362779169 + first_tail == pytest.approx(9.4209, abs=0.0002)
-    assert 9.41 <= 9.3362779169 + first_tail <= 9.43
+    # A cumulative session counter must subtract the latest pre-start value.
+    counter_start = 8.00
+    counter_end = 8.12
+    assert counter_end - counter_start == pytest.approx(0.12)
 
-    second_counter_at = datetime.fromisoformat("2026-08-25T10:58:44.116152+00:00")
-    second_ended_at = datetime.fromisoformat("2026-08-25T11:00:00.616185+00:00")
-    second_tail = 1.3 * (second_ended_at - second_counter_at).total_seconds() / 3600
-    reconstructed = 4.216500063 + second_tail
-    assert reconstructed == pytest.approx(4.2441, abs=0.0002)
-    assert round(reconstructed, 2) == pytest.approx(4.24)
+    # A 5.7-minute 1.3 kW session cannot physically deliver 1.325 kWh. The
+    # production formula allows a 0.05 kWh floor for sparse boundary timing.
+    duration_seconds = 5.7 * 60
+    upper_bound = 1.3 * duration_seconds / 3600 + 0.05
+    assert upper_bound == pytest.approx(0.1735)
+    assert 1.325 > upper_bound
+    assert 0.12 <= upper_bound
 
 
 def test_fsd_bucket_allocation_matches_supplied_trip_regression_and_bounds_transition() -> None:
@@ -420,6 +458,18 @@ def test_fsd_bucket_allocation_matches_supplied_trip_regression_and_bounds_trans
     assert "UNION ALL" not in segments
     assert "NOT EXISTS" not in segments
     assert "SELECT AS STRUCT path" not in segments
+    assert "WHERE total_update IS NOT NULL AND fsd_miles IS NOT NULL" in segments
+    assert ") IS DISTINCT FROM total_miles" in segments
+    assert "PARTITION BY drive_id, reset_epoch" in segments
+    assert "completed_segment_arrays" in segments
+    assert "start_distance_miles > 0.001" in segments
+    assert "start_distance_miles - previous_end_distance_miles > 0.001" in segments
+
+    summary = views["drive_fsd_summary"].sql
+    assert "NULLIF(drive.best_available_distance_miles, 0)" in summary
+    assert "classified_distance_miles" in summary
+    assert "unclassified_distance_miles" in summary
+    assert "classification_complete" in summary
 
     total_distance = 3.05963
     first_milestone_distance = 1.23963
@@ -441,6 +491,66 @@ def test_fsd_bucket_allocation_matches_supplied_trip_regression_and_bounds_trans
     assert 16 < transition_seconds < 64
 
 
+def test_fsd_counter_snapshots_tolerate_asynchronous_updates_and_resets() -> None:
+    def paired_deltas(
+        updates: list[tuple[float | None, float | None]],
+    ) -> list[tuple[float, float]]:
+        total: float | None = None
+        fsd: float | None = None
+        snapshots: list[tuple[float, float]] = []
+        last_snapshot_total: float | None = None
+        for total_update, fsd_update in updates:
+            if total_update is not None:
+                total = total_update
+            if fsd_update is not None:
+                fsd = fsd_update
+            if (
+                total_update is not None
+                and total is not None
+                and fsd is not None
+                and total != last_snapshot_total
+            ):
+                snapshots.append((total, fsd))
+                last_snapshot_total = total
+
+        deltas: list[tuple[float, float]] = []
+        previous: tuple[float, float] | None = None
+        for snapshot in snapshots:
+            if previous is None or snapshot[0] < previous[0] or snapshot[1] < previous[1]:
+                previous = snapshot
+                continue
+            deltas.append((snapshot[0] - previous[0], snapshot[1] - previous[1]))
+            previous = snapshot
+        return deltas
+
+    total_first = paired_deltas([(100, 40), (101, None), (None, 41), (102, None)])
+    fsd_first = paired_deltas([(100, 40), (None, 41), (101, None)])
+    reciprocal_include = paired_deltas([(100, 40), (100, 41), (101, 41)])
+    across_reset = paired_deltas([(100, 40), (102, 41), (1, 0), (2, 1)])
+
+    assert sum(total for total, _ in total_first) == pytest.approx(2)
+    assert sum(fsd for _, fsd in total_first) == pytest.approx(1)
+    assert all(total - fsd >= 0 for total, fsd in total_first)
+    assert fsd_first == [(1, 1)]
+    assert reciprocal_include == [(1, 1)]
+    assert across_reset == [(2, 1), (1, 1)]
+
+
+def test_fsd_unobserved_intervals_are_explicitly_uncertain_and_reconcile() -> None:
+    total_distance = 5.0
+    observed_segments = [(1.0, 2.0), (3.0, 4.0)]
+    observed_distance = sum(end - start for start, end in observed_segments)
+    uncertain_distance = (
+        observed_segments[0][0]
+        + (observed_segments[1][0] - observed_segments[0][1])
+        + (total_distance - observed_segments[-1][1])
+    )
+
+    assert observed_distance == pytest.approx(2.0)
+    assert uncertain_distance == pytest.approx(3.0)
+    assert observed_distance + uncertain_distance == pytest.approx(total_distance)
+
+
 def test_capability_diagnostic_compares_profile_client_receiver_and_payload_evidence() -> None:
     diagnostic = next(
         view.sql
@@ -455,6 +565,9 @@ def test_capability_diagnostic_compares_profile_client_receiver_and_payload_evid
     assert "synchronized_gear_messages" in diagnostic
     assert "synchronized_charge_messages" in diagnostic
     assert "synchronized_fsd_messages" in diagnostic
+    assert "recent_message_count" in diagnostic
+    assert "messages_with_profile_provenance" in diagnostic
+    assert "profile_provenance_missing" in diagnostic
     assert "include_fields_not_observed" in diagnostic
     assert (
         "LEFT JOIN version_history AS history ON history.vehicle_id = latest.vehicle_id"

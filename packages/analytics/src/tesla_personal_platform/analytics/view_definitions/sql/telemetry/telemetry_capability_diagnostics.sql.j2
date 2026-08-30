@@ -42,6 +42,9 @@ WITH message_fields AS (
 ), anchors AS (
   SELECT
     vehicle_id,
+    COUNT(*) AS recent_message_count,
+    COUNTIF(telemetry_config_version IS NOT NULL AND telemetry_config_hash IS NOT NULL)
+      AS messages_with_profile_provenance,
     COUNTIF('Gear' IN UNNEST(fields)) AS gear_anchor_messages,
     COUNTIF('Gear' IN UNNEST(fields) AND (
       'Odometer' IN UNNEST(fields) OR 'EnergyRemaining' IN UNNEST(fields)
@@ -90,8 +93,13 @@ SELECT
   COALESCE(anchors.synchronized_charge_messages, 0) AS synchronized_charge_messages,
   COALESCE(anchors.fsd_counter_messages, 0) AS fsd_counter_messages,
   COALESCE(anchors.synchronized_fsd_messages, 0) AS synchronized_fsd_messages,
+  COALESCE(anchors.recent_message_count, 0) AS recent_message_count,
+  COALESCE(anchors.messages_with_profile_provenance, 0)
+    AS messages_with_profile_provenance,
   CASE
     WHEN latest.telemetry_client_version IS NULL THEN 'client_version_unavailable'
+    WHEN latest.telemetry_config_version IS NULL OR latest.telemetry_config_hash IS NULL
+      THEN 'profile_provenance_missing'
     WHEN SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) < 1
       OR (SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(0)] AS INT64) = 1
         AND SAFE_CAST(SPLIT(latest.telemetry_client_version, '.')[SAFE_OFFSET(1)] AS INT64) < 3)

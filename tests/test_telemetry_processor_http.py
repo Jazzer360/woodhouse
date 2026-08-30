@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import threading
 from datetime import UTC, datetime
 from http.client import HTTPConnection
@@ -11,6 +12,7 @@ import pytest
 from tesla_personal_platform.telemetry_processor import main as telemetry_main
 from tesla_personal_platform.telemetry_processor.main import (
     MAX_PUSH_BODY_BYTES,
+    TelemetryHandler,
     TelemetryHTTPServer,
 )
 from tesla_personal_platform.telemetry_processor.processor import (
@@ -112,6 +114,26 @@ def test_http_acknowledges_only_after_processor_reports_durable_success() -> Non
 
     assert post(service, valid_push()) == 204
     assert service.calls == 1
+
+
+def test_missing_config_provenance_emits_a_monitorable_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    result = ProcessingResult(
+        "persisted",
+        "V",
+        "message-1",
+        vehicle_id="vehicle-private",
+        user_id="user-private",
+        telemetry_config_provenance="missing",
+    )
+
+    with caplog.at_level(logging.INFO, logger=telemetry_main.LOGGER.name):
+        TelemetryHandler._log_result(object(), result)  # type: ignore[arg-type]
+
+    record = json.loads(caplog.records[-1].message)
+    assert record["event"] == "telemetry_config_provenance_missing"
+    assert record["telemetry_config_provenance"] == "missing"
 
 
 def test_http_negatively_acknowledges_retryable_persistence_failure() -> None:

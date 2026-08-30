@@ -111,6 +111,10 @@ Preserve the complete decoded event payload.
 `pubsub_message_id` identifies the Google transport delivery. The receiver and
 client version fields make protocol changes diagnosable. Configuration
 version/hash come only from trusted registry state, never from a publisher.
+Every owned persistence result classifies that provenance as `complete`,
+`partial`, or `missing`. Partial/missing results are still appended unchanged,
+then emit the `telemetry_config_provenance_missing` structured event and alert;
+provenance failure must never become a raw-retention filter.
 
 Do not throw away fields after promoting commonly queried values to typed columns/views.
 
@@ -204,15 +208,15 @@ and every future/unknown representation remain intact in `value_json`.
 | `media_samples` | Sparse wide media rows for direct graphing or inspection of emitted playback metadata/state. |
 | `vehicle_state_changes` | Orders valid values by vehicle/field/source time and exposes the previous typed value. |
 | `drive_metric_boundaries` | Selects Odometer, EnergyRemaining, SOC, and Location at each Gear boundary with metric-specific exact/as-of/stationary/fallback semantics, source timestamp, signed age, and message provenance. |
-| `drives` | Reconstructs forward/reverse Gear intervals and summarizes boundary-correct odometer distance, energy, SOC, efficiency, speed, endpoints, sample gaps, config provenance, and boundary quality. |
-| `charge_sessions` | Uses DetailedChargeState authoritatively with coarse fallback, same-session SOC, stationary-validated odometer/location, measured counter plus bounded piecewise power-tail energy, battery/wall efficiency, distance since prior charge, observation ages, and inference methods. |
-| `drive_path_points` | Produces route points whose cumulative GPS distance is scaled to boundary-correct odometer distance, with carried speed and SOC. |
-| `drive_fsd_segments` | Allocates cumulative FSD-counter deltas into manual/FSD/uncertain route segments with confidence, method, and transition-distance bounds. |
-| `drive_fsd_summary` | Aggregates total, FSD, manual, and uncertain mileage and FSD percentage per drive. |
+| `drives` | Reconstructs forward/reverse Gear intervals and summarizes boundary-correct odometer distance, a plausibility-filtered GPS fallback with provenance, energy, SOC, efficiency, speed, endpoints, sample gaps, config provenance, and boundary quality. |
+| `charge_sessions` | Uses DetailedChargeState authoritatively with coarse fallback, same-session SOC, stationary-validated odometer/location, pre-boundary counter baselines, bounded piecewise power-tail energy, physical plausibility bounds, battery/wall efficiency, distance since prior charge, observation ages, and inference methods. |
+| `drive_path_points` | Produces plausibility-filtered route points whose cumulative GPS distance is scaled to the best available drive distance, with carried speed and SOC. |
+| `drive_fsd_segments` | Allocates total-counter-anchored FSD deltas into manual/FSD/uncertain route segments with complete distance coverage, confidence, method, and transition-distance bounds. |
+| `drive_fsd_summary` | Aggregates total, FSD, manual, and uncertain mileage and exposes an explicit reconciliation residual/completeness flag per drive. |
 | `drive_path` | Joins route points to inferred FSD state for future map/API rendering. |
-| `telemetry_capability_diagnostics` | Compares incoming client-version history/first-seen time, receiver/profile metadata, and seven-day synchronized Gear, charge, and FSD payload evidence. |
+| `telemetry_capability_diagnostics` | Compares incoming client-version history/first-seen time, receiver/profile metadata coverage, and seven-day synchronized Gear, charge, and FSD payload evidence. |
 | `media_history` | Carries emitted media changes forward and groups contiguous title/artist/album/station/source/playback-state intervals, including playback position and volume. |
-| `daily_vehicle_summary` | UTC daily per-vehicle drive, efficiency, charging, SOC, temperature, and maximum-speed summary. |
+| `daily_vehicle_summary` | UTC daily per-vehicle best-available/odometer/GPS-fallback distance, unavailable-distance and charge-energy issue counts, efficiency, charging, SOC, temperature, and maximum-speed summary. |
 
 These are rebuildable views, not additional sources of truth. Their session
 boundaries are only as complete as the emitted source changes; open sessions
@@ -266,6 +270,16 @@ observation outside the drive, then a bounded interior fallback. Five-minute
 outer windows, adjacent drive boundaries, and 90-second interior fallbacks
 continue to constrain only those physical metrics.
 
+Drive distance prefers the non-negative odometer boundary delta. When either
+odometer boundary is unavailable, `drives` may use the Location polyline only
+when at least two points exist and no segment implies more than 200 mph (with a
+0.05-mile floor for timestamp/position noise). Any rejected segment makes the
+route ineligible as a distance fallback instead of silently summing a partial
+route. `distance_method`, `route_quality`, point count, and rejected-segment
+count preserve the decision. Efficiency, FSD reconciliation, route scaling,
+and daily totals use `best_available_distance_miles`; the original odometer
+distance remains separate.
+
 For charging, `DetailedChargeStateCharging` starts active charging and
 `DetailedChargeStateDisconnected`, `NoPower`, `Complete`, or `Stopped` ends it;
 `Starting` is transitional. Once a recent detailed state is present it remains
@@ -291,7 +305,14 @@ reconstructed start/end odometers.
 Tesla defines `ACChargingEnergyIn` as charger-measured AC input energy that must
 be ignored during DC charging, while `DCChargingEnergyIn` is battery-measured
 energy usable for both AC and DC sessions. Each public counter column is the
-measured session delta. When the last applicable counter precedes the stop by
+measured session delta. Its baseline is the latest valid counter at or before
+charge start; a nearby after-start observation never outranks that baseline.
+If no pre-start baseline exists, or the counter resets after start, provenance
+states that limitation instead of presenting the end counter as an
+unqualified measured session delta. `energy_quality` marks those otherwise
+plausible results as `baseline_unavailable` or `counter_reset`, so they remain
+queryable but do not silently join validated daily energy. When the last
+applicable counter precedes the stop by
 at most five minutes, counter order is monotonic, and applicable power covers
 the whole missing interval, the view seeds the tail with the most recent valid
 power state in the same continuous session and integrates later power changes
@@ -302,10 +323,21 @@ gaps never receive an inferred tail; provenance
 distinguishes measured-only, bounded-tail, unavailable-tail, and anomalous
 results.
 
+The reconstructed result must also fit a session power-duration bound. AC uses
+the maximum observed applicable AC power times session duration plus the larger
+of 0.05 kWh or two percent. DC uses the analogous DC bound, or the validated AC
+input plus a small tolerance for AC sessions. A counter/tail candidate above
+that bound is returned as unavailable with `physically_implausible` provenance;
+it is not clipped to a believable value. A candidate without enough applicable
+power evidence to establish a bound is likewise unavailable with
+`physical_bound_unavailable` provenance. `energy_quality` lets daily summaries
+count unavailable, reset/anomalous, and physically implausible sessions without
+adding them to the validated daily energy totals.
+
 Tesla's current Fleet Telemetry
 [system-behavior documentation](https://developer.tesla.com/docs/fleet-api/fleet-telemetry)
 and [available-data definitions](https://developer.tesla.com/docs/fleet-api/fleet-telemetry/available-data)
-were rechecked on 2026-08-28: changed fields enter a 500-millisecond collector
+were rechecked on 2026-08-30: changed fields enter a 500-millisecond collector
 bucket after their own interval/delta rules permit emission. The five
 `*_samples` views therefore
 group only fields in the same actual source message; they do not time-bucket,
@@ -419,7 +451,9 @@ the same payload; client 1.2 can deliver them as independent observations.
 
 A reset-aware counter timeline:
 
-- align counter observations by source timestamp and vehicle/config version;
+- carries the latest FSD counter state but creates a delta snapshot only when
+  the total `MilesSinceReset` value changes, so asynchronously delivered FSD
+  changes are consumed once instead of producing a negative/manual residual;
 - begin a new reset epoch whenever either cumulative counter decreases;
 - calculate FSD miles and share from counter deltas only within one epoch;
 - preserve the source observations used, their time span, and any pairing gap;
@@ -438,12 +472,17 @@ A reset-aware counter timeline:
   distance, with the transition bounded by the whole bucket;
 - carries the final inferred state to the Gear boundary only at reduced
   confidence; and
-- emits `uncertain`, not zero/manual, when counter/reset/path evidence is insufficient.
+- fills every leading, internal, and trailing distance gap with `uncertain`,
+  not zero/manual, when counter/reset/path evidence is insufficient.
 
 `drive_fsd_summary` aggregates these segments. `drive_path` attaches state,
 confidence, and inference method to route points. Neither view claims exact FSD
 engagement events: one-mile counter gating and sparse independent 1.2 emissions
-make the transition bounds part of the result.
+make the transition bounds part of the result. For every drive with a usable
+distance, FSD + manual + uncertain must reconcile within 0.001 mile;
+`classified_distance_miles`, `unclassified_distance_miles`, and
+`classification_complete` expose that invariant instead of silently dropping
+partial classifications.
 
 Tesla may reset the statistics after software updates, computer replacement,
 factory reset, or other triggers. Raw observations remain authoritative so

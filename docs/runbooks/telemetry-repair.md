@@ -15,7 +15,9 @@ is completed in Phase 8 and re-verified during Phase 11.
    a repair shortcut.
 4. Check Cloud Run `telemetry-processor` revision readiness and structured logs
    for `telemetry_persistence_retry`, `telemetry_processing_failed`, and
-   `unknown_vehicle_telemetry`.
+   `unknown_vehicle_telemetry`. Also inspect
+   `telemetry_config_provenance_missing`; it means owned rows were preserved but
+   lacked a complete trusted profile version/hash.
 5. Run the guarded non-vehicle verification only after the deployed TLS path is
    healthy. It proves duplicate preservation, retry/no-loss behavior, and
    unknown-VIN quarantine without touching a car.
@@ -55,6 +57,18 @@ apply path timed out, use **Verify and record provenance** from the vehicle's
 telemetry page. This reads and validates the current Tesla config/errors and
 repairs only the trusted profile version/hash. Do not reapply a vehicle
 configuration merely to repair missing provenance.
+
+## Missing configuration provenance
+
+Do not update old raw rows or invent a version/hash from payload data. Confirm
+the affected vehicle's trusted registry record contains both
+`telemetry_config_version` and `telemetry_config_hash`, then use **Verify and
+record provenance** if Tesla currently reports the exact desired configuration
+as synchronized and error-free. Confirm the processor revision can read the
+registry and that subsequent owned rows contain both fields. The
+`telemetry_capability_diagnostics` seven-day `recent_message_count` and
+`messages_with_profile_provenance` values show whether the repair is taking
+effect; older missing rows remain truthful historical evidence.
 
 ## Receiver diagnostics
 
