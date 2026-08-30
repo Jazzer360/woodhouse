@@ -100,6 +100,18 @@ def test_oauth_callback_request_urls_are_excluded_from_cloud_logging() -> None:
     assert 'httpRequest.requestUrl=~"/(auth|oauth)/callback\\\\?"' in monitoring
 
 
+def test_missing_telemetry_config_provenance_has_a_persistent_alert() -> None:
+    monitoring = (TERRAFORM_ROOT / "monitoring.tf").read_text(encoding="utf-8")
+
+    assert 'resource "google_logging_metric" "telemetry_config_provenance_missing"' in monitoring
+    assert 'jsonPayload.event="telemetry_config_provenance_missing"' in monitoring
+    assert (
+        'resource "google_monitoring_alert_policy" "telemetry_config_provenance_missing"'
+        in monitoring
+    )
+    assert 'duration        = "300s"' in monitoring
+
+
 def test_pubsub_oidc_audience_is_path_scoped_and_accepted_by_cloud_run() -> None:
     pubsub = (TERRAFORM_ROOT / "pubsub.tf").read_text(encoding="utf-8")
     cloud_run = (TERRAFORM_ROOT / "cloud_run.tf").read_text(encoding="utf-8")

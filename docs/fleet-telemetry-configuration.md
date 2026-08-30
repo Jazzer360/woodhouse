@@ -6,7 +6,7 @@ rules in [`data-and-analytics.md`](data-and-analytics.md) remain unchanged:
 frequency is controlled only here, at the Tesla source, and every valid record
 received by Woodhouse is retained.
 
-The schema and behavior were audited on 2026-08-28 against Tesla's current
+The schema and behavior were audited on 2026-08-30 against Tesla's current
 Fleet Telemetry overview, Available Data catalog, `vehicle_data.proto`, Vehicle
 Endpoints documentation, and the pinned receiver version `v0.9.4`.
 
@@ -260,13 +260,22 @@ one epoch** (`delta(SelfDrivingMilesSinceReset) / delta(MilesSinceReset)`), not
 from a single instantaneous ratio. Missing counters on an unsupported vehicle
 mean unavailable, not zero.
 
+Because pre-1.3 clients may emit the two counters independently, analytics
+carry the latest FSD value but create counter snapshots only on a
+`MilesSinceReset` value change. This consumes an asynchronously arriving FSD change
+once at the next total-mile milestone and prevents an FSD-only message from
+creating a false negative manual delta. A decrease in either paired snapshot
+starts a new epoch before any delta is calculated.
+
 Rebuildable analytics may also allocate each positive FSD counter delta
 backward over the matching route-distance bucket. A mixed bucket is represented
 as an inferred manual prefix followed by the counter-certified FSD distance;
 the last observed state may be carried to the Gear boundary only at reduced
 confidence. Segment rows retain confidence, method, and transition-distance
 bounds and use `uncertain` when evidence is missing or a reset prevents
-subtraction. These are useful trip/map inferences, not exact engagement events.
+subtraction. Leading, internal, and trailing coverage gaps are materialized as
+uncertain so FSD + manual + uncertain reconciles to the best available drive
+distance. These are useful trip/map inferences, not exact engagement events.
 
 ## Drive and charge boundary synchronization
 
@@ -280,9 +289,13 @@ at/after parking, never an unbounded nearest value.
 `ACChargingEnergyIn`, `DCChargingEnergyIn`, `Soc`, `EnergyRemaining`,
 `Odometer`, `ACChargingPower`, `DCChargingPower`, and `ChargerVoltage` on 1.3.0+.
 The special FSD counters are absent from both anchors because Tesla permits them
-to include only each other. Older sessions may use bounded AC-power integration
-when the last wall-energy counter is at most 120 seconds old; battery energy
-remains an observed lower bound unless a synchronized terminal counter exists.
+to include only each other. Older sessions subtract the latest counter at or
+before charge start and may use bounded power integration when the last
+applicable counter is at most five minutes old. A nearby after-start counter is
+never a baseline. Reconstructed AC and DC energy must fit the applicable
+maximum-power/session-duration bound; implausible candidates remain unavailable
+with explicit provenance rather than being clipped. Battery energy remains an
+observed lower bound unless a synchronized terminal counter exists.
 
 ## Per-vehicle lifecycle
 
@@ -311,7 +324,9 @@ The inspection document shows live/stored firmware and client versions, the
 pinned receiver version, whether include fields are supported/requested/present
 in Tesla's returned config, and a capability status. Historical ingestion
 evidence is exposed separately by `telemetry_capability_diagnostics`, including
-recent Gear, charge, and FSD synchronization counts. Firmware `2026.26.6` with
+recent profile-provenance coverage plus Gear, charge, and FSD synchronization
+counts. Owned telemetry persisted without both the trusted profile version and
+hash emits an alert while retaining the raw row. Firmware `2026.26.6` with
 an actual client `1.2.0` is a visible mismatch and remains capability-limited;
 Woodhouse does not manufacture a 1.3.0 capability from the firmware string.
 

@@ -40,7 +40,7 @@ adapter or second application-language codebase is maintained.
 | Secret storage | Eleven Secret Manager containers | Terraform manages containers/IAM only; operators add secret versions out of band |
 | Quarantine | `tesla_system_quarantine.raw_unknown_telemetry` | Restricted, partitioned append destination for unmapped/invalid telemetry |
 | Synthetic evidence | `tesla_system_quarantine.raw_synthetic_telemetry` | Restricted non-vehicle duplicate/retry path evidence |
-| Monitoring | backlog alert, unknown-vehicle log metric, and OAuth callback request-log exclusion | No notification destination unless existing channel IDs are supplied; callback query URLs are excluded from Cloud Logging |
+| Monitoring | backlog alerts, unknown-vehicle and missing-config-provenance log metrics/alerts, and OAuth callback request-log exclusion | No notification destination unless existing channel IDs are supplied; callback query URLs are excluded from Cloud Logging |
 | Network | custom VPC and `/28` subnet | No default ingress rules |
 
 The MCP gateway receives project-level BigQuery job permission but no

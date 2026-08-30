@@ -16,7 +16,11 @@ WITH observation_daily AS (
   SELECT
     DATE(started_at) AS summary_date,
     vehicle_id,
-    SUM(distance_miles) AS distance_miles,
+    SUM(best_available_distance_miles) AS distance_miles,
+    SUM(distance_miles) AS odometer_distance_miles,
+    SUM(IF(distance_method = 'gps_route_fallback', best_available_distance_miles, 0))
+      AS route_fallback_distance_miles,
+    COUNTIF(distance_method = 'unavailable') AS distance_unavailable_drive_count,
     SUM(energy_used_kwh) AS drive_energy_used_kwh,
     COUNT(*) AS drive_count,
     SUM(duration_seconds) AS driving_seconds
@@ -27,8 +31,12 @@ WITH observation_daily AS (
     DATE(started_at) AS summary_date,
     vehicle_id,
     COUNT(*) AS charge_session_count,
-    SUM(ac_energy_added_kwh) AS ac_energy_added_kwh,
-    SUM(dc_energy_added_kwh) AS dc_energy_added_kwh
+    COUNTIF(COALESCE(energy_quality, 'unavailable') != 'validated')
+      AS charge_energy_issue_count,
+    SUM(IF(energy_quality = 'validated', ac_energy_added_kwh, NULL))
+      AS ac_energy_added_kwh,
+    SUM(IF(energy_quality = 'validated', dc_energy_added_kwh, NULL))
+      AS dc_energy_added_kwh
   FROM {{ ref("charge_sessions") }}
   GROUP BY summary_date, vehicle_id
 ), daily_keys AS (
@@ -42,12 +50,16 @@ SELECT
   key.summary_date,
   key.vehicle_id,
   drive.distance_miles,
+  drive.odometer_distance_miles,
+  drive.route_fallback_distance_miles,
+  COALESCE(drive.distance_unavailable_drive_count, 0) AS distance_unavailable_drive_count,
   drive.drive_energy_used_kwh,
   SAFE_DIVIDE(drive.drive_energy_used_kwh * 1000, NULLIF(drive.distance_miles, 0))
     AS efficiency_wh_per_mile,
   COALESCE(drive.drive_count, 0) AS drive_count,
   COALESCE(drive.driving_seconds, 0) AS driving_seconds,
   COALESCE(charge.charge_session_count, 0) AS charge_session_count,
+  COALESCE(charge.charge_energy_issue_count, 0) AS charge_energy_issue_count,
   charge.ac_energy_added_kwh,
   charge.dc_energy_added_kwh,
   observation.minimum_soc_percent,

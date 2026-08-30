@@ -45,6 +45,58 @@ resource "google_logging_metric" "unknown_vehicle_telemetry" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_logging_metric" "telemetry_config_provenance_missing" {
+  project     = var.project_id
+  name        = "tpp/telemetry_config_provenance_missing"
+  description = "Owned telemetry persisted without a complete trusted configuration version and hash."
+  filter      = <<-EOT
+    resource.type="cloud_run_revision"
+    resource.labels.service_name="${google_cloud_run_v2_service.platform["telemetry_processor"].name}"
+    jsonPayload.event="telemetry_config_provenance_missing"
+  EOT
+
+  metric_descriptor {
+    metric_kind  = "DELTA"
+    value_type   = "INT64"
+    unit         = "1"
+    display_name = "Telemetry records missing config provenance"
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_monitoring_alert_policy" "telemetry_config_provenance_missing" {
+  project      = var.project_id
+  display_name = "TPP telemetry config provenance is missing"
+  combiner     = "OR"
+  enabled      = true
+
+  documentation {
+    content   = "Owned raw telemetry is arriving without both the trusted applied profile version and hash. Preserve the rows, then verify the vehicle telemetry configuration record and processor deployment using the telemetry repair runbook."
+    mime_type = "text/markdown"
+  }
+
+  conditions {
+    display_name = "Missing config provenance persisted for five minutes"
+
+    condition_threshold {
+      filter          = "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.telemetry_config_provenance_missing.name}\""
+      comparison      = "COMPARISON_GT"
+      duration        = "300s"
+      threshold_value = 0
+
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+    }
+  }
+
+  notification_channels = var.monitoring_notification_channels
+
+  depends_on = [google_logging_metric.telemetry_config_provenance_missing]
+}
+
 resource "google_logging_metric" "telemetry_certificate_check_success" {
   project     = var.project_id
   name        = "tpp/telemetry_certificate_check_success"

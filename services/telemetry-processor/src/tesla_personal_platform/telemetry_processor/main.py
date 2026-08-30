@@ -154,6 +154,10 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             fields["user_id"] = result.user_id
         if result.vehicle_id:
             fields["vehicle_id"] = result.vehicle_id
+        if result.telemetry_config_provenance:
+            fields["telemetry_config_provenance"] = result.telemetry_config_provenance
+            if result.telemetry_config_provenance != "complete":
+                fields["event"] = "telemetry_config_provenance_missing"
         if result.quarantine_reason:
             fields["quarantine_reason"] = result.quarantine_reason
             fields["event"] = (

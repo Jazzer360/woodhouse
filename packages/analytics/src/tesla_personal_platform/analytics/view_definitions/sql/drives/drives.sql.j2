@@ -8,6 +8,8 @@ WITH sessions AS (
     observation.source_timestamp AS observation_timestamp,
     observation.field_name,
     observation.numeric_value,
+    observation.latitude,
+    observation.longitude,
     observation.telemetry_config_hash,
     TIMESTAMP_DIFF(
       observation.source_timestamp,
@@ -35,6 +37,48 @@ WITH sessions AS (
       ORDER BY observation_timestamp DESC LIMIT 1)[SAFE_OFFSET(0)] AS telemetry_config_hash
   FROM joined
   GROUP BY drive_id, vehicle_id, started_at, ended_at
+), route_points AS (
+  SELECT
+    drive_id,
+    observation_timestamp,
+    ST_GEOGPOINT(MAX(longitude), MAX(latitude)) AS point
+  FROM joined
+  WHERE field_name = 'Location'
+    AND latitude IS NOT NULL
+    AND longitude IS NOT NULL
+  GROUP BY drive_id, observation_timestamp
+), route_segments AS (
+  SELECT
+    drive_id,
+    observation_timestamp,
+    LAG(observation_timestamp) OVER route_window AS previous_observation_timestamp,
+    ST_DISTANCE(
+      LAG(point) OVER (PARTITION BY drive_id ORDER BY observation_timestamp),
+      point
+    ) / 1609.344 AS candidate_segment_distance_miles
+  FROM route_points
+  WINDOW route_window AS (
+    PARTITION BY drive_id ORDER BY observation_timestamp
+  )
+), validated_route_segments AS (
+  SELECT
+    *,
+    candidate_segment_distance_miles <= GREATEST(
+      0.05,
+      TIMESTAMP_DIFF(observation_timestamp, previous_observation_timestamp, MILLISECOND)
+        / 3600000.0 * 200
+    ) AS is_plausible_segment
+  FROM route_segments
+), route_summary AS (
+  SELECT
+    drive_id,
+    SUM(IF(is_plausible_segment, candidate_segment_distance_miles, 0))
+      AS route_distance_miles,
+    COUNT(*) AS route_point_count,
+    COUNTIF(candidate_segment_distance_miles IS NOT NULL AND NOT is_plausible_segment)
+      AS route_rejected_segment_count
+  FROM validated_route_segments
+  GROUP BY drive_id
 ), boundaries AS (
   SELECT
     drive_id,
@@ -73,10 +117,37 @@ WITH sessions AS (
   SELECT
     observation.*,
     boundary.* EXCEPT(drive_id),
+    route.route_distance_miles,
+    COALESCE(route.route_point_count, 0) AS route_point_count,
+    COALESCE(route.route_rejected_segment_count, 0) AS route_rejected_segment_count,
     GREATEST(end_odometer_miles - start_odometer_miles, 0) AS distance_miles,
     GREATEST(start_energy_kwh - end_energy_kwh, 0) AS energy_used_kwh
   FROM observation_summary AS observation
   JOIN boundaries AS boundary USING (drive_id)
+  LEFT JOIN route_summary AS route USING (drive_id)
+), resolved AS (
+  SELECT
+    *,
+    CASE
+      WHEN distance_miles IS NOT NULL THEN distance_miles
+      WHEN route_distance_miles > 0
+        AND route_point_count >= 2
+        AND route_rejected_segment_count = 0 THEN route_distance_miles
+    END AS best_available_distance_miles,
+    CASE
+      WHEN distance_miles IS NOT NULL THEN 'odometer_boundary'
+      WHEN route_distance_miles > 0
+        AND route_point_count >= 2
+        AND route_rejected_segment_count = 0 THEN 'gps_route_fallback'
+      ELSE 'unavailable'
+    END AS distance_method,
+    CASE
+      WHEN route_rejected_segment_count > 0 THEN 'rejected_implausible_segment'
+      WHEN route_point_count < 2 THEN 'insufficient_points'
+      WHEN route_distance_miles > 0 THEN 'usable'
+      ELSE 'zero_distance'
+    END AS route_quality
+  FROM metrics
 )
 SELECT
   drive_id,
@@ -89,12 +160,18 @@ SELECT
   start_odometer_miles,
   end_odometer_miles,
   distance_miles,
+  route_distance_miles,
+  route_point_count,
+  route_rejected_segment_count,
+  route_quality,
+  best_available_distance_miles,
+  distance_method,
   start_energy_kwh,
   end_energy_kwh,
   energy_used_kwh,
   start_soc_percent,
   end_soc_percent,
-  SAFE_DIVIDE(energy_used_kwh * 1000, NULLIF(distance_miles, 0))
+  SAFE_DIVIDE(energy_used_kwh * 1000, NULLIF(best_available_distance_miles, 0))
     AS efficiency_wh_per_mile,
   maximum_speed_mph,
   start_latitude,
@@ -105,4 +182,4 @@ SELECT
   largest_sample_gap_seconds,
   telemetry_config_hash,
   boundary_quality
-FROM metrics
+FROM resolved

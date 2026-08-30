@@ -140,6 +140,42 @@ def test_buffered_source_timestamp_is_preserved_independently_of_ingestion_time(
     assert event.processed_at == NOW
 
 
+def test_trusted_vehicle_config_provenance_is_stamped_on_every_owned_event() -> None:
+    sink = RecordingSink()
+    route = VehicleRoute(
+        "user-a",
+        "tesla_u_a",
+        "vehicle-a",
+        None,
+        telemetry_config_version="broad-v4",
+        telemetry_config_hash="config-sha256",
+    )
+
+    result = processor({"VIN-A": route}, sink).process(incoming(), now=NOW)
+
+    event = sink.user_rows[0][1]
+    assert event.telemetry_config_version == "broad-v4"
+    assert event.telemetry_config_hash == "config-sha256"
+    assert result.telemetry_config_provenance == "complete"
+
+
+def test_missing_or_partial_config_provenance_is_preserved_and_reported() -> None:
+    sink = RecordingSink()
+    route = VehicleRoute(
+        "user-a",
+        "tesla_u_a",
+        "vehicle-a",
+        None,
+        telemetry_config_version="broad-v4",
+    )
+
+    result = processor({"VIN-A": route}, sink).process(incoming(), now=NOW)
+
+    assert sink.user_rows[0][1].telemetry_config_version == "broad-v4"
+    assert sink.user_rows[0][1].telemetry_config_hash is None
+    assert result.telemetry_config_provenance == "partial"
+
+
 def test_duplicate_and_unchanged_deliveries_are_all_preserved() -> None:
     sink = RecordingSink()
     service = processor({"VIN-A": VehicleRoute("user-a", "tesla_u_a", "vehicle-a", None)}, sink)
@@ -466,6 +502,8 @@ def firestore_registry(user_status: str, dataset_id: str) -> FirestoreVehicleReg
                         "vin": vin,
                         "owner_user_id": "user-a",
                         "tesla_vehicle_id": "tesla-a",
+                        "telemetry_config_version": "broad-v4",
+                        "telemetry_config_hash": "config-sha256",
                     }
                 }
             ),
@@ -485,6 +523,10 @@ def firestore_registry(user_status: str, dataset_id: str) -> FirestoreVehicleReg
 
 
 def test_firestore_registry_requires_active_user_and_opaque_dataset() -> None:
-    assert firestore_registry("active", "tesla_u_a").resolve("VIN-A") is not None
+    route = firestore_registry("active", "tesla_u_a").resolve("VIN-A")
+
+    assert route is not None
+    assert route.telemetry_config_version == "broad-v4"
+    assert route.telemetry_config_hash == "config-sha256"
     assert firestore_registry("disabled", "tesla_u_a").resolve("VIN-A") is None
     assert firestore_registry("active", "caller_supplied_dataset").resolve("VIN-A") is None

@@ -117,6 +117,7 @@ class ProcessingResult:
     quarantine_reason: str | None = None
     fixture_id: str | None = None
     source_authentication: str | None = None
+    telemetry_config_provenance: str | None = None
 
 
 class TelemetryProcessor:
@@ -197,6 +198,7 @@ class TelemetryProcessor:
             telemetry_config_hash=route.telemetry_config_hash,
         )
         self._sink.append_user(route.dataset_id, owned_event)
+        telemetry_config_provenance = _config_provenance(route)
         return ProcessingResult(
             "persisted",
             incoming.record_type,
@@ -204,6 +206,7 @@ class TelemetryProcessor:
             vehicle_id=route.vehicle_id,
             user_id=route.user_id,
             source_authentication=incoming.source_authentication,
+            telemetry_config_provenance=telemetry_config_provenance,
         )
 
     def _event(self, incoming: IncomingTelemetry, *, now: datetime) -> RawTelemetryEvent:
@@ -358,6 +361,15 @@ def _optional_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _config_provenance(route: VehicleRoute) -> str:
+    values = (route.telemetry_config_version, route.telemetry_config_hash)
+    if all(values):
+        return "complete"
+    if any(values):
+        return "partial"
+    return "missing"
 
 
 def _synthetic_fixture_id(attributes: dict[str, str]) -> str | None:

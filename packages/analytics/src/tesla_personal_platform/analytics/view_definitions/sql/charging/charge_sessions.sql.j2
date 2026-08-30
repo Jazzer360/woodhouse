@@ -188,6 +188,9 @@ WITH raw_charge_events AS (
       PARTITION BY boundary.charge_session_id, boundary.boundary_name, boundary.field_name
       ORDER BY
         CASE
+          WHEN boundary.boundary_name = 'start'
+            AND boundary.field_name IN ('ACChargingEnergyIn', 'DCChargingEnergyIn')
+            AND observation.source_timestamp <= boundary.started_at THEN 0
           WHEN observation.pubsub_message_id = boundary.boundary_message_id THEN 0
           WHEN ABS(TIMESTAMP_DIFF(
             observation.source_timestamp, boundary.boundary_at, SECOND)) <= 120 THEN 1
@@ -405,8 +408,14 @@ WITH raw_charge_events AS (
     MAX(IF(boundary_name = 'end' AND field_name = 'Location',
       selected_longitude, NULL)) AS end_longitude,
     MAX(IF(boundary_name = 'start' AND field_name = 'ACChargingEnergyIn'
-      AND inference_method = 'exact_synchronized_boundary', selected_numeric_value, 0))
+      AND selected_observation_at <= started_at, selected_numeric_value, NULL))
       AS start_ac_energy_kwh,
+    MAX(IF(boundary_name = 'start' AND field_name = 'ACChargingEnergyIn'
+      AND selected_observation_at <= started_at, selected_observation_at, NULL))
+      AS start_ac_observed_at,
+    MAX(IF(boundary_name = 'start' AND field_name = 'ACChargingEnergyIn'
+      AND selected_observation_at <= started_at, inference_method, NULL))
+      AS start_ac_energy_method,
     MAX(IF(boundary_name = 'end' AND field_name = 'ACChargingEnergyIn',
       selected_numeric_value, NULL)) AS observed_end_ac_energy_kwh,
     MAX(IF(boundary_name = 'end' AND field_name = 'ACChargingEnergyIn',
@@ -414,8 +423,14 @@ WITH raw_charge_events AS (
     MAX(IF(boundary_name = 'end' AND field_name = 'ACChargingEnergyIn',
       inference_method, NULL)) AS ac_energy_method,
     MAX(IF(boundary_name = 'start' AND field_name = 'DCChargingEnergyIn'
-      AND inference_method = 'exact_synchronized_boundary', selected_numeric_value, 0))
+      AND selected_observation_at <= started_at, selected_numeric_value, NULL))
       AS start_dc_energy_kwh,
+    MAX(IF(boundary_name = 'start' AND field_name = 'DCChargingEnergyIn'
+      AND selected_observation_at <= started_at, selected_observation_at, NULL))
+      AS start_dc_observed_at,
+    MAX(IF(boundary_name = 'start' AND field_name = 'DCChargingEnergyIn'
+      AND selected_observation_at <= started_at, inference_method, NULL))
+      AS start_dc_energy_method,
     MAX(IF(boundary_name = 'end' AND field_name = 'DCChargingEnergyIn',
       selected_numeric_value, NULL)) AS observed_end_dc_energy_kwh,
     MAX(IF(boundary_name = 'end' AND field_name = 'DCChargingEnergyIn',
@@ -562,10 +577,18 @@ WITH raw_charge_events AS (
   SELECT
     spec.charge_session_id,
     MAX(IF(spec.energy_kind = 'ac' AND spec.counter_is_applicable,
-      GREATEST(spec.observed_end_ac_energy_kwh - spec.start_ac_energy_kwh, 0), NULL))
+      GREATEST(spec.observed_end_ac_energy_kwh - CASE
+        WHEN spec.start_ac_energy_kwh IS NULL
+          OR spec.observed_end_ac_energy_kwh < spec.start_ac_energy_kwh - 0.001 THEN 0
+        ELSE spec.start_ac_energy_kwh
+      END, 0), NULL))
       AS ac_energy_counter_kwh,
     MAX(IF(spec.energy_kind = 'dc',
-      GREATEST(spec.observed_end_dc_energy_kwh - spec.start_dc_energy_kwh, 0), NULL))
+      GREATEST(spec.observed_end_dc_energy_kwh - CASE
+        WHEN spec.start_dc_energy_kwh IS NULL
+          OR spec.observed_end_dc_energy_kwh < spec.start_dc_energy_kwh - 0.001 THEN 0
+        ELSE spec.start_dc_energy_kwh
+      END, 0), NULL))
       AS dc_energy_counter_kwh,
     MAX(IF(spec.energy_kind = 'ac' AND spec.ac_counter_anomalies = 0
       AND TIMESTAMP_DIFF(spec.ended_at, spec.counter_observed_at, SECOND) = 0,
@@ -591,7 +614,7 @@ WITH raw_charge_events AS (
     ON invalid.charge_session_id = spec.charge_session_id
     AND invalid.energy_kind = spec.energy_kind
   GROUP BY spec.charge_session_id
-), corrected AS (
+), corrected_candidates AS (
   SELECT
     session_summary.*,
     boundary.* EXCEPT(charge_session_id, ac_energy_method, dc_energy_method),
@@ -599,34 +622,147 @@ WITH raw_charge_events AS (
     energy.ac_energy_tail_kwh,
     energy.dc_energy_counter_kwh,
     energy.dc_energy_tail_kwh,
+    COALESCE(quality.ac_counter_anomalies, 0) AS ac_counter_anomalies,
+    COALESCE(quality.dc_counter_anomalies, 0) AS dc_counter_anomalies,
     CASE
       WHEN quality.ac_counter_anomalies > 0 THEN NULL
       WHEN energy.ac_energy_counter_kwh IS NULL THEN NULL
       ELSE energy.ac_energy_counter_kwh + COALESCE(energy.ac_energy_tail_kwh, 0)
-    END AS ac_energy_added_kwh,
+    END AS candidate_ac_energy_added_kwh,
     CASE
       WHEN quality.dc_counter_anomalies > 0 THEN NULL
       WHEN energy.dc_energy_counter_kwh IS NULL THEN NULL
       ELSE energy.dc_energy_counter_kwh + COALESCE(energy.dc_energy_tail_kwh, 0)
-    END AS dc_energy_added_kwh,
+    END AS candidate_dc_energy_added_kwh,
     CASE
-      WHEN quality.ac_counter_anomalies > 0 THEN 'counter_anomaly'
-      WHEN energy.ac_energy_counter_kwh IS NULL THEN 'unavailable'
-      WHEN energy.ac_energy_tail_kwh > 0 THEN 'measured_counter_plus_bounded_power_tail'
-      WHEN boundary.end_ac_observed_at = session_summary.ended_at THEN 'measured_counter'
-      ELSE 'measured_counter_tail_unavailable'
-    END AS ac_energy_method,
-    CASE
-      WHEN quality.dc_counter_anomalies > 0 THEN 'counter_anomaly'
-      WHEN energy.dc_energy_counter_kwh IS NULL THEN 'unavailable'
-      WHEN energy.dc_energy_tail_kwh > 0 THEN 'measured_counter_plus_bounded_power_tail'
-      WHEN boundary.end_dc_observed_at = session_summary.ended_at THEN 'measured_counter'
-      ELSE 'measured_counter_tail_unavailable'
-    END AS dc_energy_method
+      WHEN session_summary.maximum_ac_power_kw > 0 THEN
+        session_summary.maximum_ac_power_kw
+          * TIMESTAMP_DIFF(session_summary.ended_at, session_summary.started_at, MILLISECOND)
+          / 3600000.0
+          + GREATEST(
+            0.05,
+            session_summary.maximum_ac_power_kw
+              * TIMESTAMP_DIFF(
+                session_summary.ended_at, session_summary.started_at, MILLISECOND
+              ) / 3600000.0 * 0.02
+          )
+    END AS ac_energy_upper_bound_kwh
   FROM aggregated AS session_summary
   JOIN boundary_values AS boundary USING (charge_session_id)
   LEFT JOIN counter_quality AS quality USING (charge_session_id)
   LEFT JOIN energy_reconstructed AS energy USING (charge_session_id)
+), bounded_candidates AS (
+  SELECT
+    *,
+    CASE
+      WHEN maximum_dc_power_kw > 0 THEN
+        maximum_dc_power_kw * TIMESTAMP_DIFF(ended_at, started_at, MILLISECOND)
+          / 3600000.0
+          + GREATEST(
+            0.05,
+            maximum_dc_power_kw * TIMESTAMP_DIFF(ended_at, started_at, MILLISECOND)
+              / 3600000.0 * 0.02
+          )
+      WHEN maximum_ac_power_kw > 0 AND candidate_ac_energy_added_kwh IS NOT NULL THEN
+        candidate_ac_energy_added_kwh
+          + GREATEST(0.05, candidate_ac_energy_added_kwh * 0.05)
+    END AS dc_energy_upper_bound_kwh
+  FROM corrected_candidates
+), corrected AS (
+  SELECT
+    candidate.* EXCEPT(
+      ac_energy_counter_kwh, ac_energy_tail_kwh,
+      dc_energy_counter_kwh, dc_energy_tail_kwh,
+      ac_counter_anomalies, dc_counter_anomalies,
+      candidate_ac_energy_added_kwh, candidate_dc_energy_added_kwh
+    ),
+    IF(
+      candidate_ac_energy_added_kwh IS NULL
+        OR ac_energy_upper_bound_kwh IS NULL
+        OR candidate_ac_energy_added_kwh > ac_energy_upper_bound_kwh,
+      NULL,
+      ac_energy_counter_kwh
+    ) AS ac_energy_counter_kwh,
+    IF(
+      candidate_ac_energy_added_kwh IS NULL
+        OR ac_energy_upper_bound_kwh IS NULL
+        OR candidate_ac_energy_added_kwh > ac_energy_upper_bound_kwh,
+      NULL,
+      ac_energy_tail_kwh
+    ) AS ac_energy_tail_kwh,
+    IF(
+      candidate_ac_energy_added_kwh IS NULL
+        OR ac_energy_upper_bound_kwh IS NULL
+        OR candidate_ac_energy_added_kwh > ac_energy_upper_bound_kwh,
+      NULL,
+      candidate_ac_energy_added_kwh
+    ) AS ac_energy_added_kwh,
+    IF(
+      candidate_dc_energy_added_kwh IS NULL
+        OR dc_energy_upper_bound_kwh IS NULL
+        OR candidate_dc_energy_added_kwh > dc_energy_upper_bound_kwh,
+      NULL,
+      dc_energy_counter_kwh
+    ) AS dc_energy_counter_kwh,
+    IF(
+      candidate_dc_energy_added_kwh IS NULL
+        OR dc_energy_upper_bound_kwh IS NULL
+        OR candidate_dc_energy_added_kwh > dc_energy_upper_bound_kwh,
+      NULL,
+      dc_energy_tail_kwh
+    ) AS dc_energy_tail_kwh,
+    IF(
+      candidate_dc_energy_added_kwh IS NULL
+        OR dc_energy_upper_bound_kwh IS NULL
+        OR candidate_dc_energy_added_kwh > dc_energy_upper_bound_kwh,
+      NULL,
+      candidate_dc_energy_added_kwh
+    ) AS dc_energy_added_kwh,
+    CASE
+      WHEN ac_counter_anomalies > 0 THEN 'counter_anomaly'
+      WHEN ac_energy_counter_kwh IS NULL THEN 'unavailable'
+      WHEN ac_energy_upper_bound_kwh IS NULL THEN 'physical_bound_unavailable'
+      WHEN candidate_ac_energy_added_kwh > ac_energy_upper_bound_kwh
+        THEN 'physically_implausible'
+      WHEN ac_energy_tail_kwh > 0 THEN 'measured_counter_plus_bounded_power_tail'
+      WHEN end_ac_observed_at = ended_at THEN 'measured_counter'
+      ELSE 'measured_counter_tail_unavailable'
+    END AS ac_energy_method,
+    CASE
+      WHEN dc_counter_anomalies > 0 THEN 'counter_anomaly'
+      WHEN dc_energy_counter_kwh IS NULL THEN 'unavailable'
+      WHEN dc_energy_upper_bound_kwh IS NULL THEN 'physical_bound_unavailable'
+      WHEN candidate_dc_energy_added_kwh > dc_energy_upper_bound_kwh
+        THEN 'physically_implausible'
+      WHEN dc_energy_tail_kwh > 0 THEN 'measured_counter_plus_bounded_power_tail'
+      WHEN end_dc_observed_at = ended_at THEN 'measured_counter'
+      ELSE 'measured_counter_tail_unavailable'
+    END AS dc_energy_method,
+    CASE
+      WHEN ac_counter_anomalies > 0 OR dc_counter_anomalies > 0 THEN 'counter_anomaly'
+      WHEN (candidate_ac_energy_added_kwh IS NOT NULL
+          AND ac_energy_upper_bound_kwh IS NULL)
+        OR (candidate_dc_energy_added_kwh IS NOT NULL
+          AND dc_energy_upper_bound_kwh IS NULL)
+        THEN 'physical_bound_unavailable'
+      WHEN candidate_ac_energy_added_kwh > ac_energy_upper_bound_kwh
+        OR candidate_dc_energy_added_kwh > dc_energy_upper_bound_kwh
+        THEN 'physically_implausible'
+      WHEN candidate_ac_energy_added_kwh IS NULL
+        AND candidate_dc_energy_added_kwh IS NULL THEN 'unavailable'
+      WHEN (candidate_ac_energy_added_kwh IS NOT NULL
+          AND start_ac_energy_kwh IS NOT NULL
+          AND observed_end_ac_energy_kwh < start_ac_energy_kwh - 0.001)
+        OR (candidate_dc_energy_added_kwh IS NOT NULL
+          AND start_dc_energy_kwh IS NOT NULL
+          AND observed_end_dc_energy_kwh < start_dc_energy_kwh - 0.001)
+        THEN 'counter_reset'
+      WHEN (candidate_ac_energy_added_kwh IS NOT NULL AND start_ac_energy_kwh IS NULL)
+        OR (candidate_dc_energy_added_kwh IS NOT NULL AND start_dc_energy_kwh IS NULL)
+        THEN 'baseline_unavailable'
+      ELSE 'validated'
+    END AS energy_quality
+  FROM bounded_candidates AS candidate
 ), with_previous_charge AS (
   SELECT
     *,
@@ -654,9 +790,11 @@ SELECT
   ac_energy_counter_kwh,
   ac_energy_tail_kwh,
   ac_energy_added_kwh,
+  ac_energy_upper_bound_kwh,
   dc_energy_counter_kwh,
   dc_energy_tail_kwh,
   dc_energy_added_kwh,
+  dc_energy_upper_bound_kwh,
   dc_energy_added_kwh AS battery_energy_added_kwh,
   SAFE_MULTIPLY(100, SAFE_DIVIDE(
     dc_energy_added_kwh,
@@ -685,5 +823,18 @@ SELECT
   end_location_boundary_method,
   ac_energy_method,
   dc_energy_method,
+  CASE
+    WHEN start_ac_energy_kwh IS NULL THEN 'assumed_zero_no_pre_boundary_counter'
+    WHEN observed_end_ac_energy_kwh < start_ac_energy_kwh - 0.001
+      THEN 'counter_reset_after_start'
+    ELSE start_ac_energy_method
+  END AS start_ac_energy_method,
+  CASE
+    WHEN start_dc_energy_kwh IS NULL THEN 'assumed_zero_no_pre_boundary_counter'
+    WHEN observed_end_dc_energy_kwh < start_dc_energy_kwh - 0.001
+      THEN 'counter_reset_after_start'
+    ELSE start_dc_energy_method
+  END AS start_dc_energy_method,
+  energy_quality,
   telemetry_config_hash
 FROM with_previous_charge

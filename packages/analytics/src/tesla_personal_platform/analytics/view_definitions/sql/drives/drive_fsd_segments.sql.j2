@@ -25,22 +25,43 @@ WITH counter_updates AS (
     PARTITION BY vehicle_id ORDER BY source_timestamp, pubsub_message_id
     ROWS UNBOUNDED PRECEDING
   )
-), paired_changes AS (
+), counter_snapshots AS (
   SELECT
     *,
     ABS(TIMESTAMP_DIFF(total_observed_at, fsd_observed_at, SECOND)) AS pairing_gap_seconds
   FROM counter_state
-  WHERE total_miles IS NOT NULL AND fsd_miles IS NOT NULL
-  QUALIFY LAG(TO_JSON_STRING(STRUCT(total_miles, fsd_miles))) OVER (
+  WHERE total_update IS NOT NULL AND fsd_miles IS NOT NULL
+  QUALIFY LAG(total_miles) OVER (
     PARTITION BY vehicle_id ORDER BY source_timestamp, pubsub_message_id
-  ) IS DISTINCT FROM TO_JSON_STRING(STRUCT(total_miles, fsd_miles))
+  ) IS DISTINCT FROM total_miles
+), reset_markers AS (
+  SELECT
+    *,
+    IF(
+      total_miles < LAG(total_miles) OVER counter_window
+        OR fsd_miles < LAG(fsd_miles) OVER counter_window,
+      1,
+      0
+    ) AS begins_reset_epoch
+  FROM counter_snapshots
+  WINDOW counter_window AS (
+    PARTITION BY vehicle_id ORDER BY source_timestamp, pubsub_message_id
+  )
+), paired_changes AS (
+  SELECT
+    *,
+    SUM(begins_reset_epoch) OVER (
+      PARTITION BY vehicle_id ORDER BY source_timestamp, pubsub_message_id
+      ROWS UNBOUNDED PRECEDING
+    ) AS reset_epoch
+  FROM reset_markers
 ), drive_candidates AS (
   SELECT
     drive.drive_id,
     drive.vehicle_id,
     drive.started_at,
     drive.ended_at,
-    drive.distance_miles,
+    drive.best_available_distance_miles AS distance_miles,
     counter.* EXCEPT(vehicle_id),
     IF(counter.source_timestamp < drive.started_at,
       ROW_NUMBER() OVER (
@@ -90,7 +111,7 @@ WITH counter_updates AS (
     LAG(fsd_miles) OVER point_window AS previous_fsd_miles
   FROM mapped_points
   WINDOW point_window AS (
-    PARTITION BY drive_id ORDER BY source_timestamp, pubsub_message_id
+    PARTITION BY drive_id, reset_epoch ORDER BY source_timestamp, pubsub_message_id
   )
 ), buckets AS (
   SELECT
@@ -204,6 +225,66 @@ WITH counter_updates AS (
       []
     )
   )) AS segment
+), ordered_inferred_segments AS (
+  SELECT
+    *,
+    LAG(end_distance_miles) OVER segment_window AS previous_end_distance_miles,
+    ROW_NUMBER() OVER segment_window AS segment_rank,
+    COUNT(*) OVER (PARTITION BY drive_id) AS segment_count
+  FROM inferred_segments
+  WINDOW segment_window AS (
+    PARTITION BY drive_id ORDER BY start_distance_miles, end_distance_miles, state
+  )
+), completed_segment_arrays AS (
+  SELECT
+    drive_id,
+    ARRAY_CONCAT(
+      IF(segment_rank = 1 AND start_distance_miles > 0.001, [STRUCT(
+        0.0 AS start_distance_miles,
+        start_distance_miles AS end_distance_miles,
+        'uncertain' AS state,
+        0.0 AS confidence,
+        'insufficient_counter_evidence' AS inference_method,
+        0.0 AS transition_lower_bound_miles,
+        start_distance_miles AS transition_upper_bound_miles
+      )], []),
+      IF(previous_end_distance_miles IS NOT NULL
+        AND start_distance_miles - previous_end_distance_miles > 0.001, [STRUCT(
+          previous_end_distance_miles AS start_distance_miles,
+          start_distance_miles AS end_distance_miles,
+          'uncertain' AS state,
+          0.0 AS confidence,
+          'insufficient_counter_evidence' AS inference_method,
+          previous_end_distance_miles AS transition_lower_bound_miles,
+          start_distance_miles AS transition_upper_bound_miles
+        )], []),
+      [STRUCT(
+        start_distance_miles,
+        end_distance_miles,
+        state,
+        confidence,
+        inference_method,
+        transition_lower_bound_miles,
+        transition_upper_bound_miles
+      )],
+      IF(segment_rank = segment_count
+        AND drive_distance_miles - end_distance_miles > 0.001, [STRUCT(
+          end_distance_miles AS start_distance_miles,
+          drive_distance_miles AS end_distance_miles,
+          'uncertain' AS state,
+          0.0 AS confidence,
+          'insufficient_counter_evidence' AS inference_method,
+          end_distance_miles AS transition_lower_bound_miles,
+          drive_distance_miles AS transition_upper_bound_miles
+        )], [])
+    ) AS segments
+  FROM ordered_inferred_segments
+), completed_segments AS (
+  SELECT
+    completed.drive_id,
+    segment.*
+  FROM completed_segment_arrays AS completed
+  CROSS JOIN UNNEST(completed.segments) AS segment
 ), all_segments AS (
   SELECT
     drive.drive_id,
@@ -222,7 +303,7 @@ WITH counter_updates AS (
     COALESCE(segment.transition_upper_bound_miles, drive.distance_miles)
       AS transition_upper_bound_miles
   FROM {{ ref("drives") }} AS drive
-  LEFT JOIN inferred_segments AS segment USING (drive_id)
+  LEFT JOIN completed_segments AS segment USING (drive_id)
 ), located AS (
   SELECT
     segment.*,
