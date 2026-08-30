@@ -42,6 +42,17 @@ class MCPAuthorizationSettings:
         parsed = urlsplit(self.resource_url)
         return f"{parsed.scheme}://{parsed.netloc}/.well-known/oauth-protected-resource"
 
+    @property
+    def public_authority(self) -> str:
+        """Return the validated Host header authority for the MCP transport."""
+        return urlsplit(self.resource_url).netloc
+
+    @property
+    def public_origin(self) -> str:
+        """Return the validated same-origin browser origin for the MCP transport."""
+        parsed = urlsplit(self.resource_url)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
     def metadata_document(self) -> dict[str, object]:
         return {
             "resource": self.resource_url,
