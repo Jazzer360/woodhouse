@@ -200,6 +200,11 @@ values from being retained prospectively; the exclusion does not retroactively
 delete earlier entries. JSON callback and onboarding
 responses are marked `no-store` with a `no-referrer` policy.
 
+The MCP transport keeps the SDK's DNS-rebinding protection enabled with an
+explicit Host and same-origin allowlist derived from the validated public MCP
+resource URL. Loopback defaults must not be used for the deployed transport,
+and arbitrary forwarded Host or Origin values remain rejected.
+
 Refresh commits use an optimistic token version. A successful exchange must
 atomically replace the encrypted credential blob. A competing loser reloads the
 newer committed credential rather than overwriting it. Tesla `login_required`

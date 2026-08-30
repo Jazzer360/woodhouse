@@ -10,6 +10,7 @@ from http import HTTPStatus
 from typing import Final, cast
 from urllib.parse import parse_qs
 
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.datastructures import QueryParams
 from starlette.middleware import Middleware
@@ -92,6 +93,11 @@ def create_app(runtime: GatewayRuntime) -> Starlette:
         mcp_app = mcp.streamable_http_app(
             streamable_http_path="/mcp",
             max_request_body_size=MAX_REQUEST_BYTES,
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=[runtime.authorization.public_authority],
+                allowed_origins=[runtime.authorization.public_origin],
+            ),
         )
 
     @asynccontextmanager

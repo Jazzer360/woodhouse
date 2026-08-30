@@ -176,6 +176,66 @@ def test_official_mcp_route_returns_oauth_resource_challenge_without_redirect() 
     assert "resource_metadata=" in response.headers["www-authenticate"]
 
 
+@pytest.mark.parametrize(
+    ("base_url", "expected_status"),
+    [
+        ("https://woodhouse.derekjass.com", 200),
+        ("https://unexpected.example", 421),
+    ],
+)
+def test_authenticated_mcp_transport_accepts_only_the_configured_public_host(
+    base_url: str,
+    expected_status: int,
+) -> None:
+    issuer = "https://tenant.example.auth0.com/"
+    subject = "auth0-homer"
+    identity = VerifiedIdentity(
+        issuer,
+        subject,
+        "homer@example.com",
+        email_verified=True,
+    )
+    identities = InMemoryIdentityStore(
+        [replace(active_user(), oidc_issuer=issuer, oidc_subject=subject)]
+    )
+    authorization = MCPAuthorizationSettings(
+        "https://woodhouse.derekjass.com/mcp",
+        issuer,
+        ("mcp:access",),
+    )
+    tesla = TeslaRuntime(
+        cast(TeslaOnboardingService, object()),
+        b"",
+        mcp_service=cast(TeslaMCPService, object()),
+    )
+    runtime = GatewayRuntime(
+        boundary_for(identities, {"valid-token": identity}),
+        tesla,
+        authorization,
+        None,
+    )
+    with TestClient(create_app(runtime), base_url=base_url) as client:
+        response = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "host-validation-test", "version": "1"},
+                },
+            },
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Authorization": "Bearer valid-token",
+            },
+        )
+
+    assert response.status_code == expected_status
+
+
 def test_tesla_failure_log_contains_only_safe_metadata(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
