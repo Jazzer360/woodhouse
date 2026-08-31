@@ -1,6 +1,7 @@
 """BigQuery per-user ACL construction tests."""
 
 import pytest
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 from tesla_personal_platform.auth.bigquery_admin import (
     ANALYTICS_VIEW_LABELS,
@@ -41,7 +42,14 @@ def test_dataset_access_is_exact_minimal_and_idempotent() -> None:
 
 
 class RecordingBigQueryClient:
-    def __init__(self, current: bigquery.Dataset, *, fail_view_creation: bool = False) -> None:
+    def __init__(
+        self,
+        current: bigquery.Dataset,
+        *,
+        fail_view_creation: bool = False,
+        fail_view_name: str | None = None,
+        fail_view_update_name: str | None = None,
+    ) -> None:
         self.current = current
         self.updated_dataset_fields: list[list[str]] = []
         self.dataset_access_snapshots: list[set[tuple[str, str, str]]] = []
@@ -51,6 +59,8 @@ class RecordingBigQueryClient:
         self.updated_table_timeouts: list[tuple[str, int]] = []
         self.deleted_table_ids: list[str] = []
         self.fail_view_creation = fail_view_creation
+        self.fail_view_name = fail_view_name
+        self.fail_view_update_name = fail_view_update_name
 
     def create_dataset(
         self,
@@ -92,6 +102,8 @@ class RecordingBigQueryClient:
         self.created_table_timeouts.append((table.table_id, timeout))
         if self.fail_view_creation and table.view_query is not None:
             raise RuntimeError("view validation failed")
+        if self.fail_view_name is not None and table.table_id.endswith(self.fail_view_name):
+            raise RuntimeError("view validation failed")
         if table.view_query is not None:
             table._properties["type"] = "VIEW"
         for current in self.created_tables:
@@ -106,7 +118,7 @@ class RecordingBigQueryClient:
         for table in self.created_tables:
             if str(table.reference) == reference_text:
                 return table
-        raise AssertionError(f"Unexpected table reference: {reference_text}")
+        raise NotFound("table not found")  # type: ignore[no-untyped-call]
 
     def update_table(
         self,
@@ -117,6 +129,9 @@ class RecordingBigQueryClient:
     ) -> bigquery.Table:
         self.updated_table_fields.append(fields)
         self.updated_table_timeouts.append((table.table_id, timeout))
+        if self.fail_view_update_name is not None and table.table_id == self.fail_view_update_name:
+            self.fail_view_update_name = None
+            raise RuntimeError("view promotion failed")
         return table
 
     def list_tables(self, dataset: object, *, timeout: int) -> list[bigquery.Table]:
@@ -277,7 +292,7 @@ def test_view_validation_failure_restores_permanent_dataset_acl() -> None:
         "admin@example.iam",
     )
 
-    with pytest.raises(RuntimeError, match="view validation failed"):
+    with pytest.raises(RuntimeError, match="Analytics view preflight failed"):
         provisioner.provision(
             AllowedUser(
                 "homer@example.com",
@@ -293,6 +308,69 @@ def test_view_validation_failure_restores_permanent_dataset_acl() -> None:
         ("WRITER", "userByEmail", "processor@example.iam"),
         ("READER", "userByEmail", "homer@example.com"),
     }
+    assert [table.table_id for table in client.created_tables] == ["raw_telemetry_events"]
+    assert client.updated_table_fields == [["description", "expires", "labels"]]
+
+
+def test_complete_shadow_graph_is_validated_before_canonical_views_change() -> None:
+    current = bigquery.Dataset("project.tesla_u_homer")
+    current.location = "us-central1"
+    current.access_entries = []
+    client = RecordingBigQueryClient(current, fail_view_name="drive_fsd_segments")
+
+    with pytest.raises(
+        RuntimeError,
+        match="Analytics view preflight failed for drive_fsd_segments",
+    ):
+        AnalyticsViewReconciler(
+            client,  # type: ignore[arg-type]
+            "project",
+            "reconciler@example.iam",
+        ).reconcile("tesla_u_homer")
+
+    assert client.created_tables == []
+    assert client.updated_table_fields == []
+    assert client.dataset_access_snapshots[-1] == set()
+    assert client.deleted_table_ids
+    assert all(name.startswith("tpp_preflight_") for name in client.deleted_table_ids)
+
+
+def test_failed_promotion_restores_existing_and_removes_new_canonical_views() -> None:
+    current = bigquery.Dataset("project.tesla_u_homer")
+    current.location = "us-central1"
+    current.access_entries = []
+    client = RecordingBigQueryClient(
+        current,
+        fail_view_update_name="drive_fsd_segments",
+    )
+    prior_drives = bigquery.Table("project.tesla_u_homer.drives")
+    prior_drives._properties["type"] = "VIEW"
+    prior_drives.description = "Prior drives definition."
+    prior_drives.labels = {"definition_hash": "prior"}
+    prior_drives.view_query = "SELECT 'prior' AS version"
+    prior_drives.view_use_legacy_sql = False
+    client.created_tables.append(prior_drives)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Analytics view promotion failed for drive_fsd_segments",
+    ):
+        AnalyticsViewReconciler(
+            client,  # type: ignore[arg-type]
+            "project",
+            "reconciler@example.iam",
+        ).reconcile("tesla_u_homer")
+
+    assert client.created_tables == [prior_drives]
+    assert prior_drives.description == "Prior drives definition."
+    assert prior_drives.labels == {"definition_hash": "prior"}
+    assert prior_drives.view_query == "SELECT 'prior' AS version"
+    canonical_deletions = [
+        name for name in client.deleted_table_ids if not name.startswith("tpp_preflight_")
+    ]
+    assert canonical_deletions
+    assert canonical_deletions[0] == "drive_fsd_segments"
+    assert canonical_deletions[-1] == "telemetry_field_catalog"
 
 
 def test_temporary_view_access_preserves_acl_and_adds_only_reconciler_read() -> None:
@@ -339,7 +417,8 @@ def test_reconciler_removes_only_stale_labeled_views_and_restores_exact_acl() ->
 
     assert result.desired_view_count == 18
     assert result.removed_view_count == 1
-    assert client.deleted_table_ids == ["retired_managed_view"]
+    assert client.deleted_table_ids[-1] == "retired_managed_view"
+    assert all(name.startswith("tpp_preflight_") for name in client.deleted_table_ids[:-1])
     assert {table.table_id for table in client.created_tables} >= {
         "personal_view",
         "raw_telemetry_events",

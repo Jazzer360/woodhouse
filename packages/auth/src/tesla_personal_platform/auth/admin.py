@@ -50,6 +50,13 @@ class AnalyticsViewReconciliation:
     removed_view_count: int
 
 
+class AnalyticsViewReconciliationError(RuntimeError):
+    """Safe canonical-view failure context without tenant identifiers or query text."""
+
+    def __init__(self, stage: str, view_name: str) -> None:
+        super().__init__(f"Analytics view {stage} failed for {view_name}")
+
+
 class DatasetViewReconciler(Protocol):
     """Reconcile source-defined views inside one trusted dataset identifier."""
 
@@ -92,8 +99,9 @@ class AnalyticsViewSyncService:
             try:
                 result = self._views.reconcile(user.dataset_id)
             except Exception as error:
+                detail = f": {error}" if isinstance(error, AnalyticsViewReconciliationError) else ""
                 raise RuntimeError(
-                    "Analytics view reconciliation failed for one active tenant"
+                    f"Analytics view reconciliation failed for one active tenant{detail}"
                 ) from error
             desired_view_count += result.desired_view_count
             removed_view_count += result.removed_view_count

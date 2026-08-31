@@ -340,6 +340,22 @@ def test_drive_distance_uses_a_bounded_route_fallback_with_explicit_provenance()
     assert 1.0 > plausible_ceiling_miles
 
 
+def test_preflight_rendering_rewrites_only_managed_view_dependencies() -> None:
+    views = {
+        view.name: view.sql
+        for view in analytics_views(
+            "project",
+            "dataset",
+            dependency_prefix="tpp_preflight_test_",
+        )
+    }
+
+    assert "`project.dataset.raw_telemetry_events`" in views["telemetry_observations"]
+    assert "`project.dataset.tpp_preflight_test_telemetry_observations`" in views["drives"]
+    assert "`project.dataset.tpp_preflight_test_drives`" in views["drive_fsd_summary"]
+    assert "`project.dataset.tpp_preflight_test_drive_fsd_segments`" in views["drive_fsd_summary"]
+
+
 def test_detailed_charge_state_remains_authoritative_over_coarse_init() -> None:
     charge_sql = next(
         view.sql for view in analytics_views("project", "dataset") if view.name == "charge_sessions"
@@ -464,6 +480,13 @@ def test_fsd_bucket_allocation_matches_supplied_trip_regression_and_bounds_trans
     assert "completed_segment_arrays" in segments
     assert "start_distance_miles > 0.001" in segments
     assert "start_distance_miles - previous_end_distance_miles > 0.001" in segments
+    assert "ranked.drive_distance_miles,\n    segment.*" in segments
+    assert "drive.best_available_distance_miles AS drive_distance_miles" in segments
+    assert "COALESCE(segment.end_distance_miles, drive.best_available_distance_miles)" in segments
+    assert (
+        "COALESCE(segment.transition_upper_bound_miles, "
+        "drive.best_available_distance_miles)" in segments
+    )
 
     summary = views["drive_fsd_summary"].sql
     assert "NULLIF(drive.best_available_distance_miles, 0)" in summary

@@ -184,14 +184,20 @@ four-entry contract on success or failure. This narrowly scoped, short-lived
 grant is an implementation requirement of BigQuery view validation, not a
 runtime analytics permission.
 
-The merge reconciler uses the same create/update implementation as `add-user`
-but preserves the exact existing permanent dataset ACL rather than re-authoring
-it. After every desired view has been validated, only the merge reconciler
+The merge reconciler uses the same preflight/create/update implementation as
+`add-user` but preserves the exact existing permanent dataset ACL rather than
+re-authoring it. It first creates the complete candidate dependency graph as
+one-hour `tpp_preflight_*` shadow views, deletes those exact shadows after
+BigQuery validates them, and changes no canonical view if any shadow fails.
+During canonical promotion it snapshots existing metadata and reverses prior
+updates/creates in dependency-safe order if a later operation fails. After
+every desired canonical view has been promoted, only the merge reconciler
 removes stale `VIEW` objects carrying the full
 Woodhouse application/data-class/layer/manager labels. Raw tables and unmanaged
 objects are outside its deletion policy. One user's failure fails the build
-with a tenant-neutral error; successful earlier datasets remain safe and the
-next idempotent run retries the full active-user set.
+with a tenant-neutral error containing only the failing canonical view name;
+successful earlier datasets remain safe and the next idempotent run retries the
+full active-user set.
 
 The gateway already has project-level `roles/bigquery.jobUser` so it can run
 scoped queries. The operator principal also has that project-level job role, so
@@ -676,11 +682,14 @@ Require a successful build. The reconciler's final postcondition re-lists each
 dataset and fails unless its Woodhouse-managed analytics view names exactly
 match the source definition set; create/update/delete API failures also fail the
 build. Unmanaged views and all non-view objects are ignored by that comparison.
-Logical-view create/update calls use a 120-second validation deadline because
-BigQuery performs a dry-run-style semantic planning pass before accepting the
-metadata change. This does not run or bill the historical query. Planner errors
-such as unsupported correlated table subqueries must be fixed in the checked-in
-SQL; the longer deadline exists so Cloud Build reports the real diagnostic.
+Before canonical updates, dependency-rewritten one-hour shadow views validate
+the complete candidate graph in the same dataset and are deleted in reverse
+dependency order. Logical-view create/update calls use a 120-second validation
+deadline because BigQuery performs a dry-run-style semantic planning pass
+before accepting the metadata change. This does not run or bill the historical
+query. Planner errors such as unsupported correlated table subqueries must be
+fixed in the checked-in SQL; the longer deadline exists so Cloud Build reports
+the real diagnostic.
 
 The initial adoption of an existing environment is an import, not a recreate.
 After this configuration is merged, import the three existing regional triggers
