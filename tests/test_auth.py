@@ -23,6 +23,7 @@ from tesla_personal_platform.auth import (
 )
 from tesla_personal_platform.auth.admin import (
     AnalyticsViewReconciliation,
+    AnalyticsViewReconciliationError,
     AnalyticsViewSyncService,
     UserAdminService,
 )
@@ -574,6 +575,12 @@ class RecordingViewReconciler:
         return AnalyticsViewReconciliation(18, 1)
 
 
+class SafelyFailingViewReconciler:
+    def reconcile(self, dataset_id: str) -> AnalyticsViewReconciliation:
+        del dataset_id
+        raise AnalyticsViewReconciliationError("preflight", "drive_fsd_segments")
+
+
 def test_add_user_is_idempotent_and_repairs_dataset_access_each_run() -> None:
     store = MemoryAdminStore()
     datasets = RecordingDatasetProvisioner()
@@ -681,4 +688,17 @@ def test_analytics_view_sync_sanitizes_per_tenant_failures() -> None:
         service.sync_active_users()
 
     assert str(error.value) == "Analytics view reconciliation failed for one active tenant"
+    assert "tesla_u_homer" not in str(error.value)
+
+
+def test_analytics_view_sync_reports_only_safe_canonical_failure_context() -> None:
+    service = AnalyticsViewSyncService(ActiveUsers(active_user()), SafelyFailingViewReconciler())
+
+    with pytest.raises(RuntimeError) as error:
+        service.sync_active_users()
+
+    assert str(error.value) == (
+        "Analytics view reconciliation failed for one active tenant: "
+        "Analytics view preflight failed for drive_fsd_segments"
+    )
     assert "tesla_u_homer" not in str(error.value)

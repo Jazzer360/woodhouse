@@ -198,6 +198,7 @@ WITH counter_updates AS (
 ), inferred_segments AS (
   SELECT
     ranked.drive_id,
+    ranked.drive_distance_miles,
     segment.*
   FROM ranked_bucket_segments AS ranked
   CROSS JOIN UNNEST(ARRAY_CONCAT(
@@ -291,16 +292,17 @@ WITH counter_updates AS (
     drive.vehicle_id,
     drive.started_at AS drive_started_at,
     drive.ended_at AS drive_ended_at,
-    drive.distance_miles AS drive_distance_miles,
+    drive.best_available_distance_miles AS drive_distance_miles,
     COALESCE(segment.start_distance_miles, 0.0) AS start_distance_miles,
-    COALESCE(segment.end_distance_miles, drive.distance_miles) AS end_distance_miles,
+    COALESCE(segment.end_distance_miles, drive.best_available_distance_miles)
+      AS end_distance_miles,
     COALESCE(segment.state, 'uncertain') AS state,
     COALESCE(segment.confidence, 0.0) AS confidence,
     COALESCE(segment.inference_method, 'insufficient_counter_evidence')
       AS inference_method,
     COALESCE(segment.transition_lower_bound_miles, 0.0)
       AS transition_lower_bound_miles,
-    COALESCE(segment.transition_upper_bound_miles, drive.distance_miles)
+    COALESCE(segment.transition_upper_bound_miles, drive.best_available_distance_miles)
       AS transition_upper_bound_miles
   FROM {{ ref("drives") }} AS drive
   LEFT JOIN completed_segments AS segment USING (drive_id)

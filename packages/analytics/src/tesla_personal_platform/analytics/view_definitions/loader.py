@@ -97,10 +97,17 @@ def _validate_manifest(specs: tuple[_ViewSpec, ...]) -> None:
         seen.add(spec.name)
 
 
-def analytics_views(project_id: str, dataset_id: str) -> tuple[AnalyticsView, ...]:
+def analytics_views(
+    project_id: str,
+    dataset_id: str,
+    *,
+    dependency_prefix: str = "",
+) -> tuple[AnalyticsView, ...]:
     """Render and validate dependency-ordered views for one trusted user dataset."""
     project = _identifier(project_id)
     dataset = _identifier(dataset_id)
+    if dependency_prefix and _SAFE_IDENTIFIER.fullmatch(dependency_prefix) is None:
+        raise ValueError("Analytics dependency prefix must contain only safe identifier characters")
     specs = _specs()
     known_views = frozenset(spec.name for spec in specs)
     samples = {spec.category: spec for spec in category_sample_specs()}
@@ -111,7 +118,7 @@ def analytics_views(project_id: str, dataset_id: str) -> tuple[AnalyticsView, ..
     def ref(name: str) -> str:
         if name not in known_views:
             raise ValueError(f"Unknown analytics view reference: {name}")
-        return table(name)
+        return table(f"{dependency_prefix}{name}")
 
     rendered: list[AnalyticsView] = []
     for spec in specs:
@@ -123,7 +130,7 @@ def analytics_views(project_id: str, dataset_id: str) -> tuple[AnalyticsView, ..
                 raise ValueError(f"Unknown telemetry sample category: {spec.category}")
             context.update(category_sample_context(samples[spec.category]))
         sql = _ENVIRONMENT.get_template(spec.file).render(context).strip()
-        _validate_rendered_sql(sql, spec, project, dataset)
+        _validate_rendered_sql(sql, spec, project, dataset, dependency_prefix)
         rendered.append(AnalyticsView(spec.name, spec.description, sql))
     return tuple(rendered)
 
@@ -133,12 +140,13 @@ def _validate_rendered_sql(
     spec: _ViewSpec,
     project: str,
     dataset: str,
+    dependency_prefix: str,
 ) -> None:
     expression = parse_one(sql, read="bigquery")
     if not isinstance(expression, exp.Query):
         raise ValueError(f"Analytics view {spec.name} must render one BigQuery query")
     cte_names = {cte.alias_or_name for cte in expression.find_all(exp.CTE)}
-    expected = set(spec.depends_on) | set(spec.sources)
+    expected = {f"{dependency_prefix}{name}" for name in spec.depends_on} | set(spec.sources)
     actual: set[str] = set()
     for table in expression.find_all(exp.Table):
         if not table.db and not table.catalog and table.name in cte_names:

@@ -237,25 +237,37 @@ partitioned rebuildable table. Native materialized views may be used only when
 the derivation fits BigQuery's restricted materialized-view SQL; raw history
 remains authoritative either way.
 
-The reconciler creates or updates every source-defined view, records a short
-definition hash in its labels, and then removes stale objects only when they are
-BigQuery views carrying the complete Woodhouse managed-analytics label set.
-Raw tables, user-created views, and other unmanaged objects are never deletion
-candidates. It temporarily adds only its dedicated service identity as a
-dataset reader for BigQuery SQL validation and restores the exact prior ACL in
-`finally`, including on failure. Active tenant dataset IDs come only from the
-trusted Firestore allowlist; the build accepts no caller-supplied user or
-dataset selector.
+Before changing a canonical view, the reconciler creates the complete candidate
+dependency graph under unique `tpp_preflight_*` shadow names in the same private
+dataset. Managed-view references are rewritten to the corresponding shadow;
+raw-table references remain canonical. Every shadow has a one-hour expiration
+as crash cleanup, and the reconciler deletes the exact created references in
+reverse order after validation. A semantic failure therefore leaves all
+canonical views unchanged and reports only the failing canonical view name,
+without a tenant identifier or query text.
 
-BigQuery validates logical-view SQL while the metadata mutation is submitted;
-that validation is planning, not execution over the user's rows. The reconciler
-allows up to 120 seconds for that validation so BigQuery can return a specific
-semantic planner error instead of masking it as a short client deadline. View
-SQL must still avoid unsupported correlated table subqueries and express
-nearest-point/existence logic with joins, windows, or aggregates. A definition
-that cannot dry-run successfully fails the merge delivery before stale-view
-cleanup; raising this deadline is not a substitute for simplifying an invalid
-or excessively complex view graph.
+After preflight succeeds, the reconciler creates or updates every source-defined
+canonical view, records a short definition hash in its labels, and then removes
+stale objects only when they are BigQuery views carrying the complete Woodhouse
+managed-analytics label set. Existing canonical metadata is snapshotted before
+each update; if a later promotion fails, prior updates are restored and views
+created by that run are deleted in reverse dependency order. Raw tables,
+preflight shadows, user-created views, and other unmanaged objects are never
+stale-deletion candidates. It temporarily adds only its dedicated service
+identity as a dataset reader for BigQuery SQL validation and restores the exact
+prior ACL in `finally`, including on failure. Active tenant dataset IDs come
+only from the trusted Firestore allowlist; the build accepts no caller-supplied
+user or dataset selector.
+
+BigQuery validates logical-view SQL while each shadow metadata mutation is
+submitted; that validation is planning, not execution over the user's rows.
+The reconciler allows up to 120 seconds for that validation so BigQuery can
+return a specific semantic planner error instead of masking it as a short
+client deadline. View SQL must still avoid unsupported correlated table
+subqueries and express nearest-point/existence logic with joins, windows, or
+aggregates. A definition that cannot validate fails the merge delivery before
+canonical mutation or stale-view cleanup; raising this deadline is not a
+substitute for simplifying an invalid or excessively complex view graph.
 
 ### Session boundary rules
 
