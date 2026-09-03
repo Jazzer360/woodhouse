@@ -318,6 +318,14 @@ Private key:
 - never returned to clients;
 - never copied to the telemetry VM.
 
+The unrelated Fleet Telemetry server key has a narrower automated lifecycle.
+Its isolated certificate-renewal identity can add versions and can list/destroy
+versions only in the receiver certificate, receiver key, ACME-state, and
+release-manifest containers. It destroys lower-numbered versions only after the
+new release is reported healthy by the guest and its public leaf fingerprint
+matches. A failed cutover preserves the previous material; a verified cutover
+intentionally makes the old private keys and certificate state irrecoverable.
+
 Phase 4 does not inject the private key into the gateway container because no
 command-signing path exists yet. Its public half is injected from the separate
 `tesla-command-public-key` Secret Manager container solely for the public

@@ -323,8 +323,12 @@ Job, not by telemetry-edge. The job performs DNS-01 with a Cloudflare token
 restricted to DNS edits for the one authoritative zone, retains compact ACME
 state in Secret Manager, validates SAN/chain/key/validity, publishes an atomic
 certificate release manifest, restarts the VM, and verifies both guest health
-and the public leaf fingerprint. The edge continues to possess only its TLS
-material and receiver responsibilities.
+and the public leaf fingerprint. Only after both checks pass, it irrevocably
+destroys lower-numbered versions of the certificate, private key, ACME state,
+and release-manifest secrets. Failed activation retains the prior versions for
+recovery, while a verified release becomes the sole retained rollback boundary
+in Secret Manager. The edge continues to possess only its TLS material and
+receiver responsibilities.
 
 Routine renewal of the short-lived server leaf certificate must not rewrite a
 vehicle's Fleet Telemetry configuration. Phase 8 must configure a stable
@@ -737,6 +741,14 @@ Use for:
 - vehicle command EC private key;
 - MCP authorization signing secrets if self-hosted;
 - webhook HMAC keys.
+
+The certificate renewer owns version lifecycle only for its four rotating
+secrets: receiver certificate, receiver private key, compact ACME state, and
+the atomic release manifest. It may list and destroy versions of those secrets
+but receives no equivalent permission for Tesla, MCP authorization, webhook,
+or manually managed trust-profile secrets. Superseded certificate-release
+versions are destroyed only after the VM release marker and public certificate
+fingerprint both verify the replacement.
 
 ### Firestore
 

@@ -62,6 +62,20 @@ resource "google_secret_manager_secret_iam_member" "certificate_renewer_version_
   member    = "serviceAccount:${google_service_account.platform["certificate_renewer"].email}"
 }
 
+resource "google_secret_manager_secret_iam_member" "certificate_renewer_version_pruner" {
+  for_each = var.enable_telemetry_certificate_automation ? toset([
+    "telemetry_acme_state",
+    "telemetry_edge_tls_cert",
+    "telemetry_edge_tls_key",
+    "telemetry_edge_tls_release",
+  ]) : toset([])
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.platform[each.value].secret_id
+  role      = google_project_iam_custom_role.certificate_renewer_version_pruner[0].id
+  member    = "serviceAccount:${google_service_account.platform["certificate_renewer"].email}"
+}
+
 resource "google_secret_manager_secret" "platform" {
   for_each = local.secret_containers
 

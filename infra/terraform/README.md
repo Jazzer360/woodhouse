@@ -112,6 +112,9 @@ token exists in Secret Manager. Enable the job with its schedule paused, deploy
 the merged commit-addressed image, require one successful manual execution, and
 only then unpause the twice-daily schedule. See
 [telemetry-cert-renewal.md](../../docs/runbooks/telemetry-cert-renewal.md).
+After a release passes guest-status and public-fingerprint verification, the
+job irreversibly destroys older versions of its certificate, key, ACME-state,
+and release-manifest secrets. Failed activation leaves prior versions intact.
 
 Manual Cloud Build submissions must stage source in the dedicated private
 `${project_id}-tpp-cloudbuild-source` bucket. Pass its `source` prefix through
