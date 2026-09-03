@@ -213,9 +213,8 @@ def _prune_old_release_versions(
         )
         for version in versions:
             name = str(version.name)
-            if (
-                _secret_version_number(name) >= retained_number
-                or _secret_version_is_destroyed(version)
+            if _secret_version_number(name) >= retained_number or _secret_version_is_destroyed(
+                version
             ):
                 continue
             client.destroy_secret_version(request={"name": name})

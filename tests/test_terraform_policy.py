@@ -311,7 +311,7 @@ def test_certificate_renewal_is_isolated_scheduled_and_fail_closed() -> None:
             '"certificate_renewer_version_pruner"'
         ) : secrets.index('resource "google_secret_manager_secret" "platform"')
     ]
-    assert 'google_project_iam_custom_role.certificate_renewer_version_pruner[0].id' in (
+    assert "google_project_iam_custom_role.certificate_renewer_version_pruner[0].id" in (
         pruner_binding
     )
     assert '"telemetry_edge_tls_cert"' in pruner_binding
