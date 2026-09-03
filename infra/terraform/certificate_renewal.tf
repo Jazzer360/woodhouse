@@ -120,6 +120,7 @@ resource "google_cloud_run_v2_job" "telemetry_certificate_renewer" {
     google_project_service.required,
     google_secret_manager_secret_iam_member.certificate_renewer_accessor,
     google_secret_manager_secret_iam_member.certificate_renewer_version_adder,
+    google_secret_manager_secret_iam_member.certificate_renewer_version_pruner,
   ]
 }
 

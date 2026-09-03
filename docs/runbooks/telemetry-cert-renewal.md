@@ -43,6 +43,13 @@ Let's Encrypt DNS-01; there is no recurring manual TXT-record workflow.
   exact versions and hashes, providing the atomic activation boundary.
 - The job resets only `tpp-telemetry-edge`, waits for its guest status to name
   the release, and compares the public leaf fingerprint with the candidate.
+- After both deployment checks succeed, the job destroys every lower-numbered
+  version in `telemetry-edge-tls-cert`, `telemetry-edge-tls-key`,
+  `telemetry-acme-state`, and `telemetry-edge-tls-release`. Secret Manager
+  version numbers are monotonic per secret, so a concurrently created newer
+  candidate is never selected for deletion. Destruction is irreversible. A
+  failed deployment performs no pruning, and the next successful scheduled
+  check also cleans up versions left from earlier releases.
 - The VM retains the previous pair and restores it if the receiver cannot
   become healthy. The short reset closes the existing receiver connection, so
   the vehicle reconnects and replays unacknowledged data under
@@ -127,8 +134,10 @@ enabled managed maintenance. Cutover waits for every required vehicle to report
 ## Failure and recovery
 
 Do not disable the currently deployed certificate versions during an incident.
-The active release manifest is immutable and previous Secret Manager versions
-remain available.
+While activation is unverified, the prior Secret Manager versions remain
+available. After activation succeeds, the job intentionally destroys those
+superseded versions; recovery from a later-discovered problem requires a fresh
+certificate release rather than rollback to retained Secret Manager history.
 
 1. Inspect the Cloud Run Job execution and its safe `error_type` and
    `error_category`. Certbot failures are reduced to stable categories such as
@@ -141,9 +150,12 @@ remain available.
    external DNS are within their provider SLOs.
 4. Re-run the job. If activation previously failed, the unchanged release
    manifest causes another targeted reset and verification attempt.
-5. If a candidate itself is bad, disable only its unreferenced versions. Restore
-   an earlier `telemetry-edge-tls-release` version as latest only after checking
-   its referenced certificate is not near expiry, then reset the edge.
+5. If an activation attempt fails and the candidate itself is bad, disable only
+   its unreferenced versions. Because pruning has not run, restore the prior
+   `telemetry-edge-tls-release` version as latest only after checking its
+   referenced certificate is not near expiry, then reset the edge. If the bad
+   behavior is discovered after successful verification and pruning, issue and
+   validate a fresh release instead; the old secret payloads are irrecoverable.
 
 Certificate renewal changes no Tesla OAuth token, Virtual Key, command key,
 vehicle ownership mapping, Fleet Telemetry configuration, or historical row.

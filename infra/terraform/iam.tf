@@ -146,6 +146,20 @@ resource "google_project_iam_member" "certificate_renewer_edge_reloader" {
   }
 }
 
+resource "google_project_iam_custom_role" "certificate_renewer_version_pruner" {
+  count = var.enable_telemetry_certificate_automation ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "tppCertificateVersionPruner"
+  title       = "TPP certificate secret version pruner"
+  description = "List and destroy superseded certificate-release secret versions after deployment verification."
+  stage       = "GA"
+  permissions = [
+    "secretmanager.versions.destroy",
+    "secretmanager.versions.list",
+  ]
+}
+
 resource "google_service_account_iam_member" "deployer_edge_runtime_user" {
   count = var.enable_telemetry_edge_delivery ? 1 : 0
 

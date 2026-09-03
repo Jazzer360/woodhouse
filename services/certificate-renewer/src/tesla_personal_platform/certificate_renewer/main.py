@@ -43,6 +43,10 @@ class SecretClient(Protocol):
 
     def add_secret_version(self, request: dict[str, object]) -> Any: ...
 
+    def list_secret_versions(self, request: dict[str, object]) -> Any: ...
+
+    def destroy_secret_version(self, request: dict[str, object]) -> Any: ...
+
 
 class HTTPSession(Protocol):
     def get(self, url: str | bytes, *args: Any, **kwargs: Any) -> Any: ...
@@ -170,6 +174,50 @@ def _add_secret_version(client: SecretClient, project_id: str, secret: str, payl
         }
     )
     return str(response.name).rsplit("/", 1)[-1]
+
+
+def _secret_version_number(name: str) -> int:
+    version = name.rsplit("/", 1)[-1]
+    if not version.isdecimal() or int(version) < 1:
+        raise ValueError("Secret Manager returned an invalid version name")
+    return int(version)
+
+
+def _secret_version_is_destroyed(version: Any) -> bool:
+    state = getattr(version, "state", None)
+    state_name = getattr(state, "name", str(state)).upper()
+    return state_name == "DESTROYED" or state_name.endswith(".DESTROYED")
+
+
+def _prune_old_release_versions(
+    client: SecretClient,
+    settings: Settings,
+    release: dict[str, object],
+) -> None:
+    """Irrevocably destroy versions older than the verified active release.
+
+    Numeric Secret Manager versions are monotonic within each secret. Limiting
+    deletion to lower version numbers also makes pruning safe if another job
+    execution starts and publishes a newer candidate concurrently.
+    """
+    retained_versions = (
+        (settings.cert_secret, str(release["cert_version"])),
+        (settings.key_secret, str(release["key_version"])),
+        (settings.state_secret, str(release["state_version"])),
+        (settings.release_secret, str(release["release_version"])),
+    )
+    for secret, retained_version in retained_versions:
+        retained_number = _secret_version_number(retained_version)
+        versions = client.list_secret_versions(
+            request={"parent": _secret_parent(settings.project_id, secret)}
+        )
+        for version in versions:
+            name = str(version.name)
+            if _secret_version_number(name) >= retained_number or _secret_version_is_destroyed(
+                version
+            ):
+                continue
+            client.destroy_secret_version(request={"name": name})
 
 
 def _extract_state(payload: bytes, destination: Path) -> None:
@@ -524,7 +572,13 @@ def _parse_release(value: SecretValue | None, settings: Settings) -> dict[str, o
     document = json.loads(value.data)
     if not isinstance(document, dict) or document.get("hostname") != settings.hostname:
         raise ValueError("active TLS release manifest is invalid")
-    for field in ("cert_version", "key_version", "leaf_sha256", "fullchain_sha256"):
+    for field in (
+        "cert_version",
+        "key_version",
+        "state_version",
+        "leaf_sha256",
+        "fullchain_sha256",
+    ):
         if not isinstance(document.get(field), str) or not document[field]:
             raise ValueError("active TLS release manifest is incomplete")
     document["release_version"] = value.version
@@ -666,6 +720,7 @@ def renew_certificate(
                     runner=runner,
                     sleeper=sleeper,
                 )
+                _prune_old_release_versions(secret_client, settings, active)
                 return "healthy"
 
         config_dir = root / "letsencrypt"
@@ -730,6 +785,7 @@ def renew_certificate(
                 runner=runner,
                 sleeper=sleeper,
             )
+            _prune_old_release_versions(secret_client, settings, active)
             return "healthy"
 
         cert_version = _add_secret_version(
@@ -764,6 +820,16 @@ def renew_certificate(
             leaf_sha256=material.leaf_sha256,
             runner=runner,
             sleeper=sleeper,
+        )
+        _prune_old_release_versions(
+            secret_client,
+            settings,
+            {
+                "cert_version": cert_version,
+                "key_version": key_version,
+                "state_version": state_version,
+                "release_version": release_version,
+            },
         )
         return "renewed"
 

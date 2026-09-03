@@ -24,6 +24,7 @@ class FakeSecrets:
     def __init__(self, initial: dict[str, list[bytes]] | None = None) -> None:
         self.values = initial or {}
         self.added: list[str] = []
+        self.destroyed: list[tuple[str, int]] = []
 
     def access_secret_version(self, request: dict[str, object]) -> Any:
         name = str(request["name"])
@@ -56,6 +57,26 @@ class FakeSecrets:
         return SimpleNamespace(
             name=f"projects/test/secrets/{secret}/versions/{len(self.values[secret])}"
         )
+
+    def list_secret_versions(self, request: dict[str, object]) -> Any:
+        parent = str(request["parent"])
+        secret = parent.rsplit("/", 1)[-1]
+        return [
+            SimpleNamespace(
+                name=f"projects/test/secrets/{secret}/versions/{index}",
+                state=SimpleNamespace(
+                    name="DESTROYED" if (secret, index) in self.destroyed else "ENABLED"
+                ),
+            )
+            for index in range(1, len(self.values.get(secret, [])) + 1)
+        ]
+
+    def destroy_secret_version(self, request: dict[str, object]) -> Any:
+        name = str(request["name"])
+        secret = name.split("/secrets/", 1)[1].split("/versions/", 1)[0]
+        version = int(name.rsplit("/", 1)[-1])
+        self.destroyed.append((secret, version))
+        return SimpleNamespace(name=name)
 
 
 class UnusedSession:
@@ -318,6 +339,110 @@ def test_new_release_is_published_only_after_pair_and_state(
     assert manifest["trust_profile_id"] == "lets-encrypt-2026"
     assert len(manifest["trust_profile_sha256"]) == 64
     assert deployed == [("1", material.leaf_sha256)]
+
+
+def test_pruning_destroys_only_versions_older_than_the_verified_release() -> None:
+    secrets = FakeSecrets(
+        {
+            "cert": [b"old-1", b"old-2", b"active", b"concurrent-candidate"],
+            "key": [b"old", b"active"],
+            "state": [b"old-1", b"old-2", b"old-3", b"active"],
+            "release": [b"old", b"active"],
+        }
+    )
+    secrets.destroyed.append(("cert", 1))
+
+    renewal._prune_old_release_versions(
+        secrets,
+        settings(),
+        {
+            "cert_version": "3",
+            "key_version": "2",
+            "state_version": "4",
+            "release_version": "2",
+        },
+    )
+
+    assert secrets.destroyed == [
+        ("cert", 1),
+        ("cert", 2),
+        ("key", 1),
+        ("state", 1),
+        ("state", 2),
+        ("state", 3),
+        ("release", 1),
+    ]
+
+
+def test_pruning_runs_only_after_new_release_deployment_is_verified(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    material = certificate_material(tmp_path / "certificate")
+    secrets = FakeSecrets(
+        {
+            "trust": [trust_pem(material)],
+            "trust-readiness": [trust_readiness(material)],
+        }
+    )
+    events: list[str] = []
+    monkeypatch.setattr(renewal, "_run_certbot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(renewal, "_load_and_validate_material", lambda *args, **kwargs: material)
+    monkeypatch.setattr(renewal, "_archive_state", lambda path: b"state")
+    monkeypatch.setattr(renewal, "_deploy_release", lambda *args, **kwargs: events.append("deploy"))
+    monkeypatch.setattr(
+        renewal,
+        "_prune_old_release_versions",
+        lambda *args, **kwargs: events.append("prune"),
+    )
+
+    renewal.renew_certificate(
+        settings(),
+        secrets,
+        UnusedSession(),
+        runner=lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"", stderr=b""
+        ),
+    )
+
+    assert events == ["deploy", "prune"]
+
+
+def test_failed_deployment_does_not_prune_secret_versions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    material = certificate_material(tmp_path / "certificate")
+    secrets = FakeSecrets(
+        {
+            "trust": [trust_pem(material)],
+            "trust-readiness": [trust_readiness(material)],
+        }
+    )
+    pruned: list[bool] = []
+    monkeypatch.setattr(renewal, "_run_certbot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(renewal, "_load_and_validate_material", lambda *args, **kwargs: material)
+    monkeypatch.setattr(renewal, "_archive_state", lambda path: b"state")
+    monkeypatch.setattr(
+        renewal,
+        "_deploy_release",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("deployment failed")),
+    )
+    monkeypatch.setattr(
+        renewal,
+        "_prune_old_release_versions",
+        lambda *args, **kwargs: pruned.append(True),
+    )
+
+    with pytest.raises(RuntimeError, match="deployment failed"):
+        renewal.renew_certificate(
+            settings(),
+            secrets,
+            UnusedSession(),
+            runner=lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=b"", stderr=b""
+            ),
+        )
+
+    assert pruned == []
 
 
 def test_healthy_active_release_ignores_corrupt_acme_state_and_does_not_create_versions(

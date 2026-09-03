@@ -302,6 +302,23 @@ def test_certificate_renewal_is_isolated_scheduled_and_fail_closed() -> None:
     assert '"telemetry_edge_tls_key"' not in renewer_accessor
     assert 'role      = "roles/secretmanager.secretVersionAdder"' in secrets
     assert 'role_id     = "tppCertificateEdgeReloader"' in iam
+    assert 'role_id     = "tppCertificateVersionPruner"' in iam
+    assert '"secretmanager.versions.destroy"' in iam
+    assert '"secretmanager.versions.list"' in iam
+    pruner_binding = secrets[
+        secrets.index(
+            'resource "google_secret_manager_secret_iam_member" '
+            '"certificate_renewer_version_pruner"'
+        ) : secrets.index('resource "google_secret_manager_secret" "platform"')
+    ]
+    assert "google_project_iam_custom_role.certificate_renewer_version_pruner[0].id" in (
+        pruner_binding
+    )
+    assert '"telemetry_edge_tls_cert"' in pruner_binding
+    assert '"telemetry_edge_tls_key"' in pruner_binding
+    assert '"telemetry_edge_tls_release"' in pruner_binding
+    assert '"telemetry_acme_state"' in pruner_binding
+    assert "tesla_client_secret" not in pruner_binding
     assert '"compute.instances.reset"' in iam
     assert 'role    = "roles/cloudscheduler.serviceAgent"' in iam
     assert (
