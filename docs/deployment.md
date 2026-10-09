@@ -608,6 +608,63 @@ Current OpenAI references:
 - <https://developers.openai.com/plugins/build/auth>
 - <https://developers.openai.com/plugins/deploy/connect-chatgpt>
 
+## Claude connection checkpoint
+
+No gateway change is required: the gateway validates issuer, audience, scope,
+and allowlist binding regardless of which OAuth client obtained the token. Claude
+is a second Auth0 third-party client beside ChatGPT. Steps 1–3 of the ChatGPT
+checkpoint (metadata, onboarding, pairing) are shared and need not be repeated.
+
+Claude's hosted apps (claude.ai web, Desktop, mobile, Cowork) share one public
+CIMD client (audited 2026-10-09):
+
+```text
+client_id:     https://claude.ai/oauth/mcp-oauth-client-metadata
+redirect_uri:  https://claude.ai/api/mcp/auth_callback
+auth method:   none (public client, PKCE S256)
+grant types:   authorization_code, refresh_token, jwt-bearer
+```
+
+1. In Auth0 **Applications > Create Application > Import from URL**, import
+   the CIMD URL above. If Auth0 rejects the `jwt-bearer` grant, that grant is
+   used only for Claude Enterprise Managed Auth and may be dropped.
+2. In the MCP API's **Application Access** tab, grant the imported Claude client
+   User-Delegated Access to only `mcp:access`.
+3. On the imported client, confirm **Authorization Code** and **Refresh Token**
+   grants and apply the same rotating refresh-token policy as ChatGPT (2,591,998
+   s idle, 31,557,600 s maximum, 3 s overlap, reuse detection). Claude refreshes
+   up to five minutes before expiry and on `401`.
+4. In Claude, **Customize > Connectors > Add custom connector**, URL
+   `https://woodhouse.derekjass.com/mcp`. Under **Advanced settings** /
+   **OAuth client**, prefer **Use your own OAuth client** with client ID equal to
+   the Auth0 client ID of the imported application (the CIMD URL when Auth0 keeps
+   it as the ID) and a blank secret. **Use Claude's published identity** works
+   only when Auth0 discovery advertises both
+   `client_id_metadata_document_supported: true` and `"none"` in
+   `token_endpoint_auth_methods_supported`; otherwise Claude falls back to DCR,
+   which this tenant does not enable. Authentication settings cannot be edited
+   after adding; remove and re-add to change them.
+5. Connect, sign in with the allowlisted Google account, and run
+   `get_tesla_account(action="list_vehicles")` before any write. Claude requests
+   the `scope` from the gateway's `401` challenge (`mcp:access`) plus
+   `offline_access` when Auth0 discovery lists it.
+
+Claude Code is a separate CIMD client
+(`https://claude.ai/oauth/claude-code-client-metadata`, loopback redirect on
+any port). It is not required for the hosted apps; import it separately only if
+needed, and confirm Auth0 accepts port-agnostic loopback redirects first.
+
+Anthropic egress is `160.79.104.0/21`; the gateway and Auth0 must not block it.
+
+Known gap: command audit and Tesla API log context record `source="chatgpt-mcp"`
+for every MCP call, including Claude's. Distinguishing clients would require
+deriving the source from the verified token's client claim.
+
+Current Anthropic references:
+
+- <https://claude.com/docs/connectors/building/authentication>
+- <https://claude.com/docs/connectors/custom/add-unlisted>
+
 ## Terraform state bootstrap
 
 The small `infra/terraform/bootstrap` root uses local state once to create `woodhouse-506215-tpp-tfstate`. The bucket has uniform access, enforced public-access prevention, object versioning, and cleanup of old noncurrent versions after 90 days while retaining at least 20 newer versions. It deliberately has no bucket retention policy because that can prevent Terraform from deleting its own state-lock object.

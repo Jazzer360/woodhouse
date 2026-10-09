@@ -16,8 +16,11 @@ the upstream login identity. Auth0 is the default OAuth 2.1 authorization
 server because ChatGPT requires MCP protected-resource discovery, PKCE S256,
 resource-specific access tokens, and supported client registration. ChatGPT is
 registered as an Auth0 third-party client through its exact Client ID Metadata
-Document URL and receives only the user-delegated `mcp:access` permission. The
-platform does not implement a custom authorization server.
+Document URL and receives only the user-delegated `mcp:access` permission.
+Claude is registered the same way through its own CIMD URL (see
+`docs/deployment.md`, Claude connection checkpoint); each MCP client is a
+separate Auth0 client with the same single permission. The platform does not
+implement a custom authorization server.
 
 The platform stores:
 
