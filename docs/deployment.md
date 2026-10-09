@@ -637,8 +637,10 @@ grant types:   authorization_code, refresh_token, jwt-bearer
 4. In Claude, **Customize > Connectors > Add custom connector**, URL
    `https://woodhouse.derekjass.com/mcp`. Under **Advanced settings** /
    **OAuth client**, prefer **Use your own OAuth client** with client ID equal to
-   the Auth0 client ID of the imported application (the CIMD URL when Auth0 keeps
-   it as the ID) and a blank secret. **Use Claude's published identity** works
+   the CIMD URL itself (`https://claude.ai/oauth/mcp-oauth-client-metadata`) and
+   a blank secret. Do not use the `tpc_…` identifier Auth0 displays for the
+   imported application: `/authorize` rejects it with
+   `invalid_request: Unknown client`. **Use Claude's published identity** works
    only when Auth0 discovery advertises both
    `client_id_metadata_document_supported: true` and `"none"` in
    `token_endpoint_auth_methods_supported`; otherwise Claude falls back to DCR,
