@@ -2,14 +2,16 @@
 
 import io
 import json
+import shutil
 import subprocess
 import tarfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from certbot import errors
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -580,3 +582,151 @@ def test_reported_release_still_requires_public_certificate_match(
     )
 
     assert len(session.posts) == 1
+
+
+def _certbot_lineage(config_dir: Path, material: renewal.CertificateMaterial) -> Path:
+    """Write a minimal Certbot lineage whose renewal file uses absolute paths."""
+    archive = config_dir / "archive" / renewal.CERT_NAME
+    live = config_dir / "live" / renewal.CERT_NAME
+    archive.mkdir(parents=True)
+    live.mkdir(parents=True, exist_ok=True)
+    for stale in live.iterdir():
+        stale.unlink()
+    certificates = renewal.PEM_CERTIFICATE.findall(material.fullchain)
+    contents = {
+        "cert": certificates[0],
+        "chain": b"\n".join(certificates[1:]),
+        "fullchain": material.fullchain,
+        "privkey": material.private_key,
+    }
+    for kind, payload in contents.items():
+        (archive / f"{kind}1.pem").write_bytes(payload)
+        (live / f"{kind}.pem").symlink_to(f"../../archive/{renewal.CERT_NAME}/{kind}1.pem")
+    renewal_dir = config_dir / "renewal"
+    renewal_dir.mkdir()
+    conf = renewal_dir / f"{renewal.CERT_NAME}.conf"
+    conf.write_text(
+        "\n".join(
+            [
+                "version = 5.7.0",
+                f"archive_dir = {archive}",
+                *(f"{kind} = {live / f'{kind}.pem'}" for kind in contents),
+                "",
+                "[renewalparams]",
+                "authenticator = dns-cloudflare",
+                f"server = {renewal.ACME_SERVER}",
+                f"dns_cloudflare_credentials = {config_dir.parent / 'cloudflare.ini'}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return conf
+
+
+def test_restored_state_keeps_the_certbot_lineage_renewable(tmp_path: Path) -> None:
+    from certbot._internal import storage
+
+    original_root = tmp_path / "tpp-acme-first"
+    material = certificate_material(original_root / "certificate")
+    _certbot_lineage(original_root / "letsencrypt", material)
+    archived = renewal._archive_state(original_root / "letsencrypt")
+    shutil.rmtree(original_root)
+
+    restored = tmp_path / "tpp-acme-second" / "letsencrypt"
+    restored.mkdir(parents=True)
+    renewal._extract_state(archived, restored)
+    conf = restored / "renewal" / f"{renewal.CERT_NAME}.conf"
+    with pytest.raises(errors.CertStorageError):
+        storage.RenewableCert(str(conf), cast(Any, SimpleNamespace()))
+
+    renewal._relocate_state(restored)
+
+    lineage = storage.RenewableCert(str(conf), cast(Any, SimpleNamespace()))
+    assert Path(lineage.cert).is_relative_to(restored)
+    text = conf.read_text(encoding="utf-8")
+    assert str(original_root) not in text
+    assert f"server = {renewal.ACME_SERVER}" in text
+    assert f"dns_cloudflare_credentials = {restored.parent / 'cloudflare.ini'}" in text
+
+
+def test_relocation_rejects_state_with_unexpected_layout(tmp_path: Path) -> None:
+    config_dir = tmp_path / "letsencrypt"
+    (config_dir / "renewal").mkdir(parents=True)
+    (config_dir / "renewal" / f"{renewal.CERT_NAME}.conf").write_text(
+        "archive_dir = relative/archive/telemetry-edge\n", encoding="utf-8"
+    )
+
+    with pytest.raises(renewal.RenewalError) as raised:
+        renewal._relocate_state(config_dir)
+
+    assert raised.value.category == "acme_state_invalid"
+
+
+def test_successful_certbot_exit_without_renewal_fails_instead_of_reporting_healthy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    state_dir = tmp_path / "state"
+    stale = certificate_material(
+        state_dir, valid_for=timedelta(days=20), issued_ago=timedelta(days=70)
+    )
+    secrets = FakeSecrets(
+        {
+            "state": [renewal._archive_state(state_dir)],
+            "trust": [trust_pem(stale)],
+            "trust-readiness": [trust_readiness(stale)],
+        }
+    )
+    monkeypatch.setattr(renewal, "_run_certbot", lambda *args, **kwargs: None)
+
+    with pytest.raises(renewal.RenewalError) as raised:
+        renewal.renew_certificate(settings(), secrets, UnusedSession())
+
+    assert raised.value.category == "certbot_lineage_not_renewed"
+    assert secrets.added == []
+
+
+def test_renewal_error_category_is_logged(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail() -> renewal.Settings:
+        raise renewal.RenewalError("certificate_outside_trust_profile")
+
+    monkeypatch.setattr(renewal.Settings, "from_environment", staticmethod(fail))
+
+    with pytest.raises(SystemExit):
+        renewal.main()
+
+    event = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert event["status"] == "failed"
+    assert event["error_category"] == "certificate_outside_trust_profile"
+
+
+def test_renewal_relocates_restored_state_before_running_certbot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    original_root = tmp_path / "tpp-acme-first"
+    stale = certificate_material(
+        original_root / "certificate", valid_for=timedelta(days=20), issued_ago=timedelta(days=70)
+    )
+    _certbot_lineage(original_root / "letsencrypt", stale)
+    secrets = FakeSecrets(
+        {
+            "state": [renewal._archive_state(original_root / "letsencrypt")],
+            "trust": [trust_pem(stale)],
+            "trust-readiness": [trust_readiness(stale)],
+        }
+    )
+    shutil.rmtree(original_root)
+    seen: list[str] = []
+
+    def certbot(configured: object, config_dir: Path, *args: object) -> None:
+        seen.append((config_dir / "renewal" / f"{renewal.CERT_NAME}.conf").read_text("utf-8"))
+        raise renewal.CertbotError("acme_rate_limited", 1)
+
+    monkeypatch.setattr(renewal, "_run_certbot", certbot)
+
+    with pytest.raises(renewal.CertbotError):
+        renewal.renew_certificate(settings(), secrets, UnusedSession())
+
+    assert seen and str(original_root) not in seen[0]

@@ -33,7 +33,14 @@ Let's Encrypt DNS-01; there is no recurring manual TXT-record workflow.
   the stored TLS private-key secret; it only adds a new key version after
   generating a replacement in memory.
 - Compact Certbot account/lineage state is versioned in
-  `telemetry-acme-state` so renewals reuse the ACME account.
+  `telemetry-acme-state` so renewals reuse the ACME account. Certbot's
+  `renewal/*.conf` stores absolute paths, and each run restores into a new
+  temporary directory, so the job rewrites those paths to the current
+  directory before invoking Certbot. Without that rewrite Certbot treats the
+  lineage as broken and issues an unused `telemetry-edge-0001` lineage on every
+  run (incident 2026-10-26 → 2026-11-21).
+- If Certbot exits successfully but the configured lineage is still due, the
+  job fails with `certbot_lineage_not_renewed` instead of reporting `healthy`.
 - A candidate must have the exact SAN, a complete chain, a matching private
   key, and at least seven days of remaining validity before activation. This
   deployment-safety floor is deliberately separate from the proportional
@@ -144,6 +151,16 @@ certificate release rather than rollback to retained Secret Manager history.
   `dns_provider_authorization`, `dns_propagation`, `acme_rate_limited`,
   `acme_unavailable`, `certbot_timeout`, or `acme_state_invalid`; logs never contain the
    Cloudflare token, private key, certificate bodies, or raw Certbot output.
+   Non-Certbot categories: `certbot_lineage_not_renewed`,
+   `certificate_validity_below_safety_window`, `certificate_outside_trust_profile`.
+   An uncategorized `ValueError` is any other validation failure.
+
+   Let's Encrypt allows 5 certificates per exact hostname set, refilling one
+   every 34 hours, and offers no overrides. A run that issues a certificate and
+   then fails discards it and still consumes quota, so on repeated
+   `acme_rate_limited` failures pause `tpp-telemetry-certificate-renewal` until
+   the cause is fixed, then execute the job manually once the next refill is
+   expected.
 2. Confirm the Cloudflare token still has zone-scoped DNS edit access and the
    authoritative nameservers remain Cloudflare.
 3. Confirm Cloud Scheduler, Cloud Run, Secret Manager, Compute Engine, and
