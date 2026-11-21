@@ -126,6 +126,14 @@ class CertbotError(RuntimeError):
         self.returncode = returncode
 
 
+class RenewalError(ValueError):
+    """A renewal precondition failed; ``category`` is safe to log."""
+
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = category
+
+
 def _required_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -228,6 +236,49 @@ def _extract_state(payload: bytes, destination: Path) -> None:
         if sum(member.size for member in members) > MAX_EXTRACTED_STATE_BYTES:
             raise ValueError("stored ACME state expands beyond its size limit")
         archive.extractall(destination, members=members, filter="data")
+
+
+def _relocate_state(config_dir: Path) -> None:
+    """Point restored Certbot renewal configuration at this run's directory.
+
+    Certbot records absolute paths in ``renewal/*.conf``. Each run restores
+    state into a fresh temporary directory, so without rewriting, Certbot
+    treats the saved lineage as broken and silently issues a new
+    ``<name>-0001`` lineage instead of renewing the configured one.
+    """
+    renewal_dir = config_dir / "renewal"
+    if not renewal_dir.is_dir():
+        return
+    new_root = str(config_dir.parent)
+    for conf in renewal_dir.glob("*.conf"):
+        lines = conf.read_text(encoding="utf-8").splitlines(keepends=True)
+        archive_values = [
+            line.split("=", 1)[1].strip()
+            for line in lines
+            if line.split("=", 1)[0].strip() == "archive_dir"
+        ]
+        if len(archive_values) != 1:
+            raise RenewalError("acme_state_invalid")
+        archive_dir = Path(archive_values[0])
+        old_config_dir = archive_dir.parent.parent
+        if (
+            not archive_dir.is_absolute()
+            or archive_dir.parent.name != "archive"
+            or old_config_dir.name != config_dir.name
+        ):
+            raise RenewalError("acme_state_invalid")
+        old_root = str(old_config_dir.parent)
+        if old_root == new_root:
+            continue
+        relocated = []
+        for line in lines:
+            key, separator, value = line.partition("=")
+            stripped = value.strip()
+            if separator and (stripped == old_root or stripped.startswith(old_root + "/")):
+                ending = "\n" if line.endswith("\n") else ""
+                line = f"{key}= {new_root}{stripped[len(old_root) :]}{ending}"
+            relocated.append(line)
+        conf.write_text("".join(relocated), encoding="utf-8")
 
 
 def _prune_certificate_history(config_dir: Path) -> None:
@@ -431,7 +482,7 @@ def _validate_certificate(
     not_before = leaf.not_valid_before_utc
     not_after = leaf.not_valid_after_utc
     if minimum_remaining is not None and not_after < checked_at + minimum_remaining:
-        raise ValueError("certificate validity is shorter than the deployment safety window")
+        raise RenewalError("certificate_validity_below_safety_window")
     return CertificateMaterial(
         fullchain=fullchain,
         private_key=b"",
@@ -535,7 +586,7 @@ def _validate_candidate_against_trust_profile(
             timeout=15,
         )
     if result.returncode != 0:
-        raise ValueError("certificate candidate is outside the configured telemetry trust profile")
+        raise RenewalError("certificate_outside_trust_profile")
 
 
 def _release_document(
@@ -730,6 +781,7 @@ def renew_certificate(
         )
         if state is not None:
             _extract_state(state.data, config_dir)
+            _relocate_state(config_dir)
         credentials = root / "cloudflare.ini"
         try:
             # A healthy stored certificate needs neither ACME nor Cloudflare.
@@ -758,6 +810,8 @@ def renew_certificate(
                         config_dir,
                         settings.hostname,
                     )
+                    if _certificate_is_due(material):
+                        raise RenewalError("certbot_lineage_not_renewed")
                 finally:
                     credentials.unlink(missing_ok=True)
         finally:
@@ -867,7 +921,7 @@ def main() -> None:
             session,
         )
     except Exception as exc:
-        category = exc.category if isinstance(exc, CertbotError) else None
+        category = exc.category if isinstance(exc, CertbotError | RenewalError) else None
         if (
             isinstance(exc, RuntimeError)
             and str(exc) == "certificate_deployment_verification_timed_out"

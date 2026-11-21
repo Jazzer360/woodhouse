@@ -6,6 +6,8 @@ from collections import deque
 
 import httpx2
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
+from jwt.algorithms import ECAlgorithm
 from tesla_personal_platform.tesla_client import (
     HttpxTransport,
     LocalCommandProxyTransport,
@@ -271,13 +273,17 @@ def test_unexpected_transport_failure_is_logged_without_exception_text(
 
 
 def test_jwks_fetch_uses_logged_tesla_transport(caplog: pytest.LogCaptureFixture) -> None:
-    transport = HttpxTransport(client=_mock_client([_response(200, {"keys": []})]))
+    public_jwk = json.loads(
+        ECAlgorithm.to_jwk(ec.generate_private_key(ec.SECP256R1()).public_key())
+    )
+    keys = {"keys": [{**public_jwk, "kid": "test", "use": "sig", "alg": "ES256"}]}
+    transport = HttpxTransport(client=_mock_client([_response(200, keys)]))
     verifier = TeslaIDTokenVerifier(transport=transport)
 
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
         document = verifier._jwks.fetch_data()
 
-    assert document == {"keys": []}
+    assert document == keys
     events = _events(caplog)
     assert [event["phase"] for event in events] == ["started", "completed"]
     assert events[0]["operation"] == "oauth_jwks"
